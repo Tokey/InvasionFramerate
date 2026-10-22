@@ -136,9 +136,9 @@ The row number is the setting's ID. The first row under the header is setting **
 
 | Row | baseFps | direction | Δ range (step) | Altered side runs at | stopSD |
 |---|---|---|---|---|---|
-| 1 | 60 | down | 1–50 (1) | 10–59 fps | 2 |
-| 2 | 144 | down | 2–120 (2) | 24–142 fps | 5 |
-| 3 | 500 | down | 5–415 (5) | 85–495 fps | 17 |
+| 1 | 60 | down | 1–50 (1) | 10–59 fps | 5 |
+| 2 | 144 | down | 2–120 (2) | 24–142 fps | 10 |
+| 3 | 500 | down | 5–415 (5) | 85–495 fps | 20 |
 
 All three rows ask the same question at their own scale: each searches down to about a sixth of its base, in steps that grow with the base (≈ 1% of it), and stops at the same relative precision (`stopSD` ≈ 4% of the range). The round limits and the rest of the QUEST+ setup are identical.
 
