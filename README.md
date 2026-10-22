@@ -16,9 +16,9 @@ You fly a UFO with the mouse over a city at night. One of the towers standing in
 - **After every round** the screen splits at the tower and shows each side's frame rate: the target as a big number, the rate actually delivered underneath.
 - **One practice phase first.** Five fixed rounds that span the whole range the study uses: 30 vs 60, 60 vs 500, 60 vs 144, 144 vs 500, 240 vs 500 fps (`Data/PracticeRounds.csv`). Practice never feeds QUEST+.
 - **Then the main blocks**, shown to the participant as **MAIN 1/3**, **MAIN 2/3**, **MAIN 3/3**. Each row of the config is one block, one QUEST+ run, no practice of its own. The current config, set up for a **500 Hz** display, has three: the two most common refresh rates and 500, roughly evenly spaced in frame time (16.7 → 6.9 → 2 ms). Each searches down to about a sixth of its base:
-  - **60 fps:** the altered side runs at 10–59 fps (Δ 1–50 in steps of 1).
-  - **144 fps:** the altered side runs at 24–142 fps (Δ 2–120 in steps of 2).
-  - **500 fps:** the altered side runs at 85–495 fps (Δ 5–415 in steps of 5).
+  - **60 fps:** the altered side runs at 1–59 fps (Δ 1–59 in steps of 1).
+  - **144 fps:** the altered side runs at 2–142 fps (Δ 2–142 in steps of 2).
+  - **500 fps:** the altered side runs at 5–495 fps (Δ 5–495 in steps of 5).
 - The block order changes from participant to participant. It comes from a Latin square, so no setting always goes first.
 
 ## What you need
