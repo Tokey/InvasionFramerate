@@ -15,7 +15,7 @@ You fly a UFO with the mouse over a city at night. One of the towers standing in
 - **QUEST+ picks Δ every round.** It goes bigger after a miss and smaller after a hit, and keeps going until it's sure about the threshold: the difference you'd locate about 2 times out of 3, not counting lucky guesses.
 - **After every round** the screen splits at the tower and shows each side's frame rate: the target as a big number, the rate actually delivered underneath.
 - **One practice phase first.** Five fixed rounds that span the whole range the study uses: 30 vs 60, 60 vs 500, 60 vs 144, 144 vs 500, 240 vs 500 fps (`Data/PracticeRounds.csv`). Practice never feeds QUEST+.
-- **Then the main blocks**, shown to the participant as **MAIN 1/3**, **MAIN 2/3**, **MAIN 3/3**. Each row of the config is one block, one QUEST+ run, no practice of its own. The current config, set up for a **500 Hz** display, has three: the two most common refresh rates and 500, roughly evenly spaced in frame time (16.7 → 6.9 → 2 ms). Each searches down to about a sixth of its base:
+- **Then the main blocks**, shown to the participant as **MAIN 1/3**, **MAIN 2/3**, **MAIN 3/3**. Each row of the config is one block, one QUEST+ run, no practice of its own. The current config, set up for a **500 Hz** display, has three: the two most common refresh rates and 500, roughly evenly spaced in frame time (16.7 → 6.9 → 2 ms). Each searches almost its whole range, down to a few fps:
   - **60 fps:** the altered side runs at 1–59 fps (Δ 1–59 in steps of 1).
   - **144 fps:** the altered side runs at 2–142 fps (Δ 2–142 in steps of 2).
   - **500 fps:** the altered side runs at 5–495 fps (Δ 5–495 in steps of 5).
@@ -58,7 +58,7 @@ The Console prints `[Build] Copied ExperimentConfig.csv → ...` when the copy w
 The **debug readout is ON** right now, for testing. It sits in the top-right corner and shows:
 
 ```
-FPS JND | MAIN 2/3 | base 144 down | diff 2-120 step 2 | precise limiter
+FPS JND | MAIN 2/3 | base 144 down | diff 2-142 step 2 | precise limiter
 LIVE  diff 38: 144 vs 106 fps, altered on RIGHT   (L 144 | R 106)
 measured  L 143.9 | R 106.0   crossings 4   late 0
 now RIGHT @ 106 fps cap | spin 6.2 ms
@@ -136,24 +136,26 @@ The row number is the setting's ID. The first row under the header is setting **
 
 | Row | baseFps | direction | Δ range (step) | Altered side runs at | stopSD |
 |---|---|---|---|---|---|
-| 1 | 60 | down | 1–50 (1) | 10–59 fps | 5 |
-| 2 | 144 | down | 2–120 (2) | 24–142 fps | 10 |
-| 3 | 500 | down | 5–415 (5) | 85–495 fps | 20 |
+| 1 | 60 | down | 1–59 (1) | 1–59 fps | 5 |
+| 2 | 144 | down | 2–142 (2) | 2–142 fps | 10 |
+| 3 | 500 | down | 5–495 (5) | 5–495 fps | 20 |
 
-All three rows ask the same question at their own scale: each searches down to about a sixth of its base, in steps that grow with the base (≈ 1% of it), and stops at the same relative precision (`stopSD` ≈ 4% of the range). The round limits and the rest of the QUEST+ setup are identical.
+Each row searches almost its whole range, in steps that grow with the base (≈ 1% of it). `maxDiffFps` is set to base − 1 (59 / 143 / 499). On rows 2 and 3 that isn't on the step grid, so the game pulls it down to 142 and 495 and says so in the Console. `stopSD` is 5 / 10 / 20 fps: about 9% / 7% / 4% of each row's Δ range, so the 60 fps block stops at a coarser relative precision than the 500 fps one. The round limits and the rest of the QUEST+ setup are identical.
 
-In simulation (a Python port of the same QUEST+ against simulated observers) the estimates come out unbiased on all three rows. Low thresholds converge in ~16–18 rounds; thresholds in the middle of the range often run the full 50, ending with an error close to `stopSD` either way.
+In simulation (a Python port of the same QUEST+ against simulated observers) on the previous ranges (Δ up to 50 / 120 / 415, `stopSD` 2 / 5 / 17) the estimates came out unbiased on all three rows. Low thresholds converged in ~16–18 rounds; thresholds in the middle of the range often ran the full 50, ending with an error close to `stopSD` either way. This hasn't been re-run for the current ranges.
 
 ### The default config
 
-This is what `Data/ExperimentConfig.csv` holds in this repo, and what the game writes if that file goes missing:
+This is what `Data/ExperimentConfig.csv` holds in this repo:
 
 ```
 baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD
-60,down,50,1,1,random,unity,0,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,2
-144,down,120,2,2,random,unity,0,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,5
-500,down,415,5,5,random,unity,0,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,17
+60,down,59,1,1,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,5
+144,down,143,2,2,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,10
+500,down,499,5,5,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,20
 ```
+
+> **Note:** if the file goes missing, the game writes its built-in fallback (`DefaultCsv()` in `Assets/Scripts/Experiment/StudyConfig.cs`), which still has the previous rows: Δ up to 50 / 120 / 415, no crossing limit, `stopSD` 2 / 5 / 17 and `guessRate` 0.244. Keep a copy of the CSV rather than relying on it.
 
 ### Columns
 
@@ -163,7 +165,7 @@ baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,max
 |---|---|---|
 | `baseFps` | The reference frame rate. One side of the tower always runs at exactly this. Between rounds (the reveal, the reset, the prompts) the whole game runs at it too. | 60 / 144 / 500 |
 | `direction` | `down`: the altered side runs at `baseFps − Δ`. `up`: at `baseFps + Δ`. | down |
-| `maxDiffFps` | The biggest Δ QUEST+ may use, and the top of its threshold range. On a `down` row it's clamped so the altered side never drops below 1 fps. | 50 / 120 / 415 |
+| `maxDiffFps` | The biggest Δ QUEST+ may use, and the top of its threshold range. On a `down` row it's clamped so the altered side never drops below 1 fps. | 59 / 143 / 499 (used as 59 / 142 / 495) |
 | `minDiffFps` | The smallest Δ QUEST+ may use, and the bottom of its threshold range. | 1 / 2 / 5 |
 | `diffStepFps` | Spacing of the Δ values QUEST+ may use: `minDiffFps`, `minDiffFps + step`, … up to `maxDiffFps`, an exactly even grid. `maxDiffFps − minDiffFps` should be a multiple of it; if not, the game pulls `maxDiffFps` down onto the grid and says so. | 1 / 2 / 5 |
 | `alteredSide` | Which side of the tower is altered: `random` (drawn every round), `left` or `right`. | random |
@@ -173,7 +175,7 @@ baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,max
 
 | Column | What it does | Default |
 |---|---|---|
-| `maxCrossingsPerRound` | Most tower crossings one round may have; the next crossing ends the round as a miss. `0` means no limit. Off by default because crossing the tower is how people compare the two rates. | 0 |
+| `maxCrossingsPerRound` | Most tower crossings one round may have; the next crossing ends the round as a miss. `0` means no limit. Keep it generous: crossing the tower is how people compare the two rates. | 15 |
 | `roundTimeoutSec` | Time limit per round, in seconds. No shot by then means a miss. `0` turns it off. | 15 |
 
 **Score**
@@ -195,7 +197,7 @@ QUEST+ keeps a big table of possible answers for each participant and picks the 
 | `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | 0.235 |
 | `maxTrials` | Most main rounds in one block. | 50 |
 | `minTrials` | No early stop before this many rounds. | 8 |
-| `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in fps) is at or below this. About 4% of the Δ range on every row, so the three blocks ask for the same relative precision. | 2 / 5 / 17 |
+| `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in fps) is at or below this. About 9% / 7% / 4% of each row's Δ range. | 5 / 10 / 20 |
 
 A block ends when `stopSD` is reached (after `minTrials`) or when it hits `maxTrials`. The SessionLog saves which one happened as `endReason`: `converged` or `maxTrials`.
 
@@ -519,13 +521,7 @@ Everything is in `Analysis/`:
 
 | Script | What it does |
 |---|---|
-<<<<<<< Updated upstream
-| `build_db.py` | Builds a SQLite `.db` for each session. It runs by itself at the end of every session. To rebuild: `python Analysis/build_db.py --data "<build>/Data"` |
-| `jnd_analysis.py` | All the figures, tables and stats for the paper: `python Analysis/jnd_analysis.py --data "<folder with the session folders>"`. Needs numpy, pandas, matplotlib and scipy. |
-| `plot_quest.py` | QUEST+ plots per participant. |
-=======
 | `build_db.py` | Builds a SQLite `.db` for each session. It runs by itself at the end of every session, and reads both this study's logs and the stutter study's. To rebuild: `python Analysis/build_db.py --data "<build>/Data"`. `--schema` prints the tables and example queries. |
 | `jnd_analysis.py`, `plot_quest.py`, … | Written for the **stutter** study. They expect its columns (`jndEstimateMs`, `stimulusMs`, `weapon`, …) and need updating before they'll work on these logs. |
 
 `Analysis/COLUMNS.md` has a compact list of every config and log column.
->>>>>>> Stashed changes
