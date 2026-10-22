@@ -28,42 +28,43 @@ namespace JndUfo
         [Range(0.1f, 1f)]
         public float spawnWidthFraction = 0.8f;
 
-        [Header("Manhattan Skyline")]
-        [Tooltip("Pool of building prefabs. The skyline round-robins through these to fill Total Building Count.")]
+        [Header("Towers")]
+        [Tooltip("The tower models the field along the ground line is dealt from. The tower that stands on the " +
+                 "frame-rate boundary is one of them, picked at random every round exactly like its neighbours, " +
+                 "so ANY tower can be the boundary and none can be told apart by looking (see TowerField). The " +
+                 "scene's own target tower is never drawn — it only marks where the boundary is.")]
         public SkylineBuilding[] skylineBuildings;
-        [Tooltip("Total number of buildings placed around the tower. Prefabs are cycled in order.")]
-        public int totalBuildingCount = 40;
-        [Tooltip("Z offset applied to all skyline buildings (world units from fixedZ). " +
-                 "Negative = further from a camera aimed along +Z. Adjust sign to suit your camera.")]
-        public float skylineZOffset = -5f;
-        [Tooltip("Random Z variance per building (±). Adds depth variation.")]
-        public float skylineZVariance = 4f;
-        [Tooltip("Extra gap (world units) between the main tower edge and the nearest skyline building.")]
-        public float skylineTowerClearance = 1f;
-        [Tooltip("Render skyline buildings as a flat silhouette colour (Unlit/Color).")]
-        public bool silhouetteMode = true;
-        [Tooltip("Colour used when Silhouette Mode is on.")]
+        [Tooltip("Colour every tower is drawn in: a flat, unlit silhouette, so no tower reads differently from " +
+                 "another under any light.")]
         public Color silhouetteColor = new Color(0.08f, 0.08f, 0.08f, 1f);
 
-        [Header("Skyline Scale & Density")]
-        [Tooltip("Minimum random uniform scale applied to each foreground building.")]
-        [Range(0.3f, 1f)] public float skylineScaleMin = 0.7f;
-        [Tooltip("Maximum random uniform scale applied to each foreground building.")]
-        [Range(0.5f, 2f)] public float skylineScaleMax = 1.35f;
-        [Tooltip("Fraction of each building's width that overlaps the next (0 = touching, 0.4 = 40% overlap).")]
-        [Range(0f, 0.6f)] public float skylineXOverlap = 0.3f;
-
-        [Header("Background Layer")]
-        [Tooltip("Extra buildings placed behind the main row to suggest city depth. 0 = disabled.")]
-        public int backgroundBuildingCount = 22;
-        [Tooltip("Additional Z push for background buildings (added to skylineZOffset). Use a negative value.")]
-        public float backgroundZOffset = -9f;
-        [Tooltip("Scale multiplier applied to background buildings on top of the normal random scale.")]
-        [Range(0.3f, 1f)] public float backgroundScaleMult = 0.6f;
-        [Tooltip("Silhouette colour for background buildings. Slightly lighter than foreground gives atmospheric depth.")]
-        public Color backgroundSilhouetteColor = new Color(0.13f, 0.13f, 0.16f, 1f);
+        [Header("City")]
+        [Tooltip("The night skyline behind the play plane. Created at Start if empty.")]
+        public CitySkyline city;
+        [Tooltip("Sparks and embers off the city's damaged buildings. Created at Start if empty.")]
+        public CitySparks citySparks;
+        [Tooltip("Faint twinkling stars, shooting stars and drifting clouds. Created at Start if empty.")]
+        public NightSky nightSky;
+        [Tooltip("The towers along the ground line, re-dealt around the boundary every round. Created at Start " +
+                 "if empty.")]
+        public TowerField towerField;
+        [Tooltip("The out-of-focus grass across the bottom of the screen, swaying, that the towers stand in. " +
+                 "Created at Start if empty.")]
+        public Foreground foreground;
+        [Tooltip("Rain or snow falling over the city, behind the play plane. Created at Start if empty.")]
+        public Weather weather;
+        [Tooltip("Draws the city behind the play plane out of focus, as a lens focused on the play plane would. " +
+                 "Created at Start if empty.")]
+        public Backdrop backdrop;
 
         [Header("Ground Fog")]
+        [Tooltip("Spawn the ground fog (the smoke bank). Off: the fog prefab below is never instantiated, a scene fog " +
+                 "object is switched off, and the reveal's fog fades become plain timing — they still drive the " +
+                 "tower beam's fade in and out over exactly the same durations, so the round's pacing is unchanged. " +
+                 "Off by default: the bank was the most expensive thing on screen (every pixel under it was shaded " +
+                 "by layers of large translucent particles) and the tower no longer needs it to hide — it stands in " +
+                 "plain sight among identical decoys (see DecoyTowers).")]
+        public bool groundFog = false;
         [Tooltip("Drag the scene fog GameObject here (overrides groundFogPrefab).")]
         public GameObject fogObject;
         [Tooltip("Particle system prefab — instantiated if fogObject is not set.")]
@@ -170,6 +171,10 @@ namespace JndUfo
         public int maxShockwaveParticles = 3000;
 
         [Header("Hit Marker")]
+        [Tooltip("Also play the two particle-pack prefabs below where a shot lands. Off by default: the laser's own " +
+                 "impact (ShotFx — flash, shockwave ring, sparks) now marks the landing point, and the Dust " +
+                 "Explosion prefab is a smoke cloud, which is exactly what the scene no longer has.")]
+        public bool legacyHitPrefabs = false;
         [Tooltip("Particle system prefab to play when the tower is hit.")]
         public ParticleSystem hitParticlePrefab;
         [Tooltip("Secondary explosion particle prefab to play at the same location.")]
@@ -212,12 +217,15 @@ namespace JndUfo
         ParticleSystem _hitParticleInstance;
         ParticleSystem _explosionInstance;
         Material       _silhouetteMat;
-        Material       _backgroundSilhouetteMat;
+        Material       _towerGlowMat;      // the boundary tower in the reveal
+        bool           _dealtOnce;         // the field has been dealt at least once
 
         // Tower laser
         LineRenderer _towerLaser;
         LineRenderer _towerLaserZoneLeft;
         LineRenderer _towerLaserZoneRight;
+        float        _beamRise;            // 0..1 of towerLaserHeight, follows the reveal
+        Vector3      _beamBase;            // foot of the beam and zone lines: the boundary they mark
         float        _prevAlpha;
         float        _spreadProgress;
         Coroutine    _spreadCoroutine;
@@ -257,16 +265,6 @@ namespace JndUfo
             public Color32 Color;
         }
 
-        // Tower silhouette
-        Renderer[] _towerRenderers;
-
-        // Skyline
-        readonly List<GameObject> _skylineInstances  = new List<GameObject>();
-        readonly List<float>      _skylineXOffsets   = new List<float>();
-        readonly List<float>      _skylineYPositions = new List<float>();
-        readonly List<float>      _skylineZPositions = new List<float>();
-        Renderer[][]              _skylineRenderers;
-
         // ── Public accessors ─────────────────────────────────────────────────
         public RadioTower Tower  => tower;
         public Vector3 TowerBase => tower != null ? tower.BasePosition : transform.position;
@@ -279,16 +277,23 @@ namespace JndUfo
             SyncZ();
             EnsureHitMarker();
             EnsureTowerLaser();
-            CacheTowerRenderers();
 
-            if (silhouetteMode && _silhouetteMat == null)
-            {
-                _silhouetteMat = new Material(Shader.Find("Sprites/Default"));
-                _silhouetteMat.color = silhouetteColor;
-            }
+            // The scene's own target tower is never drawn: the boundary is shown by whichever tower of the
+            // field stands on it (see TowerField). It still marks the boundary's position for everything else.
+            if (tower != null) tower.SetVisible(false);
 
-            // ── FOG SPAWN FIX ────────────────────────────────────────────────
+            BuildScenery();
 
+            if (groundFog) BindGroundFog();
+            else if (fogObject != null && fogObject.scene.IsValid()) fogObject.SetActive(false);
+
+            MoveTowerToRandomPosition();
+            ApplyVisibility();
+        }
+
+        // Finds or spawns the fog bank. Only reached with groundFog on.
+        void BindGroundFog()
+        {
             // 1. If a Scene Object was accidentally placed in the Prefab slot, swap it over.
             if (groundFogPrefab != null && groundFogPrefab.scene.IsValid())
             {
@@ -316,11 +321,6 @@ namespace JndUfo
                 _fogInstance = Instantiate(groundFogPrefab);
                 CacheFogMaterials();
             }
-
-            // ─────────────────────────────────────────────────────────────────
-
-            MoveTowerToRandomPosition();
-            ApplyVisibility();
         }
 
         // Reads CameraRig.RestX, which PanTo writes from its coroutine — coroutines resume before
@@ -356,11 +356,29 @@ namespace JndUfo
 
         // ── Tower movement ───────────────────────────────────────────────────
 
-        public void MoveTowerToRandomPosition()
+        /// <summary>
+        /// Puts the tower at a random X in the spawn band of the camera's view — or, with
+        /// <paramref name="cameraShiftX"/>, of the view the camera will have once it has panned that far
+        /// along X. The reset deals the next round as its pan begins, so the towers change during the
+        /// pan rather than after it; a pan only slides the view sideways, so that view is today's moved
+        /// by the shift.
+        /// </summary>
+        public void MoveTowerToRandomPosition(float cameraShiftX = 0f)
         {
             SyncZ();
 
             Camera cam = rig != null ? rig.ActiveCamera : Camera.main;
+
+            if (NextViewportX.HasValue)
+            {
+                float vx = NextViewportX.Value;
+                NextViewportX = null;
+                if (cam != null)
+                {
+                    PlaceTowerAt(CameraRig.ViewportPointAtZ(cam, vx, 0.5f, fixedZ).x + cameraShiftX);
+                    return;
+                }
+            }
 
             float minX, maxX;
             if (cam != null)
@@ -368,8 +386,8 @@ namespace JndUfo
                 float margin = (1f - spawnWidthFraction) * 0.5f;
                 Vector3 leftWorld  = CameraRig.ViewportPointAtZ(cam, margin,      0.5f, fixedZ);
                 Vector3 rightWorld = CameraRig.ViewportPointAtZ(cam, 1f - margin, 0.5f, fixedZ);
-                minX = Mathf.Min(leftWorld.x, rightWorld.x);
-                maxX = Mathf.Max(leftWorld.x, rightWorld.x);
+                minX = Mathf.Min(leftWorld.x, rightWorld.x) + cameraShiftX;
+                maxX = Mathf.Max(leftWorld.x, rightWorld.x) + cameraShiftX;
             }
             else
             {
@@ -381,18 +399,28 @@ namespace JndUfo
 
             if (cam != null)
             {
-                Vector3 testPos = new Vector3(x, groundY, fixedZ);
+                // Tested in today's view, so moved back by the shift.
+                Vector3 testPos = new Vector3(x - cameraShiftX, groundY, fixedZ);
                 Vector3 vp = cam.WorldToViewportPoint(testPos);
                 if (vp.z > 0f && (vp.x < 0.05f || vp.x > 0.95f))
                 {
                     vp.x = Mathf.Clamp(vp.x, 0.05f, 0.95f);
                     Vector3 clamped = CameraRig.ViewportPointAtZ(cam, vp.x, 0.5f, fixedZ);
-                    x = clamped.x;
+                    x = clamped.x + cameraShiftX;
                 }
             }
 
             PlaceTowerAt(x);
         }
+
+        /// <summary>
+        /// For the command-line checks (<see cref="QaRunner"/>): where the next
+        /// <see cref="MoveTowerToRandomPosition"/> puts the tower instead of a random spot, as a fraction of
+        /// the width of the view it places the tower for (0 = left edge, 1 = right). Used once, then
+        /// cleared. Lets a check have the reset deal its next round in an exact spot, during the pan as in
+        /// a session, rather than move the tower a second time afterwards. The study never sets it.
+        /// </summary>
+        public float? NextViewportX { get; set; }
 
         /// <summary>
         /// Puts the tower at a given fraction of the screen's width (0 = left edge, 1 = right),
@@ -414,9 +442,13 @@ namespace JndUfo
             if (tower != null) tower.MoveTo(pos);
             if (cloud != null) cloud.MoveOver(pos);
 
-            BuildSkyline();
-            MoveSkylineToTower();
-            SetTowerLaserAlpha(0f);
+            ResetFog();
+            // The first deal, at scene start, is simply there; every later one crossfades with the row on
+            // screen, once, during the reset's camera pan (see TowerField).
+            if (towerField != null) towerField.Deal(x, animate: _dealtOnce);
+            _dealtOnce = true;
+            // The beam is left as it is: one still fading from the last reveal finishes over the tower it
+            // marked. Every caller puts the beam down (ApplyVisibility) once the move is done.
             UpdateTowerLaserPosition();
         }
 
@@ -822,271 +854,123 @@ namespace JndUfo
             }
         }
 
-        // ── Skyline ──────────────────────────────────────────────────────────
+        // ── Scenery ──────────────────────────────────────────────────────────
 
-        void BuildSkyline()
+        /// <summary>
+        /// Builds the night city, the tower field, the foreground and the out-of-focus backdrop, once, for the
+        /// camera at rest and every pan it can make. They live on objects of their own at the scene root — not
+        /// under this one, which is the target tower itself and moves every round. Nothing here is rebuilt
+        /// between rounds: the city and the grass never change, and the field is only re-dealt (moved and
+        /// toggled) by <see cref="PlaceTowerAt"/>.
+        /// </summary>
+        void BuildScenery()
         {
-            foreach (var go in _skylineInstances)
-                if (go != null) Destroy(go);
-            _skylineInstances.Clear();
-            _skylineXOffsets.Clear();
-            _skylineYPositions.Clear();
-            _skylineZPositions.Clear();
+            Camera cam      = rig != null ? rig.ActiveCamera : Camera.main;
+            float  originX  = rig != null ? rig.OriginX : (cam != null ? cam.transform.position.x : 0f);
+            float  panRange = GameManager.Instance != null ? GameManager.Instance.cameraPanRange : 6f;
 
-            // Reset fog to visible position (never create here — creation is in Start).
-            if (_fogInstance != null)
+            if (_silhouetteMat == null)
             {
-                _fogInstance.transform.position = fogPosition;
-                ApplyFogFollow();   // re-centre immediately, so the reset never flashes off-camera
-                // fogScale would re-multiply the emission box and particle size that
-                // ConfigureFogBudget just set in absolute world units.
-                if (!optimizeFog) _fogInstance.transform.localScale = fogScale;
-                _currentFogAlpha = 1f;
-                PrewarmFog();
-                ClearBlastHomeStorage(); // defensive: PrewarmFog reseeds particles, so old tracking is stale
-            }
-
-            if (skylineBuildings == null || skylineBuildings.Length == 0 || totalBuildingCount <= 0) return;
-
-            // Measure tower half-width.
-            float towerHalfW = 0f;
-            if (tower != null && tower.renderers != null)
-            {
-                bool first = true;
-                Bounds tb = new Bounds();
-                foreach (var r in tower.renderers)
+                // Dark buildings backlit by the city (JndUfo/Tower): a rim of the city's glow and a
+                // sprinkling of lit windows, so the towers read as part of the skyline rather than as
+                // cut-outs. One material for every tower, the boundary's included. Falls back to a
+                // flat silhouette if the shader is unavailable.
+                Shader towerShader = Shader.Find("JndUfo/Tower");
+                bool   lit         = towerShader != null && towerShader.isSupported;
+                _silhouetteMat = new Material(lit ? towerShader : Shader.Find("Sprites/Default"))
                 {
-                    if (r == null) continue;
-                    if (first) { tb = r.bounds; first = false; }
-                    else tb.Encapsulate(r.bounds);
-                }
-                if (!first) towerHalfW = tb.size.x * 0.5f;
-            }
-
-            // Instantiate buildings round-robin, placed at origin for measurement.
-            var instances = new List<(GameObject go, float width, float height, float lcx, float lby)>();
-            for (int i = 0; i < totalBuildingCount; i++)
-            {
-                var entry = skylineBuildings[i % skylineBuildings.Length];
-                if (entry == null || entry.prefab == null) continue;
-
-                var go = Instantiate(entry.prefab);
-                go.transform.position = Vector3.zero;
-                go.transform.rotation = Quaternion.identity;
-                go.transform.SetParent(transform, true);
-
-                // Randomise scale before measuring so bounds reflect actual size.
-                float s = Random.Range(skylineScaleMin, skylineScaleMax);
-                go.transform.localScale *= s;
-
-                var rends = go.GetComponentsInChildren<Renderer>(true);
-                bool hasBounds = false;
-                Bounds b = new Bounds();
-                foreach (var r in rends)
-                {
-                    if (r == null) continue;
-                    if (!hasBounds) { b = r.bounds; hasBounds = true; }
-                    else b.Encapsulate(r.bounds);
-                }
-
-                float width  = hasBounds ? b.size.x   : 1f;
-                float height = hasBounds ? b.size.y   : 1f;
-                float lcx    = hasBounds ? b.center.x : 0f;
-                float lby    = hasBounds ? b.min.y    : 0f;
-                instances.Add((go, width, height, lcx, lby));
-            }
-
-            if (instances.Count == 0) return;
-
-            // Sort tallest first so the tallest buildings end up nearest the tower.
-            instances.Sort((a, b) => b.height.CompareTo(a.height));
-
-            // Alternate right/left, then shuffle each side independently for variety.
-            var rightList = new List<(GameObject go, float width, float height, float lcx, float lby)>();
-            var leftList  = new List<(GameObject go, float width, float height, float lcx, float lby)>();
-            for (int i = 0; i < instances.Count; i++)
-            {
-                if (i % 2 == 0) rightList.Add(instances[i]);
-                else            leftList.Add(instances[i]);
-            }
-            Shuffle(rightList);
-            Shuffle(leftList);
-
-            // Place right buildings (nearest tower first, extending right).
-            // Each building advances the edge by (1 - overlap) of its width so buildings cluster.
-            float rightEdge = towerHalfW + skylineTowerClearance;
-            foreach (var (go, width, _, lcx, lby) in rightList)
-            {
-                float cx      = rightEdge + width * 0.5f;
-                float xOffset = cx - lcx;
-                float yPos    = groundY - lby;
-                float zPos    = fixedZ + skylineZOffset + Random.Range(-skylineZVariance, skylineZVariance);
-                go.transform.position = new Vector3(xOffset, yPos, zPos);
-                _skylineInstances.Add(go);
-                _skylineXOffsets.Add(xOffset);
-                _skylineYPositions.Add(yPos);
-                _skylineZPositions.Add(zPos);
-                rightEdge += width * (1f - skylineXOverlap);
-            }
-
-            // Place left buildings (nearest tower first, extending left).
-            float leftEdge = -towerHalfW - skylineTowerClearance;
-            foreach (var (go, width, _, lcx, lby) in leftList)
-            {
-                float cx      = leftEdge - width * 0.5f;
-                float xOffset = cx - lcx;
-                float yPos    = groundY - lby;
-                float zPos    = fixedZ + skylineZOffset + Random.Range(-skylineZVariance, skylineZVariance);
-                go.transform.position = new Vector3(xOffset, yPos, zPos);
-                _skylineInstances.Add(go);
-                _skylineXOffsets.Add(xOffset);
-                _skylineYPositions.Add(yPos);
-                _skylineZPositions.Add(zPos);
-                leftEdge -= width * (1f - skylineXOverlap);
-            }
-
-            int foregroundCount = _skylineInstances.Count;
-
-            // Add background layer buildings (appends to _skylineInstances).
-            BuildBackgroundLayer();
-
-            // Collect renderers for all buildings (foreground + background).
-            _skylineRenderers = new Renderer[_skylineInstances.Count][];
-            for (int i = 0; i < _skylineInstances.Count; i++)
-                _skylineRenderers[i] = _skylineInstances[i].GetComponentsInChildren<Renderer>(true);
-
-            if (silhouetteMode)
-            {
-                if (_silhouetteMat == null)
-                    _silhouetteMat = new Material(Shader.Find("Sprites/Default"));
+                    name             = "TowerSilhouette",
+                    enableInstancing = true,
+                };
                 _silhouetteMat.color = silhouetteColor;
-
-                if (_backgroundSilhouetteMat == null)
-                    _backgroundSilhouetteMat = new Material(Shader.Find("Sprites/Default"));
-                _backgroundSilhouetteMat.color = backgroundSilhouetteColor;
-
-                for (int i = 0; i < _skylineInstances.Count; i++)
-                {
-                    Material mat = i < foregroundCount ? _silhouetteMat : _backgroundSilhouetteMat;
-                    if (_skylineRenderers[i] == null) continue;
-                    foreach (var r in _skylineRenderers[i])
-                    {
-                        if (r == null) continue;
-                        var mats = new Material[r.sharedMaterials.Length];
-                        for (int m = 0; m < mats.Length; m++) mats[m] = mat;
-                        r.sharedMaterials = mats;
-                    }
-                }
             }
+            if (_towerGlowMat == null)
+                _towerGlowMat = GlowMaterial.Create(GlowShape.Flat, Color.clear, 1f, "TowerReveal");
 
-            ShowSkyline();
+            if (city == null) city = new GameObject("City").AddComponent<CitySkyline>();
+            city.Build(cam, groundY, fixedZ, originX, panRange);
+
+            if (citySparks == null) citySparks = city.gameObject.AddComponent<CitySparks>();
+            citySparks.Build(city.DamageSites);
+
+            if (nightSky == null) nightSky = city.gameObject.AddComponent<NightSky>();
+            nightSky.Build(cam, originX, panRange);
+
+            if (towerField == null) towerField = new GameObject("TowerField").AddComponent<TowerField>();
+            var models = new List<GameObject>();
+            if (skylineBuildings != null)
+                foreach (SkylineBuilding b in skylineBuildings)
+                    if (b != null && b.prefab != null) models.Add(b.prefab);
+            towerField.Build(models, _silhouetteMat, _towerGlowMat, groundY, fixedZ, cam, originX, panRange);
+
+            if (foreground == null) foreground = new GameObject("Foreground").AddComponent<Foreground>();
+            foreground.Build(cam, originX, panRange, groundY, fixedZ);
+
+            if (weather == null) weather = new GameObject("Weather").AddComponent<Weather>();
+            weather.Build(cam, originX, panRange);
+
+            if (backdrop == null) backdrop = new GameObject("Backdrop").AddComponent<Backdrop>();
+            backdrop.Build(cam);
         }
 
-        void MoveSkylineToTower()
+        // Puts the fog bank back, whole and centred, for the next round. Only has work to do with groundFog on.
+        void ResetFog()
         {
-            if (tower == null) return;
-            float towerX = tower.BasePosition.x;
-
-            for (int i = 0; i < _skylineInstances.Count; i++)
-            {
-                if (_skylineInstances[i] == null) continue;
-                _skylineInstances[i].transform.position = new Vector3(
-                    towerX + _skylineXOffsets[i],
-                    _skylineYPositions[i],
-                    _skylineZPositions[i]);
-            }
-        }
-
-        // Fills in a second row of buildings at a further Z depth with a slightly lighter
-        // silhouette colour, creating the illusion of city depth behind the foreground row.
-        void BuildBackgroundLayer()
-        {
-            if (backgroundBuildingCount <= 0 || skylineBuildings == null || skylineBuildings.Length == 0) return;
-
-            float bgZ   = fixedZ + skylineZOffset + backgroundZOffset;
-            float step  = 64f / backgroundBuildingCount; // spread ±32 units around tower centre
-            float start = -32f;
-
-            for (int i = 0; i < backgroundBuildingCount; i++)
-            {
-                var entry = skylineBuildings[i % skylineBuildings.Length];
-                if (entry == null || entry.prefab == null) continue;
-
-                var go = Instantiate(entry.prefab);
-                go.transform.position = Vector3.zero;
-                go.transform.rotation = Quaternion.identity;
-                go.transform.SetParent(transform, true);
-
-                float s = Random.Range(skylineScaleMin, skylineScaleMax) * backgroundScaleMult;
-                go.transform.localScale *= s;
-
-                var rends = go.GetComponentsInChildren<Renderer>(true);
-                bool hasBounds = false;
-                Bounds b = new Bounds();
-                foreach (var r in rends)
-                {
-                    if (r == null) continue;
-                    if (!hasBounds) { b = r.bounds; hasBounds = true; }
-                    else b.Encapsulate(r.bounds);
-                }
-
-                float lcx = hasBounds ? b.center.x : 0f;
-                float lby = hasBounds ? b.min.y    : 0f;
-
-                float cx      = start + i * step + Random.Range(0f, step * 0.5f);
-                float xOffset = cx - lcx;
-                float yPos    = groundY - lby;
-                float zPos    = bgZ + Random.Range(-skylineZVariance * 0.4f, skylineZVariance * 0.4f);
-
-                go.transform.position = new Vector3(xOffset, yPos, zPos);
-
-                _skylineInstances.Add(go);
-                _skylineXOffsets.Add(xOffset);
-                _skylineYPositions.Add(yPos);
-                _skylineZPositions.Add(zPos);
-            }
-        }
-
-        // The skyline is never hidden by renderer toggling — the fog and cloud cover do the
-        // concealing — so this only ever re-enables. It used to take a `visible` flag that every
-        // call site passed `true` and the body ignored; dropped rather than left to mislead.
-        void ShowSkyline()
-        {
-            if (_skylineRenderers == null) return;
-            foreach (var rArr in _skylineRenderers)
-                if (rArr != null)
-                    foreach (var r in rArr)
-                        if (r != null) r.enabled = true;
+            if (_fogInstance == null) return;
+            _fogInstance.transform.position = fogPosition;
+            ApplyFogFollow();   // re-centre immediately, so the reset never flashes off-camera
+            // fogScale would re-multiply the emission box and particle size that
+            // ConfigureFogBudget just set in absolute world units.
+            if (!optimizeFog) _fogInstance.transform.localScale = fogScale;
+            _currentFogAlpha = 1f;
+            PrewarmFog();
+            ClearBlastHomeStorage(); // defensive: PrewarmFog reseeds particles, so old tracking is stale
         }
 
         // ── Visibility helpers ───────────────────────────────────────────────
+        //
+        // The boundary is shown by the field's tower that stands on it, lit by the reveal: it glows in step
+        // with the beam (SetTowerLaserAlpha drives both), so it brightens as the reveal opens and dims with
+        // the beam under the veil afterwards — both still over the boundary they marked while the next
+        // round's row fades in. The scene's own target tower stays hidden throughout.
 
         public void ShowTower()
         {
-            ApplyTowerSilhouette();
-            if (tower != null) tower.SetVisible(true);
+            if (tower != null) tower.SetVisible(false);
             if (cloud != null) cloud.Reveal();
-            ShowSkyline();
+            DriveTowerGlow(1f);
         }
 
         public void HideTowerNormal()
         {
-            ApplyTowerSilhouette();
-            if (tower != null) tower.SetVisible(true);
+            if (tower != null) tower.SetVisible(false);
             if (!debugForceVisible)
             {
                 if (cloud != null) cloud.Obscure();
             }
-            ShowSkyline();
         }
 
         public void ApplyVisibility()
         {
-            ApplyTowerSilhouette();
-            if (tower != null) tower.SetVisible(true);
+            if (tower != null) tower.SetVisible(false);
             if (cloud != null) cloud.Obscure();
-            ShowSkyline();
             SetTowerLaserAlpha(0f);
+        }
+
+        // The boundary tower's reveal glow at reveal level a (0..1).
+        void DriveTowerGlow(float a)
+        {
+            if (towerField == null) return;
+            bool on = a > 0.001f;
+            if (on && _towerGlowMat != null)
+            {
+                // Modest: the whole tower adds this much light, and its overlapping parts add up, so
+                // anything brighter burns out to a white block under the bloom.
+                Color c = towerLaserColor;
+                float k = 0.55f * a;
+                GlowMaterial.SetColor(_towerGlowMat, new Color(c.r * k, c.g * k, c.b * k, a));
+            }
+            towerField.SetBoundaryHighlight(on);
         }
 
         void SetDebugVisible(bool show)
@@ -1276,35 +1160,6 @@ namespace JndUfo
             }
         }
 
-        void CacheTowerRenderers()
-        {
-            if (tower == null) return;
-            _towerRenderers = tower.renderers;
-        }
-
-        void ApplyTowerSilhouette()
-        {
-            if (_towerRenderers == null || _silhouetteMat == null) return;
-            foreach (var r in _towerRenderers)
-            {
-                if (r == null) continue;
-                r.enabled = true;
-                r.SetPropertyBlock(null);
-                var mats = new Material[r.sharedMaterials.Length];
-                for (int m = 0; m < mats.Length; m++) mats[m] = _silhouetteMat;
-                r.sharedMaterials = mats;
-            }
-        }
-
-        static void Shuffle<T>(List<T> list)
-        {
-            for (int i = list.Count - 1; i > 0; i--)
-            {
-                int j = Random.Range(0, i + 1);
-                T tmp = list[i]; list[i] = list[j]; list[j] = tmp;
-            }
-        }
-
         void SyncZ()
         {
             if (ufoRef != null) fixedZ = ufoRef.fixedZ;
@@ -1312,6 +1167,7 @@ namespace JndUfo
 
         void EnsureHitMarker()
         {
+            if (!legacyHitPrefabs) return;
             if (hitParticlePrefab != null && _hitParticleInstance == null)
             {
                 _hitParticleInstance = Instantiate(hitParticlePrefab);
@@ -1350,17 +1206,23 @@ namespace JndUfo
 
         // ── Tower laser helpers ──────────────────────────────────────────────
 
+        // The reveal's lines are soft additive light (GlowMaterial, falloff across their width), so they
+        // are drawn several times wider than the nominal widths above: the bright core reads at about
+        // the nominal width and the rest is glow.
+        const float BeamGlowWidth = 6f;
+        const float ZoneGlowWidth = 4f;
+
         void EnsureTowerLaser()
         {
-            if (_towerLaser      == null) _towerLaser      = MakeLaserLine("TowerLaser", towerLaserWidth * 2f);
-            if (_towerLaserZoneLeft  == null) _towerLaserZoneLeft  = MakeLaserLine("ZoneLeft",  hitZoneBorderWidth);
-            if (_towerLaserZoneRight == null) _towerLaserZoneRight = MakeLaserLine("ZoneRight", hitZoneBorderWidth);
+            if (_towerLaser          == null) _towerLaser          = MakeLaserLine("TowerLaser", towerLaserWidth * BeamGlowWidth, 2.4f);
+            if (_towerLaserZoneLeft  == null) _towerLaserZoneLeft  = MakeLaserLine("ZoneLeft",  hitZoneBorderWidth * ZoneGlowWidth, 1.6f);
+            if (_towerLaserZoneRight == null) _towerLaserZoneRight = MakeLaserLine("ZoneRight", hitZoneBorderWidth * ZoneGlowWidth, 1.6f);
 
             SetTowerLaserAlpha(0f);
             UpdateTowerLaserPosition();
         }
 
-        LineRenderer MakeLaserLine(string goName, float width)
+        LineRenderer MakeLaserLine(string goName, float width, float intensity)
         {
             var go = new GameObject(goName);
             go.transform.SetParent(transform, false);
@@ -1369,20 +1231,40 @@ namespace JndUfo
             lr.useWorldSpace      = true;
             lr.widthMultiplier    = width;
             lr.numCapVertices     = 4;
+            lr.alignment          = LineAlignment.View;
+            lr.textureMode        = LineTextureMode.Stretch;
             lr.shadowCastingMode  = UnityEngine.Rendering.ShadowCastingMode.Off;
             lr.receiveShadows     = false;
-            lr.material           = new Material(Shader.Find("Sprites/Default"));
+            lr.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+            // White at HDR intensity: the line's own start/end colours carry the hue and the fade.
+            lr.sharedMaterial     = GlowMaterial.Create(GlowShape.Line, new Color(intensity, intensity, intensity, 1f),
+                                                        1.4f, goName);
             return lr;
         }
 
+        // The beam stands over the boundary it was raised for until it is down again: the reset deals the
+        // next round while the last reveal's beam is still fading out, and it must fade where it was.
+        bool BeamDown => _prevAlpha <= 0.001f;
+
+        // Stands the beam and the zone lines over the boundary — unless the beam is still up, when they
+        // stay over the tower they mark.
         void UpdateTowerLaserPosition()
         {
-            if (_towerLaser == null) return;
-            Vector3 basePos = TowerBase;
-            Vector3 top     = basePos + Vector3.up * towerLaserHeight;
-            _towerLaser.SetPosition(0, basePos);
-            _towerLaser.SetPosition(1, top);
-            ApplySpreadPositions(basePos, top, _spreadProgress);
+            if (_towerLaser == null || !BeamDown) return;
+            _beamBase   = TowerBase;
+            Vector3 top = _beamBase + Vector3.up * towerLaserHeight;
+            _towerLaser.SetPosition(0, _beamBase);
+            _towerLaser.SetPosition(1, _beamBase + Vector3.up * (towerLaserHeight * Mathf.Max(0.001f, _beamRise)));
+            ApplySpreadPositions(_beamBase, top, _spreadProgress);
+        }
+
+        void OnDestroy()
+        {
+            if (_silhouetteMat != null) Destroy(_silhouetteMat);
+            if (_towerGlowMat  != null) Destroy(_towerGlowMat);
+            if (_towerLaser          != null) Destroy(_towerLaser.sharedMaterial);
+            if (_towerLaserZoneLeft  != null) Destroy(_towerLaserZoneLeft.sharedMaterial);
+            if (_towerLaserZoneRight != null) Destroy(_towerLaserZoneRight.sharedMaterial);
         }
 
         // Positions the two zone lines at the current spread progress (0=center, 1=boundary).
@@ -1393,13 +1275,13 @@ namespace JndUfo
             {
                 _towerLaserZoneLeft.SetPosition(0, basePos - offset);
                 _towerLaserZoneLeft.SetPosition(1, top    - offset);
-                _towerLaserZoneLeft.widthMultiplier = hitZoneBorderWidth;
+                _towerLaserZoneLeft.widthMultiplier = hitZoneBorderWidth * ZoneGlowWidth;
             }
             if (_towerLaserZoneRight != null)
             {
                 _towerLaserZoneRight.SetPosition(0, basePos + offset);
                 _towerLaserZoneRight.SetPosition(1, top    + offset);
-                _towerLaserZoneRight.widthMultiplier = hitZoneBorderWidth;
+                _towerLaserZoneRight.widthMultiplier = hitZoneBorderWidth * ZoneGlowWidth;
             }
         }
 
@@ -1407,9 +1289,20 @@ namespace JndUfo
         {
             if (_towerLaser == null) return;
 
+            // The boundary tower lights up with the reveal whether or not the beam is shown.
+            DriveTowerGlow(alpha);
+
             // Every path that drives the beam comes through here, so this one line is enough to
             // keep it down for a whole block — and it still reaches the zone-line reset below.
             if (!showTowerBeam) alpha = 0f;
+
+            // The beam shoots up out of the tower as the reveal opens (ease-out), and sinks back as it
+            // closes — over the boundary it rose for (see BeamDown).
+            UpdateTowerLaserPosition();
+            _beamRise = 1f - (1f - alpha) * (1f - alpha);
+            Vector3 b0 = _beamBase;
+            _towerLaser.SetPosition(0, b0);
+            _towerLaser.SetPosition(1, b0 + Vector3.up * (towerLaserHeight * Mathf.Max(0.001f, _beamRise)));
 
             // Main laser — bright, full alpha
             Color mc = towerLaserColor;
@@ -1449,7 +1342,7 @@ namespace JndUfo
         {
             if (_spreadCoroutine != null) { StopCoroutine(_spreadCoroutine); _spreadCoroutine = null; }
             _spreadProgress = 0f;
-            Vector3 base0 = TowerBase;
+            Vector3 base0 = _beamBase;
             ApplySpreadPositions(base0, base0 + Vector3.up * towerLaserHeight, 0f);
         }
 
@@ -1465,7 +1358,7 @@ namespace JndUfo
                 float t         = Mathf.Clamp01(elapsed / zoneSpreadDuration);
                 float eased     = 1f - (1f - t) * (1f - t); // ease-out quad
                 _spreadProgress = eased;
-                Vector3 b = TowerBase;
+                Vector3 b = _beamBase;
                 ApplySpreadPositions(b, b + Vector3.up * towerLaserHeight, eased);
                 yield return null;
             }
@@ -1494,7 +1387,7 @@ namespace JndUfo
         public void RefreshHitZone()
         {
             EnsureTowerLaser();
-            Vector3 basePos = TowerBase;
+            Vector3 basePos = _beamBase;
             ApplySpreadPositions(basePos, basePos + Vector3.up * towerLaserHeight, _spreadProgress);
             SetTowerLaserAlpha(_currentFogAlpha > 0.01f ? 0f : 1f - _currentFogAlpha);
         }

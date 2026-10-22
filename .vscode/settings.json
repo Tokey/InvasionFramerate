@@ -66,5 +66,5 @@
     "explorer.fileNesting.patterns": {
         "*.sln": "*.csproj"
     },
-    "dotnet.defaultSolution": "Invasion Framerate.slnx"
+    "dotnet.defaultSolution": "InvasionFramerate.slnx"
 }

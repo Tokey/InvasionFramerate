@@ -174,15 +174,23 @@ namespace JndUfo
 
             if (live) Overlay?.ShowGateHold();
 
-            // 7. Fog returns, skybox spins and the camera pans, all at once under the veil. The tower
-            //    is placed only AFTER the pan — MoveTowerToRandomPosition picks its X from the
-            //    camera's current viewport, so placing it earlier would let the pan re-centre it.
+            // 7. One change of scene, under the veil: the camera pans to a fresh vantage point while
+            //    the reveal fades out and the skybox turns, and the next round is dealt as the pan
+            //    begins, so the old row of towers dissolves into the new one during the pan instead
+            //    of after it. The tower's X is drawn from the spawn band of the view the pan lands on,
+            //    exactly as when it was placed after the pan. The random draws keep their order:
+            //    spin direction, pan target, tower position. With the legacy ground fog the change
+            //    hides in the fog instead, and the tower moves once the fog has closed.
             float spinDir = Random.value > 0.5f ? 1f : -1f;
+            CameraRig rig = PanRig;
+            float panX    = rig != null ? rig.OriginX + Random.Range(-cameraPanRange, cameraPanRange) : 0f;
+            bool  inFog   = towerManager.groundFog;
+            if (!inFog) towerManager.MoveTowerToRandomPosition(rig != null ? panX - rig.RestX : 0f);
             StartCoroutine(SpinSkybox(skyboxSpinAmount * spinDir, fogRestoreDuration));
             Coroutine fogReturn = StartCoroutine(towerManager.FadeFog(1f, fogRestoreDuration));
-            yield return StartCoroutine(PanScene());
+            yield return StartCoroutine(PanScene(rig, panX));
             yield return fogReturn;
-            towerManager.MoveTowerToRandomPosition();
+            if (inFog) towerManager.MoveTowerToRandomPosition();
             towerManager.ApplyVisibility();
 
             // Don't hand firing back if the phase closed while this reveal was playing. The UFO
@@ -274,17 +282,25 @@ namespace JndUfo
             }
         }
 
-        /// <summary>
-        /// Slides the camera to a fresh vantage point between rounds, with crossing counting
-        /// suppressed throughout. The target is a random offset around the rig's ORIGIN, never the
-        /// tower, so the tower cannot land at the centre of the screen every round and the view
-        /// cannot random-walk away over a long session. The UFO is carried with the camera so it
-        /// holds its place on screen.
-        /// </summary>
-        IEnumerator PanScene()
+        // The rig the reset pans, if there is one.
+        CameraRig PanRig
         {
-            CameraRig rig = towerManager != null ? towerManager.rig : null;
-            if (rig == null) rig = CameraRig.Instance;
+            get
+            {
+                CameraRig rig = towerManager != null ? towerManager.rig : null;
+                return rig != null ? rig : CameraRig.Instance;
+            }
+        }
+
+        /// <summary>
+        /// Slides the camera to <paramref name="targetX"/> between rounds, with crossing counting
+        /// suppressed throughout. The caller draws the target as a random offset around the rig's
+        /// ORIGIN, never the tower, so the tower cannot land at the centre of the screen every round
+        /// and the view cannot random-walk away over a long session. The UFO is carried with the
+        /// camera so it holds its place on screen.
+        /// </summary>
+        IEnumerator PanScene(CameraRig rig, float targetX)
+        {
             if (rig == null) yield break;
 
             if (perturbation != null) perturbation.SuppressCrossings = true;
@@ -296,8 +312,6 @@ namespace JndUfo
 
             try
             {
-                float targetX = rig.OriginX + Random.Range(-cameraPanRange, cameraPanRange);
-
                 bool panning = true;
                 StartCoroutine(RunPan(rig, targetX, () => panning = false));
 

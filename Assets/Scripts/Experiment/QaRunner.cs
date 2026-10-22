@@ -20,8 +20,15 @@ namespace JndUfo
     ///       came in late at each rate, and how much of every frame was spare. About 90 seconds.
     ///   Invasion.exe -jndCapture [folder]
     ///       Plays the end-of-round reveal with the tower at a sweep of screen positions, edges
-    ///       included, and saves screenshots of each one as it unfolds: the fog parting, the frame
-    ///       rates landing, the fog coming back.
+    ///       included, and saves screenshots of each one as it unfolds: the shot, the boundary tower
+    ///       lighting up, the frame rates landing, the reset under the veil. First, the camera's
+    ///       parallax swing: the UFO held at the left edge, the right edge and the middle; then five
+    ///       frames 0.2 s apart with the UFO still, to see the scene's own motion.
+    ///
+    /// Either can be run with parts of the scene switched off, to see what each costs or how the
+    /// scene looks without it: -jndNoBackdrop (the city drawn in focus, by the main camera),
+    /// -jndNoForeground (no grass), -jndNoParallax (no camera swing). The benchmark's report lists
+    /// the switches it ran with.
     ///
     /// Neither is a session. ExperimentDirector stands down — no participant number is taken,
     /// nothing is written under Data/Logs, no prompts — and the rounds are driven from here
@@ -91,6 +98,7 @@ namespace JndUfo
         List<StudyConfig>      _blocks;
         string                 _dir;
         float                  _shotAt;
+        float                  _queuedVx = float.NaN;   // the spot the coming reset was asked to deal
 
         IEnumerator Start()
         {
@@ -129,12 +137,39 @@ namespace JndUfo
             // clock never arms.
             _laser.SetFiringEnabled(false);
             _ufo.FreezeMovement = true;
+            ApplySwitches();
 
-            Debug.Log($"[QaRunner] {s_mode} → {_dir}");
+            Debug.Log($"[QaRunner] {s_mode} → {_dir}{(Switches.Length > 0 ? " with" + Switches : "")}");
             if (s_mode == RunMode.Benchmark) yield return Benchmark();
             else                             yield return Capture();
 
             Application.Quit(0);
+        }
+
+        // ── Scene switches ───────────────────────────────────────────────────
+
+        static bool HasArg(string arg) => Array.IndexOf(Environment.GetCommandLineArgs(), arg) >= 0;
+
+        // The switches given, for the log and the report: " -jndNoBackdrop -jndNoParallax", or "".
+        static string Switches
+        {
+            get
+            {
+                var sb = new StringBuilder();
+                foreach (string a in new[] { "-jndNoBackdrop", "-jndNoForeground", "-jndNoParallax" })
+                    if (HasArg(a)) sb.Append(' ').Append(a);
+                return sb.ToString();
+            }
+        }
+
+        static void ApplySwitches()
+        {
+            if (HasArg("-jndNoBackdrop"))
+                foreach (Backdrop b in FindObjectsByType<Backdrop>()) b.blur = false;
+            if (HasArg("-jndNoForeground"))
+                foreach (Foreground f in FindObjectsByType<Foreground>()) f.grass = false;
+            if (HasArg("-jndNoParallax") && CameraRig.Instance != null)
+                CameraRig.Instance.parallax = false;
         }
 
         // ── Driving the game ─────────────────────────────────────────────────
@@ -156,9 +191,12 @@ namespace JndUfo
         /// sweeps back and forth across the tower and settles over the aim point, and the real laser
         /// fires — GameManager scores the shot and runs the reveal exactly as in a session.
         /// <paramref name="practice"/> fixes the two rates (a practice pair); default lets QUEST+
-        /// choose, as in a main block.
+        /// choose, as in a main block. With <paramref name="nextTowerVx"/> the reset this shot starts
+        /// deals the next round's tower there, during its pan, as a session's reset deals it — so the
+        /// next round finds its tower in place and the scene changes once between rounds, not twice.
         /// </summary>
-        IEnumerator PlayRound(float towerVx, float aimVx, float flySec, PracticePair practice)
+        IEnumerator PlayRound(float towerVx, float aimVx, float flySec, PracticePair practice,
+                              float nextTowerVx = float.NaN)
         {
             while (_game.IsRevealing) yield return null;   // the last reveal, fog return and pan
 
@@ -166,8 +204,16 @@ namespace JndUfo
             _ufo.FreezeMovement = true;
             _ufo.SetHidden(false);
 
-            _tower.MoveTowerToViewportX(towerVx);
-            _tower.ApplyVisibility();
+            // Placed already if the last reset dealt the spot it was asked for (the request is cleared
+            // once used); otherwise placed here.
+            bool dealt = _queuedVx == towerVx && !_tower.NextViewportX.HasValue;
+            _tower.NextViewportX = null;
+            _queuedVx = float.NaN;
+            if (!dealt)
+            {
+                _tower.MoveTowerToViewportX(towerVx);
+                _tower.ApplyVisibility();
+            }
             _split.SetPractice(practice.highFps > 0, practice);
             _split.ResetSideTracking();
             _split.BeginTrial();
@@ -183,6 +229,11 @@ namespace JndUfo
             PlaceUfo(aimVx);
             yield return null;   // the side it settled on is taken in this frame's LateUpdate
 
+            if (!float.IsNaN(nextTowerVx))
+            {
+                _tower.NextViewportX = nextTowerVx;
+                _queuedVx            = nextTowerVx;
+            }
             _shotAt = Time.realtimeSinceStartup;
             _laser.Fire();
         }
@@ -205,6 +256,8 @@ namespace JndUfo
         IEnumerator Capture()
         {
             BeginBlock(_blocks[0]);
+            yield return ParallaxShots();
+            yield return MotionShots();
 
             var cases = new (string name, PracticePair pair)[]
             {
@@ -214,16 +267,23 @@ namespace JndUfo
             };
             // The game's spawn range runs 0.10–0.90 and never past 0.05–0.95.
             float[] spots   = { 0.10f, 0.90f, 0.05f, 0.95f, 0.30f, 0.50f, 0.75f };
-            // After the shot: the fog parting, then the frame rates landing and settling.
+            // After the shot: the tower lighting up, then the frame rates landing and settling.
             float[] moments = { 0.05f, 0.12f, 0.25f, 0.5f, 1.0f, 2.0f };
-            // After the reveal hides: the fog coming back under the reset veil.
-            float[] returns = { 0.15f, 0.35f, 0.7f };
+            // After the reveal hides: the reset under the veil — before the pan, through the pan and the
+            // towers' crossfade, and the GO! beat after.
+            float[] returns = { 0.05f, 0.15f, 0.25f, 0.35f, 0.5f, 0.7f };
 
-            int saved = 0;
+            var rounds = new List<(string name, PracticePair pair, float vx)>();
             foreach (var c in cases)
             foreach (float vx in spots)
+                rounds.Add((c.name, c.pair, vx));
+
+            int saved = 0;
+            for (int i = 0; i < rounds.Count; i++)
             {
-                yield return PlayRound(vx, vx, 1.4f, c.pair);
+                var   c  = rounds[i];
+                float vx = c.vx;
+                yield return PlayRound(vx, vx, 1.4f, c.pair, i + 1 < rounds.Count ? rounds[i + 1].vx : float.NaN);
                 float shotAt = _shotAt;
 
                 foreach (float m in moments)
@@ -244,6 +304,43 @@ namespace JndUfo
 
             while (_game.IsRevealing) yield return null;
             Debug.Log($"[QaRunner] {saved} screenshot(s) in {_dir}");
+        }
+
+        // The camera's parallax swing (CameraRig), before the first round: the UFO held at the left edge of
+        // the screen, then the right, then the middle, each long enough for the swing to settle.
+        IEnumerator ParallaxShots()
+        {
+            _ufo.FreezeMovement = true;
+            _ufo.SetHidden(false);
+            float[] spots = { 0.08f, 0.92f, 0.5f };
+            foreach (float vx in spots)
+            {
+                for (float until = Time.realtimeSinceStartup + 2.5f; Time.realtimeSinceStartup < until; )
+                {
+                    PlaceUfo(vx);
+                    yield return null;
+                }
+                yield return SaveScreenshot(string.Format(CultureInfo.InvariantCulture, "{0}x{1}_parallax_{2:0.00}.png",
+                                                          Screen.width, Screen.height, vx));
+            }
+        }
+
+        // The scene's own motion with nothing else moving: the UFO held in the middle, five frames a fifth of
+        // a second apart — the grass in the wind, the windows, the aurora, the searchlights.
+        IEnumerator MotionShots()
+        {
+            float t0 = Time.realtimeSinceStartup;
+            for (int k = 0; k < 5; k++)
+            {
+                float at = t0 + 0.2f * k;
+                while (Time.realtimeSinceStartup < at)
+                {
+                    PlaceUfo(0.5f);
+                    yield return null;
+                }
+                yield return SaveScreenshot(string.Format(CultureInfo.InvariantCulture, "{0}x{1}_motion_{2:0.0}.png",
+                                                          Screen.width, Screen.height, 0.2f * k));
+            }
         }
 
         static string Name(float vx, string caseName, string phase, float sec) =>
@@ -342,13 +439,16 @@ namespace JndUfo
             _phaseNames.Add(label);
             _phase = _phaseNames.Count - 1;
 
+            // Anywhere in the spawn range; half the shots on the tower, half a clear miss. Each round's
+            // spot is drawn a round ahead, so the reset before it can deal it.
             float end = Time.realtimeSinceStartup + seconds;
+            float vx  = UnityEngine.Random.Range(0.12f, 0.88f);
             while (Time.realtimeSinceStartup < end)
             {
-                // Anywhere in the spawn range; half the shots on the tower, half a clear miss.
-                float vx  = UnityEngine.Random.Range(0.12f, 0.88f);
-                float aim = UnityEngine.Random.value < 0.5f ? vx : vx + (vx < 0.5f ? 0.2f : -0.2f);
-                yield return PlayRound(vx, aim, 2.5f, default);
+                float aim  = UnityEngine.Random.value < 0.5f ? vx : vx + (vx < 0.5f ? 0.2f : -0.2f);
+                float next = UnityEngine.Random.Range(0.12f, 0.88f);
+                yield return PlayRound(vx, aim, 2.5f, default, next);
+                vx = next;
             }
             while (_game.IsRevealing) yield return null;
             _phase = -1;
@@ -384,6 +484,7 @@ namespace JndUfo
               .Append(Screen.currentResolution.refreshRateRatio.value.ToString("0.##", inv)).Append(" Hz, ")
               .Append(Screen.fullScreenMode).Append(", quality level ")
               .Append(QualitySettings.names[QualitySettings.GetQualityLevel()]).Append('\n');
+            if (Switches.Length > 0) sb.Append("# switches:").Append(Switches).Append('\n');
             sb.Append("# late = a frame that took longer than its cap's period + 0.05 ms. busy = delta minus ")
               .Append("the limiter's wait: the time the game needed. spare = period minus busy.\n");
             sb.Append("phase,pace,frames,cap_fps,mean_fps,p50_ms,p99_ms,p999_ms,max_ms,late_frames,late_pct,")

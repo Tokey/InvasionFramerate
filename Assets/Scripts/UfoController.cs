@@ -11,6 +11,11 @@ namespace JndUfo
     /// single raycast to establish an initial position; every subsequent frame it
     /// moves by the delta between consecutive delayed/accelerated screen positions
     /// converted to world space at the fixedZ plane.
+    ///
+    /// The ship's life (its spin, bank, squash-and-stretch and trails) is <see cref="UfoFlair"/>,
+    /// added in Awake. It animates child transforms only: this transform, the one the split, the
+    /// score and the logs all read, it never touches, and the belly turret the shot leaves from
+    /// stays out of its rig.
     /// </summary>
     [RequireComponent(typeof(InputLatencyBuffer))]
     public class UfoController : MonoBehaviour
@@ -27,6 +32,12 @@ namespace JndUfo
         [Header("Fixed Depth")]
         [Tooltip("World Z the UFO is locked to. Must match TowerManager.fixedZ.")]
         public float fixedZ = 0f;
+
+        [Header("Size")]
+        [Tooltip("The ship's size, as a multiple of its scale in the scene, applied once at start. The hull, " +
+                 "its turret and its trails all grow with it; the sight stays a hairline. Only the look " +
+                 "changes: the flight envelope, the shot and the score all go by the ship's centre.")]
+        [Range(0.5f, 2f)] public float size = 1.3f;
 
         [Header("Livery")]
         [Tooltip("Recolour the UFO in the laser's teal, so the ship, its sight and its shot read as " +
@@ -110,6 +121,13 @@ namespace JndUfo
         {
             _input = GetComponent<InputLatencyBuffer>();
             if (rig == null) rig = CameraRig.Instance;
+
+            // Before UfoFlair, which builds its rig from the ship's scale as it then stands.
+            transform.localScale *= size;
+
+            // Here rather than in Start: UfoFlair moves the hull into its rig in its own Awake, and
+            // the livery (Start, below) has to find the hull where it now draws.
+            if (GetComponent<UfoFlair>() == null) gameObject.AddComponent<UfoFlair>();
         }
 
         // Start, not Awake: the tint cache walks the ship's renderers, and the muzzle's own children
@@ -159,7 +177,9 @@ namespace JndUfo
         }
 
         // The flight envelope: X from the viewport's edges, Y between the floor and either the
-        // configured ceiling or just under the top of the view.
+        // configured ceiling or just under the top of the view. The ship's centre reaches either edge,
+        // so at the side of the screen half the ship is out of view, as a craft flying past would be.
+        // GuessRateCalculator assumes this band: change one, change the other.
         Vector3 Clamped(Camera cam, Vector3 pos)
         {
             float ceilY = maxY > 0f
@@ -171,8 +191,8 @@ namespace JndUfo
             float minX, maxX;
             if (cam != null)
             {
-                Vector3 lw = CameraRig.ViewportPointAtZ(cam, 0.02f, 0.5f, fixedZ);
-                Vector3 rw = CameraRig.ViewportPointAtZ(cam, 0.98f, 0.5f, fixedZ);
+                Vector3 lw = CameraRig.ViewportPointAtZ(cam, 0f, 0.5f, fixedZ);
+                Vector3 rw = CameraRig.ViewportPointAtZ(cam, 1f, 0.5f, fixedZ);
                 minX = Mathf.Min(lw.x, rw.x);
                 maxX = Mathf.Max(lw.x, rw.x);
             }

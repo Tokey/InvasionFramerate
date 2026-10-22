@@ -2,7 +2,7 @@
 
 A small Unity game I built to measure how big a **frame-rate difference** has to be before people notice it. In research terms that's the **JND**, the just-noticeable difference. The game finds each person's threshold on its own, using an adaptive method called **QUEST+**.
 
-You fly a UFO with the mouse over a foggy city. A radio tower is hidden in the fog, and it splits the city in two: on one side of it the game runs at one frame rate, on the other side at a different one. Your job is to find where the motion changes and shoot the tower.
+You fly a UFO with the mouse over a city at night. One of the towers standing in front of the skyline splits the city in two: on one side of it the game runs at one frame rate, on the other side at a different one. Any tower can be the one, and they all look alike, so the only way to find it is by the motion. Your job is to find where the motion changes and shoot that tower.
 
 > The previous version of this project measured frame-time **stutters** with two weapons (laser and shockwave). That study is in the git history up to commit `a61a84f`.
 
@@ -27,7 +27,7 @@ You fly a UFO with the mouse over a foggy city. A radio tower is hidden in the f
 - A **Windows PC that can actually hold every frame rate in the config**, 500 fps included. The frame rate *is* the stimulus: if the machine only manages 340 fps, a "500 vs 400" round shows no difference at all. The Editor adds a lot of overhead (the stutter study's Editor sessions only reached ~300–360 fps at a 500 cap), so check a **build**. The logs record what each side really got (see `baseSideMeasuredFps` and `measuredBaseFps` / `measuredAlteredFps`), and the Console warns at the end of any block that fell short.
 - A **monitor fast enough for the rates you're testing**: 500 Hz for this config. vSync is off, so frames above the display's refresh rate show up as tearing rather than smoother motion. At startup the Console warns about any block that asks for more than the connected display can show, and the session log records the refresh rate as `displayHz`.
 - A **16:9 monitor**. The chance level (see `guessRate`) is worked out for 16:9.
-- A mouse.
+- A mouse that reports at **1000 Hz or more** (most gaming mice; it's set in the mouse's own software). The UFO moves by the mouse's reports, so at 500 fps a standard 125 Hz office mouse would move it only every fourth frame, in steps, whatever the game renders. At 1000 Hz every frame gets fresh movement.
 - **Python 3**, but only for the analysis scripts. Builds bring their own Python for the post-session database. The DB is created from the CSV so this is non-critical.
 
 ## Setup
@@ -150,9 +150,9 @@ This is what `Data/ExperimentConfig.csv` holds in this repo, and what the game w
 
 ```
 baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD
-60,down,50,1,1,random,precise,0,15,100,-10,50,1,7,10,0,0.06,4,0.244,50,8,2
-144,down,120,2,2,random,precise,0,15,100,-10,50,1,7,10,0,0.06,4,0.244,50,8,5
-500,down,415,5,5,random,precise,0,15,100,-10,50,1,7,10,0,0.06,4,0.244,50,8,17
+60,down,50,1,1,random,unity,0,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,2
+144,down,120,2,2,random,unity,0,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,5
+500,down,415,5,5,random,unity,0,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,17
 ```
 
 ### Columns
@@ -167,7 +167,7 @@ baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,max
 | `minDiffFps` | The smallest Δ QUEST+ may use, and the bottom of its threshold range. | 1 / 2 / 5 |
 | `diffStepFps` | Spacing of the Δ values QUEST+ may use: `minDiffFps`, `minDiffFps + step`, … up to `maxDiffFps`, an exactly even grid. `maxDiffFps − minDiffFps` should be a multiple of it; if not, the game pulls `maxDiffFps` down onto the grid and says so. | 1 / 2 / 5 |
 | `alteredSide` | Which side of the tower is altered: `random` (drawn every round), `left` or `right`. | random |
-| `frameLimiter` | How the frame rate is enforced: `precise` or `unity`. See [The frame limiter](#the-frame-limiter). | precise |
+| `frameLimiter` | How the frame rate is enforced: `unity` or `precise`. See [The frame limiter](#the-frame-limiter). | unity |
 
 **Round limits** (keep at least one of them above 0, or a round could run forever)
 
@@ -192,7 +192,7 @@ QUEST+ keeps a big table of possible answers for each participant and picks the 
 | `threshCount` | How many threshold values it considers, spread over the same range. | 50 |
 | `slopeMin`, `slopeMax`, `slopeCount` | How sharply noticing goes from "never" to "always". | 1 – 7, 10 values |
 | `lapseMin`, `lapseMax`, `lapseCount` | How often people miss even huge differences (blinks, attention). | 0 – 0.06, 4 values |
-| `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | 0.244 |
+| `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | 0.235 |
 | `maxTrials` | Most main rounds in one block. | 50 |
 | `minTrials` | No early stop before this many rounds. | 8 |
 | `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in fps) is at or below this. About 4% of the Δ range on every row, so the three blocks ask for the same relative precision. | 2 / 5 / 17 |
@@ -224,16 +224,26 @@ round,fpsA,fpsB
 
 The `frameLimiter` column picks how each frame-rate cap is enforced, per row:
 
-- **`precise`** (default): a busy-wait hooked into the very start of Unity's frame, the same place Unity's own limiter waits, before time is sampled and before input events are processed. Each frame is released exactly one period after the previous one, so frame times land within microseconds of the target, and it adds no input lag beyond what any frame cap implies. The cost: one CPU core runs at 100% while it waits. That's fine on a lab PC.
-- **`unity`**: `Application.targetFrameRate`, Unity's own limiter, as the stutter study used. In the stutter study's Editor logs it held 60 fps frames to about ±0.6 ms.
+- **`unity`** (default): `Application.targetFrameRate`, Unity's own limiter, as the stutter study used. In the stutter study's Editor logs it held 60 fps frames to about ±0.6 ms.
+- **`precise`**: a busy-wait hooked into the very start of Unity's frame, the same place Unity's own limiter waits, before time is sampled and before input events are processed. Each frame is released exactly one period after the previous one, so frame times land within microseconds of the target, and it adds no input lag beyond what any frame cap implies. The cost: one CPU core runs at 100% while it waits. That's fine on a lab PC.
 
-Either way vSync is off. To compare them, run the same row twice with different limiters and look at `baseFrameTimeSdMs` / `alteredFrameTimeSdMs`.
+Either way vSync is off. To compare them, run the same row twice with different limiters and look at `baseFrameTimeSdMs` / `alteredFrameTimeSdMs`, or run `Invasion.exe -jndBenchmark` once per setting (edit the build's own `Data/ExperimentConfig.csv` in between). Add `-jndNoBackdrop`, `-jndNoForeground` or `-jndNoParallax` to benchmark (or `-jndCapture`) without that part of the scene and see what it costs.
+
+Measured on the dev PC (i9-9900K, RTX 3080, windowed 1600×900, `-jndBenchmark`), same build, 500 fps block, base side, debug readout off as a participant has it:
+
+| | `unity` | `precise` |
+|---|---|---|
+| Mean frame rate delivered | 491.5 fps | 499.9 fps |
+| 99th-percentile frame time | 2.53 ms | 2.01 ms |
+| Frames late by more than 0.05 ms | 9.8% | 0.5% |
+
+Both reach 500. The frame rate used to fall short because of the scene, not the limiter: the old fog bank, full-resolution SSAO, forced depth and opaque copies, and a skyline rebuilt from prefabs every round. The current scene, with the out-of-focus city, the grass, the parallax swing and all of the scene's own animation, needs about 0.77 ms a frame (about 1,270 fps uncapped on that PC). With that headroom, `precise` paces the stimulus more tightly. Unity's limiter is late on about one frame in nine whatever the scene; that is its own pacing, not the work.
 
 ### Setting `guessRate`
 
 γ matters a lot. If it's wrong, the thresholds come out wrong.
 
-γ is the chance that a blind shot lands on the tower. At startup the game works it out from the screen and prints it in the Console (or in `Player.log` in a build), in a `[GuessRate]` block that ends with `>>> guessRate : <number>`. Use that number. It's about 0.244 on a 16:9 screen, and it changes with the screen shape, which is why the monitor should be 16:9. If a row's `guessRate` is far from it, the Console says so.
+γ is the chance that a blind shot lands on the tower. At startup the game works it out from the screen and prints it in the Console (or in `Player.log` in a build), in a `[GuessRate]` block that ends with `>>> guessRate : <number>`. Use that number. It's about 0.235 on a 16:9 screen (the UFO can fly until its centre reaches either edge, so a shot can land anywhere across the view), and it changes with the screen shape, which is why the monitor should be 16:9. If a row's `guessRate` is far from it, the Console says so.
 
 ### Fixed in code, not in the CSV
 
@@ -258,12 +268,36 @@ These define the task itself, so they live in `Assets/Scripts/Experiment/StudyCo
 
 1. **GO!** The veil lifts and the split switches on: from now until the shot, the side of the tower the UFO is on decides the frame rate.
 2. The participant flies back and forth and shoots where they think the tower is.
-3. **The reveal.** The fog blows open and the tower, its beam and its hit-zone lines light up. The two frame rates slide out from behind the beam as a pair, one on each side of it, high in the sky between the beam and the hit-zone lines, so they read as one comparison across the boundary: `500 | 85`. The altered side's number rolls away from the base rate to where it ended up, and the rates actually measured on each side fade in underneath. Meanwhile each side of the screen slowly takes on its own colour, cool for the faster side and warm for the slower one. The colour starts fully transparent and is faint inside the hit zone, so the zone stays a clear window exactly as wide as the target. It is strongest just outside the zone lines and leaves the city clear.
+3. **The reveal.** The tower standing on the boundary lights up green, its beam shoots up out of it, and its hit-zone lines spread out. The two frame rates slide out from behind the beam as a pair, one on each side of it, high in the sky between the beam and the hit-zone lines, so they read as one comparison across the boundary: `500 | 85`. The altered side's number rolls away from the base rate to where it ended up, and the rates actually measured on each side fade in underneath. Meanwhile each side of the screen slowly takes on its own colour, cool for the faster side and warm for the slower one. The colour starts fully transparent and is faint inside the hit zone, so the zone stays a clear window exactly as wide as the target. It is strongest just outside the zone lines and leaves the city clear.
 
    It looks the same wherever the tower is. The hit zone is wide enough to hold a three-digit rate at full size, so the pair keeps its size and place beside the beam across most of the screen. Near an edge, where the screen cuts into the zone, both numbers shrink together to fit the narrower side and stay the same size. On a 16:9 screen, at the default spawn range (the middle 80% of the view), that's never below about 80%. Each side is clipped to its own side of the tower line, so nothing ever crosses it.
 
    The pacing fits the hold. In the study's 2-second hold, the roll and the measured rates have landed within the first second, and the colour keeps deepening until just before it all fades.
-4. The scene resets under a veil (`SAVING…`, `READY…`): the camera pans, the tower moves, the logs are written. Everything between rounds runs at the base frame rate.
+4. The scene resets under a veil (`SAVING…`, `READY…`). The logs are written first. Then the scene changes once: as the camera pans to its new view, the old row of towers dissolves into the new one, dealt around the next boundary, and the reveal's beam and glow fade out over the tower they marked. The new row has settled before GO! lifts the veil. Everything between rounds runs at the base frame rate.
+
+## The scene
+
+Everything below is built at runtime by the scripts, so the scene file itself is unchanged. Each piece has Inspector toggles on the component named; components created at runtime can be added to the scene by hand to tune them in edit mode.
+
+- **The city** (`CitySkyline`, `CitySparks`, created by `TowerManager`). A night skyline built procedurally when the scene starts: five depth layers fading into haze, back to a dense sprawl just under the horizon; lit windows; landmark towers with pulsing aviation beacons; neon, warm street glow and light pollution along the horizon; and a few buildings broken open by the invasion, glowing and throwing sparks and embers. The city is lived in: now and then a window's light goes off or comes on, fading over most of a second; televisions glow, drifting slowly brighter and dimmer; and now and then someone walks past a lit window. Searchlights rise from behind the skyline and sweep the sky slowly (`searchlights`). Nothing flickers. It is the same city for every participant (`seed`), it never moves or changes between rounds, and every building stands behind the play plane, so nothing can pass in front of the UFO.
+- **Out of focus** (`Backdrop`). Everything behind the nearest row of buildings is drawn blurred, as by a lens focused on the play plane (`blurPx`, 2.4 px at 1080p). The UFO, the towers, the nearest buildings, every shot and the stars stay sharp. Just before the main camera renders, the far city is drawn from its exact viewpoint into a half-resolution texture, blurred, and laid in behind the play plane. So it moves and animates exactly as before, every frame, and nothing drawn over it (the sight, a beam, a trail) is blurred with it, as it would be with a depth-of-field post effect. Off: the main camera draws the city sharp.
+- **The foreground** (`Foreground`). The camera stands on a dark, grassy slope looking over the city. Three rows of grass cover the bottom of the screen, each softer the nearer it is: the grass line just in front of the towers is nearly in focus and edged by the city's glow, and the nearest row is a dark blur along the bottom edge. They bend and sway in a gusty breeze: calm stretches, then gusts arriving at random and rolling across the field, the nearest grass moving most. A few soft motes of lit dust drift downwind and fade over them. The towers' feet stand in the grass. Each row's shape, blur included, is drawn once at startup into a texture, so per frame the grass is three textured quads. `grass`, `motes` and `wind` switch or scale each part. (`CitySkyline` → `waterfront` brings back the earlier quay and water instead.)
+- **Rain** (`Weather`). A light rain over the city: thin, faint streaks falling fast at a slant with the wind, in two layers at two depths, both behind the play plane, so nothing falls in front of the UFO, the towers or a shot. It is there as much for the study as for the look: fast motion across the whole screen is where a frame rate shows most plainly (at a low rate each streak visibly jumps from frame to frame; at a high one it slides). `kind` switches it to a light snow (soft flakes drifting down slowly, a gentler cue) or off; `amount` and `brightness` scale it. Drawn procedurally, so it costs almost nothing.
+- **The sky** (`NightSky`, on the city). Faint twinkling stars, an occasional soft shooting star, a faint aurora (soft green curtains in the upper sky, their edges folding slowly, rays fading up into violet; `aurora`, `auroraBrightness`), and thin clouds drifting slowly across. All of it is computed on the GPU and knows nothing about the boundary.
+- **The camera** (`CameraRig`). Two motions on top of the pan between rounds, both moving the view only:
+  - `parallax`: the camera swings a little around the play plane as the UFO moves, the way a camera operator follows a subject. It eases after the UFO's place on screen (halfway in about 0.4 s, settled in about 1 s). Because it pivots on the play plane, the UFO, the towers and the shots stay where they were on screen, to within a pixel or two at the edges, and the mouse feels the same. What is nearer or farther moves: with the UFO going from the left edge to the right, the city slides about 24 px right and the grass line about 26 px left (at 1600×900, `parallaxYaw` 0.65°; `parallaxPitch` 0.22° does the same up and down). That parallax is what makes the scene read in 3D.
+  - `handheld`: a faint, slow wander, as if the camera were held by hand: usually a couple of pixels at 1080p, rarely more than seven, at about a third of a cycle per second (`handheldDrift`, `handheldTurn`, `handheldHz`).
+
+  The UFO moves by mouse deltas, which neither motion changes, so the UFO, the towers and every shot keep their world positions. The side of the boundary is measured along the camera's axes at rest, so the split, the score and the logs are unaffected.
+- **The towers** (`TowerField`). A dense row of towers drawn from the scene's tower models (`TowerManager` → `skylineBuildings`), all in one dark backlit material, their windows lit from inside and lived in: lamps of different colours drifting brighter and dimmer, televisions, people passing, lights going off and on, every tower by the same rules. **The boundary is always one of them, and any of them can be it**: every round the whole row is dealt again on a jittered lattice anchored on the boundary. The boundary tower gets a random model, height, angle and beacon from the same pool as every other tower, so nothing about how it looks or where it stands sets it apart. The scene's own `Tower` object is never drawn; it only marks the boundary's position for the split, the scoring and the logs.
+- **The ground fog is off** (`TowerManager` → `groundFog`). The fog fades in the reveal still run as timing: they drive the beam and the boundary tower's glow over the same durations as before, so the round's pacing is unchanged. `legacyHitPrefabs` (off) brings back the old particle-pack impact prefabs, one of which is a smoke cloud.
+- **The UFO** (`UfoFlair`, added by `UfoController`): a slow spin, a bank into its motion, a jelly squash-and-stretch, and light trails. It animates a rig of child objects only. The ship's own transform, which the split, the score and the logs read, is never touched, and the belly turret the shot fires from stays out of the rig. The ship is drawn 1.3 times its size in the scene (`UfoController` → `size`), its trails with it. It flies until its centre reaches either edge of the screen, so at the edge half of it is cut off and a shot can land anywhere across the view. `guessRate` assumes exactly that band.
+- **The laser.** The sight (`WeaponSight`) is a soft line of light ending in a small dot on the ground line, which, like the impact point of a shot, is now down in the grass, the way the old fog hid it. It is quietly alive: a faint glint slides down it from the muzzle to the ground about once a second (`glintSweepSec` 1.2 s), and the dot swells and brightens a little as each one lands (`glintLanding`). Both run on the clock and know nothing about the boundary; `glint` off holds the sight still. The shot (`ShotFx`, added by `LaserFirer`) is a bolt that strikes the ground in 35 ms with an energy pulse racing down it, a muzzle flash, an impact flash, a shockwave ring, and teal sparks and orange embers. A shot that misses everything now ends on the ground line instead of in mid-air. Only the end point's height changed; the x and z it is scored and logged on are exactly as before.
+
+**Two things to keep in mind for the data.** Neither is a bug, but both change the stimulus compared with sessions run before this version.
+
+- Everything that moves on screen shows the frame rate. That includes the UFO's spin and trails, the glint running down the sight, the rain, the sparks, the beacons, the windows' lights and the figures passing them, the searchlights, the aurora, the twinkling stars, the swaying grass and motes, and the camera, and they show it wherever the UFO is. Every one of them updates on every frame (nothing runs on a fixed tick, and nothing uses physics), computed from the clock or stepped by the time that frame took, so each moves at the same speed at any frame rate and changes 500 times a second at 500 fps. A trail is laid down one point per frame, so on a slow side it is drawn in visibly fewer, longer segments. The **rain and the parallax swing are the strongest of these cues**. The rain falls across the whole screen all the time, fast, so at a low rate its streaks step visibly even while the UFO is still. The swing moves the whole picture behind and in front of the play plane whenever the UFO moves, and keeps easing for about a second after it stops, so on a slow side the whole city and the grass step visibly. Thresholds may come out lower than with the old, mostly static scene. Each effect can be switched off on its component (`Weather` → `kind` for the rain, `CameraRig` → `parallax` for the swing). Decide before collecting data, and keep the same settings for a whole study.
+- Because the boundary always stands on a tower, a participant who aims *at a tower* when guessing blind lands within the hit radius a little more often than a blind shot anywhere. The excess is about the tower spacing divided by the screen width: roughly +0.05 at the default spacing of 2.7 world units on a 46.8-unit-wide view. `guessRate` still assumes a blind shot anywhere. A denser row (`TowerField` → `spacing`) shrinks the excess.
 
 ---
 

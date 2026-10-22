@@ -144,10 +144,10 @@ public class UIManager : MonoBehaviour
     [Range(0.3f, 1f)] public float tallyFillScale = 0.74f;
 
     public Color tallyHitColor  = new(0.30f, 1f, 0.45f, 1f);
-    [Tooltip("A shot that missed the tower.")]
-    public Color tallyMissColor = new(1f, 0.68f, 0.2f, 1f);
-    [Tooltip("A round that ran out with no shot - its time limit, or its crossing cap.")]
-    public Color tallyRanOutColor = new(1f, 0.32f, 0.32f, 1f);
+    [Tooltip("A shot that missed the tower: red.")]
+    public Color tallyMissColor = new(1f, 0.28f, 0.28f, 1f);
+    [Tooltip("A round that ran out with no shot - its time limit, or its crossing cap: orange.")]
+    public Color tallyRanOutColor = new(1f, 0.68f, 0.2f, 1f);
     [Tooltip("The empty ring. Bright enough to be found against the sky, dim enough not to " +
              "compete with the filled pips beside it.")]
     public Color tallyEmptyColor = new(1f, 1f, 1f, 0.34f);

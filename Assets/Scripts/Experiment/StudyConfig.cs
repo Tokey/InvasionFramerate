@@ -19,12 +19,13 @@ namespace JndUfo
     /// <summary>
     /// How the per-side frame rate is enforced.
     ///
+    ///   Unity    Application.targetFrameRate — Unity's own limiter, as the stutter study used, and
+    ///            the default. Its jitter is whatever the engine gives (±0.6 ms at 60 fps in the
+    ///            Editor logs from the stutter study), but it leaves the main thread free between
+    ///            frames instead of spinning a core on it.
     ///   Precise  <see cref="FrameLimiter"/>'s busy-wait, hooked into the player loop where Unity's
     ///            own limiter waits, ahead of time sampling and input processing. Frame times land
     ///            within microseconds of the target; it costs one CPU core spinning while it waits.
-    ///   Unity    Application.targetFrameRate — Unity's own limiter, as the stutter study used.
-    ///            Simpler, but its jitter is whatever the engine gives (±0.6 ms at 60 fps in the
-    ///            Editor logs from the stutter study).
     /// </summary>
     public enum FrameLimiterMode { Precise, Unity }
 
@@ -89,7 +90,7 @@ namespace JndUfo
         public int DiffGridSize => (maxDiffFps - minDiffFps) / diffStepFps + 1;
 
         public AlteredSideMode  alteredSide  = AlteredSideMode.Random;
-        public FrameLimiterMode frameLimiter = FrameLimiterMode.Precise;
+        public FrameLimiterMode frameLimiter = FrameLimiterMode.Unity;
 
         /// <summary>The altered side's frame rate for a difference of <paramref name="diffFps"/>.</summary>
         public int AlteredFpsFor(int diffFps) =>
@@ -220,7 +221,7 @@ namespace JndUfo
             c.minDiffFps   = CsvTable.GetInt(row, "minDiffFps", 1);
             c.diffStepFps  = ReadStep(row, c.minDiffFps, c.maxDiffFps, tag);
             c.alteredSide  = ParseSide(CsvTable.GetString(row, "alteredSide", "random"), tag);
-            c.frameLimiter = ParseLimiter(CsvTable.GetString(row, "frameLimiter", "precise"), tag);
+            c.frameLimiter = ParseLimiter(CsvTable.GetString(row, "frameLimiter", "unity"), tag);
 
             c.maxCrossingsPerRound = Mathf.Max(0,  CsvTable.GetInt(row,   "maxCrossingsPerRound", 0));
             c.roundTimeoutSec      = Mathf.Max(0f, CsvTable.GetFloat(row, "roundTimeoutSec", 15f));
@@ -339,8 +340,8 @@ namespace JndUfo
             string s = (cell ?? "").Trim();
             if (s.Equals("precise", System.StringComparison.OrdinalIgnoreCase)) return FrameLimiterMode.Precise;
             if (s.Equals("unity",   System.StringComparison.OrdinalIgnoreCase)) return FrameLimiterMode.Unity;
-            Debug.LogError($"{tag}: frameLimiter='{cell}' is not precise/unity — using precise.");
-            return FrameLimiterMode.Precise;
+            Debug.LogError($"{tag}: frameLimiter='{cell}' is not unity/precise — using unity.");
+            return FrameLimiterMode.Unity;
         }
 
 
@@ -383,9 +384,9 @@ namespace JndUfo
             // chance level on 16:9 (see GuessRateCalculator).
             const string tail = "0,15,100,-10";
             const string grid = "50,1,7,10,0,0.06,4,0.244,50,8";
-            sb.AppendLine($"60,down,50,1,1,random,precise,{tail},{grid},2");
-            sb.AppendLine($"144,down,120,2,2,random,precise,{tail},{grid},5");
-            sb.AppendLine($"500,down,415,5,5,random,precise,{tail},{grid},17");
+            sb.AppendLine($"60,down,50,1,1,random,unity,{tail},{grid},2");
+            sb.AppendLine($"144,down,120,2,2,random,unity,{tail},{grid},5");
+            sb.AppendLine($"500,down,415,5,5,random,unity,{tail},{grid},17");
             return sb.ToString();
         }
     }

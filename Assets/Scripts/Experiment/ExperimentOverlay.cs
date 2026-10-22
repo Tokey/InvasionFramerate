@@ -92,8 +92,10 @@ namespace JndUfo
         [Tooltip("The starting gun itself. Shaken, then the gate lifts and firing comes back.")]
         public string gateGoText   = "GO!";
         [Tooltip("How much of the play area the reset veil covers. Opaque would hide the pan and " +
-                 "the skybox spin, which are what sell the scene changing location.")]
-        [Range(0f, 1f)] public float waitVeilAlpha = 0.62f;
+                 "the skybox spin, which are what sell the scene changing location; at 0.8 they still " +
+                 "read through it, while the towers sinking and rising again stay soft rather than " +
+                 "standing out as a jump.")]
+        [Range(0f, 1f)] public float waitVeilAlpha = 0.8f;
         [Tooltip("Seconds the veil takes to fade in when the gate goes up, and to lift again " +
                  "under GO!. A hard cut either way read as a flicker between the reveal and the " +
                  "reset; a short fade makes the veil part of one continuous transition. The " +

@@ -40,10 +40,11 @@ namespace JndUfo
             Order(ref vMin, ref vMax);
             float visibleWidth = vMax - vMin;
 
-            // Where a shot can actually land — the UFO's clamp in UfoController.Update. Slightly
-            // narrower than the full view, so it gives a slightly higher (stricter) γ.
-            float uMin = CameraRig.ViewportPointAtZ(cam, 0.02f, 0.5f, fixedZ).x;
-            float uMax = CameraRig.ViewportPointAtZ(cam, 0.98f, 0.5f, fixedZ).x;
+            // Where a shot can actually land — the UFO's clamp in UfoController.Clamped, which lets
+            // the ship's centre reach either edge of the view. Kept separate from the visible width
+            // so the two can differ again without this going stale.
+            float uMin = CameraRig.ViewportPointAtZ(cam, 0f, 0.5f, fixedZ).x;
+            float uMax = CameraRig.ViewportPointAtZ(cam, 1f, 0.5f, fixedZ).x;
             Order(ref uMin, ref uMax);
             float shotWidth = uMax - uMin;
 

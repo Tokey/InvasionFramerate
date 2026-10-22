@@ -3,18 +3,34 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// The laser's targeting beam, drawn on the ship between shots: a hair-thin line from the muzzle
-    /// straight down to the ground line, with a glint sliding down it. It breathes with the pointer
-    /// glow and flares on the muzzle flash, so the sight and the shot beam read as one weapon — and
-    /// it shows exactly where a shot would land, which is the whole of the aiming task.
+    /// The laser's targeting beam, drawn on the ship between shots: a slim line of light from the
+    /// muzzle straight down to the ground line, ending in a small soft dot where it meets the
+    /// ground. It shows exactly where a shot would land, which is the whole of the aiming task.
     ///
-    /// It says nothing about the stimulus. Everything here runs off the pointer's free-running
-    /// pulse or a wall clock and reacts to a SHOT — never to a tower crossing or a frame-rate
-    /// change. A sight that changed at the boundary would be a second, unmeasured cue to it.
+    /// Alive, but quietly. A faint glint slides down it from the muzzle to the ground, about one a
+    /// second, and the dot at its foot swells and brightens a little as each one lands: the weapon's
+    /// charge running down to the spot a shot would hit. It runs on the wall clock and is recomputed
+    /// every frame, so it moves the same at any frame rate — sliding at a high one, stepping at a low
+    /// one, like the rain. Faint and slow because the participant's eye belongs on the UFO, whose
+    /// motion is the stimulus; turn <see cref="glint"/> off and the sight holds still. Besides that it
+    /// reacts to the weapon in two ways: it dims while firing is withheld (the reveal, between
+    /// phases), and it flares on the muzzle flash, so the sight and the shot read as one weapon. The
+    /// breathing is still here too, switched off.
     ///
-    /// Sorting: every renderer here is pushed BELOW the rest of the scene's transparents
-    /// (<see cref="sortingOrder"/>, −1), so the ground fog draws over the beam where it enters the
-    /// bank rather than the beam cutting a clean line through the smoke.
+    /// It says nothing about the stimulus. It knows the muzzle, the fire direction and the ground
+    /// line — never the tower, a tower crossing or a frame-rate change; a sight that changed at the
+    /// boundary would be a second, unmeasured cue to it. That is also why it ends on the ground line
+    /// rather than on a raycast: a ray would stop on the hidden tower and so point it out.
+    ///
+    /// Light, not paint: every part is additive glow on the game's own shader
+    /// (<see cref="GlowMaterial"/>), its edges soft falloff rather than the hard edge of a flat strip.
+    /// With nothing in front of it any more its whole length is on show, and a soft-edged line of
+    /// light sits in the scene where a hard-edged strip reads as drawn on top of it.
+    ///
+    /// Sorting: every renderer here sits at <see cref="sortingOrder"/> (−1), under the rest of the
+    /// scene's transparents. Light added to light does not care about order; this only keeps any
+    /// alpha-blended transparent drawn over the sight rather than having the sight's light added on
+    /// top of it.
     ///
     /// Built once in Awake, from <see cref="LaserFirer"/>, on the muzzle object: parented under the
     /// ship so UfoController.SetHidden takes it down with the hull. Nothing allocates per frame.
@@ -31,29 +47,49 @@ namespace JndUfo
         public bool matchLivery = true;
         public Color laserColor = new Color(0.35f, 1f, 0.85f, 1f);
 
-        [Tooltip("Width of the beam's core, world units. About one pixel at this scene's camera " +
-                 "distance — it is meant to read as a hairline, not a bolt.")]
-        [Min(0.001f)] public float coreWidth = 0.025f;
-        [Tooltip("Width of the soft halo drawn under the core.")]
-        [Min(0.001f)] public float haloWidth = 0.09f;
+        [Tooltip("HDR brightness of the beam's light. Around 1 the core just catches the scene's " +
+                 "bloom, enough to read as light; it is on screen for the whole session, so keep it " +
+                 "modest.")]
+        [Min(0f)] public float intensity = 1.3f;
+
+        [Tooltip("Width of the beam's core, world units — about two pixels at 1080p. Its light falls " +
+                 "off linearly to the edges, so it reads as a hairline about half that wide; and a " +
+                 "linear ramp two pixels wide lights the same total wherever it lands between pixels, " +
+                 "so the line holds steady as the ship moves. Much narrower and it would shimmer.")]
+        [Min(0.001f)] public float coreWidth = 0.05f;
+        [Tooltip("Width of the soft halo around the core.")]
+        [Min(0.001f)] public float haloWidth = 0.14f;
         [Range(0f, 1f)] public float coreAlpha = 0.85f;
-        [Range(0f, 1f)] public float haloAlpha = 0.16f;
-        [Tooltip("Alpha at the ground end relative to the muzzle end, so the beam dissipates " +
-                 "toward the fog rather than stopping dead on the ground line.")]
+        [Range(0f, 1f)] public float haloAlpha = 0.3f;
+        [Tooltip("Brightness at the ground end relative to the muzzle end, so the beam eases off " +
+                 "toward the ground rather than ending as a hard bar.")]
         [Range(0f, 1f)] public float groundFade = 0.55f;
 
-        [Tooltip("A bright dash sliding down the beam from the muzzle to the ground. Free-running on " +
-                 "a wall clock; it never reacts to the stimulus.")]
+        [Tooltip("A small soft glow where the beam meets the ground line: the laser's dot on the city.")]
+        public bool groundDot = true;
+        [Tooltip("Diameter of the ground dot, world units.")]
+        [Min(0.01f)] public float dotSize = 0.45f;
+        [Range(0f, 1f)] public float dotAlpha = 0.6f;
+
+        [Tooltip("A bright dash sliding down the beam from the muzzle to the ground, over and over, on a " +
+                 "wall clock that never reacts to the stimulus. Off, the sight holds still.")]
         public bool glint = true;
         [Tooltip("Seconds for the glint to travel the beam once.")]
-        [Min(0.05f)] public float glintSweepSec = 0.85f;
+        [Min(0.05f)] public float glintSweepSec = 1.2f;
         [Tooltip("Length of the glint as a fraction of the beam.")]
-        [Range(0.01f, 0.5f)] public float glintLength = 0.12f;
-        [Range(0f, 1f)] public float glintAlpha = 0.9f;
+        [Range(0.01f, 0.5f)] public float glintLength = 0.14f;
+        [Range(0f, 1f)] public float glintAlpha = 0.6f;
+        [Tooltip("How much the ground dot brightens as each glint lands, as a fraction of its " +
+                 "brightness; it swells by a third of that. 0 leaves the dot still.")]
+        [Range(0f, 2f)] public float glintLanding = 0.8f;
+        [Tooltip("Seconds from a glint landing to the dot at its brightest. It fades over a few times that.")]
+        [Min(0.01f)] public float landingRiseSec = 0.1f;
 
         [Header("Shared")]
-        [Tooltip("How much the pointer glow's pulse modulates the sight's brightness, 0–1.")]
-        [Range(0f, 1f)] public float breathe = 0.35f;
+        [Tooltip("How much the pointer glow's pulse modulates the sight's brightness, 0–1. 0, the " +
+                 "default, holds the sight still (and the pointer only pulses at all with " +
+                 "LaserFirer.pulsePointer on).")]
+        [Range(0f, 1f)] public float breathe = 0f;
         [Tooltip("How hard the sight flares on the muzzle flash, as a multiplier on its brightness " +
                  "and halo width. Follows LaserFirer.FireFlash01.")]
         [Min(0f)] public float fireFlare = 2.5f;
@@ -61,33 +97,41 @@ namespace JndUfo
                  "rather than vanishes: the weapon is still armed, just not yet.")]
         [Range(0f, 1f)] public float disarmedLevel = 0.4f;
         [Min(0.01f)] public float armFadeSec = 0.2f;
-        [Tooltip("Sorting order for every renderer here. NEGATIVE, so the scene's other transparents " +
-                 "— the ground fog above all — draw over the sight.")]
+        [Tooltip("Sorting order for every renderer here. Negative, so the scene's other " +
+                 "transparents draw over the sight rather than under its light.")]
         public int sortingOrder = -1;
 
         // ── Private ──────────────────────────────────────────────────────────
+
+        // Falloff exponents for each part's glow material. 1 is a straight ramp — a tent, which at
+        // about two pixels wide lights the same total wherever it falls between pixels; that is
+        // what keeps the hairline core from shimmering as the ship moves. The halo and the dot pull
+        // their light into the middle.
+        const float CoreSoftness  = 1f;
+        const float HaloSoftness  = 1.5f;
+        const float GlintSoftness = 1f;
+        const float DotSoftness   = 2f;
+
         LaserFirer    _laser;
         UfoController _ufo;
         TowerManager  _tower;
 
-        LineRenderer _beamCore, _beamHalo, _glint;
-        Material     _coreMat,  _haloMat,  _glintMat;
+        LineRenderer _beamCore, _beamHalo, _glint, _dot;
+        Material     _coreMat,  _haloMat,  _glintMat, _dotMat;
 
         // Scratch for the vertex gradients, set once at start.
         Gradient           _gradient;
         GradientColorKey[] _colorKeys2;
         GradientAlphaKey[] _alphaKeys2, _alphaKeys3;
 
-        bool  _shownBeam, _shownGlint;
+        bool  _shownBeam, _shownGlint, _shownDot;
         bool  _shownOnce;
         float _level = 1f;
 
-        static readonly int ColorId = Shader.PropertyToID("_Color");
-
-        // The Sprites/Default shader multiplies vertex colour by this tint, so one colour write per
-        // frame modulates a whole line — brightness and alpha — with its gradient left alone.
+        // The glow shader multiplies vertex colour by this tint, so one colour write per frame
+        // modulates a whole line — brightness and alpha — with its gradient left alone.
         static void Tint(Material m, Color c, float alpha, float brightness) =>
-            m.SetColor(ColorId, new Color(c.r * brightness, c.g * brightness, c.b * brightness, alpha));
+            GlowMaterial.SetColor(m, new Color(c.r * brightness, c.g * brightness, c.b * brightness, alpha));
 
         void Awake()
         {
@@ -100,9 +144,17 @@ namespace JndUfo
             _alphaKeys2 = new GradientAlphaKey[2];
             _alphaKeys3 = new GradientAlphaKey[3];
 
-            _beamCore = MakeLine("SightBeamCore",  coreWidth,        out _coreMat);
-            _beamHalo = MakeLine("SightBeamHalo",  haloWidth,        out _haloMat);
-            _glint    = MakeLine("SightBeamGlint", coreWidth * 1.6f, out _glintMat);
+            _beamCore = MakeLine("SightBeamCore",  GlowShape.Line, CoreSoftness,  coreWidth,        out _coreMat);
+            _beamHalo = MakeLine("SightBeamHalo",  GlowShape.Line, HaloSoftness,  haloWidth,        out _haloMat);
+            _glint    = MakeLine("SightBeamGlint", GlowShape.Line, GlintSoftness, coreWidth * 1.6f, out _glintMat);
+
+            // The ground dot is a line too: two points exactly as far apart as the line is wide,
+            // which the glow shader's Dot shape turns into a round glow facing the camera. A quad
+            // would need a MeshRenderer under the muzzle, where the ship's scale chain would skew
+            // it and UfoController's livery — which repaints every MeshRenderer on the ship through
+            // a property block — would pin its colour. A world-space line has neither problem and
+            // is still a child of the muzzle, so it hides with the ship.
+            _dot      = MakeLine("SightGroundDot", GlowShape.Dot,  DotSoftness,   dotSize,          out _dotMat);
 
             ApplyGradients();
         }
@@ -119,12 +171,13 @@ namespace JndUfo
             Destroy(_coreMat);
             Destroy(_haloMat);
             Destroy(_glintMat);
+            Destroy(_dotMat);
         }
 
         // ── Per frame ────────────────────────────────────────────────────────
 
-        // LateUpdate: after UfoController has moved the ship and LaserFirer has advanced the pulse,
-        // so the sight is drawn from this frame's muzzle position with this frame's glow.
+        // LateUpdate: after UfoController has moved the ship and LaserFirer has published this
+        // frame's glow and flash, so the sight is drawn from this frame's muzzle position.
         void LateUpdate()
         {
             if (_laser == null) return;
@@ -148,25 +201,29 @@ namespace JndUfo
         {
             bool beam      = showLaserSight;
             bool showGlint = beam && glint;
-            if (_shownOnce && _shownBeam == beam && _shownGlint == showGlint) return;
+            bool showDot   = beam && groundDot;
+            if (_shownOnce && _shownBeam == beam && _shownGlint == showGlint && _shownDot == showDot)
+                return;
 
             _beamCore.enabled = beam;
             _beamHalo.enabled = beam;
             _glint.enabled    = showGlint;
+            _dot.enabled      = showDot;
 
             if (!_shownOnce) _level = _laser.FiringEnabled ? 1f : disarmedLevel;
 
             _shownOnce  = true;
             _shownBeam  = beam;
             _shownGlint = showGlint;
+            _shownDot   = showDot;
         }
 
         Vector3 Muzzle => _laser.firePoint != null ? _laser.firePoint.position : transform.position;
 
         /// <summary>
         /// Muzzle to ground line along the fire direction. It ends on the tower's ground line rather
-        /// than on a raycast — the shot beam does the raycast, and the sight only has to say where
-        /// the shot is going, which is the same X on the same ground.
+        /// than on a raycast — the shot does the raycast, and the sight only has to say where the
+        /// shot is going, which is the same X on the same ground.
         /// </summary>
         void DrawBeam(float pulse, float flash)
         {
@@ -183,37 +240,62 @@ namespace JndUfo
             _beamCore.SetPosition(0, origin); _beamCore.SetPosition(1, end);
             _beamHalo.SetPosition(0, origin); _beamHalo.SetPosition(1, end);
 
-            // Breathes with the pointer glow; flares with the muzzle flash.
+            // Still unless breathe is turned up; flares with the muzzle flash.
             float breath = 1f - breathe + breathe * pulse;
             float flare  = 1f + fireFlare * flash;
+            float warm   = 1f + 0.5f * flash;
             float a      = _level * breath;
 
             _beamHalo.widthMultiplier = haloWidth * flare;
-            _beamCore.widthMultiplier = coreWidth * (1f + 0.5f * flash);
+            _beamCore.widthMultiplier = coreWidth * warm;
 
-            Tint(_coreMat, laserColor, coreAlpha * a, flare);
-            Tint(_haloMat, laserColor, haloAlpha * a, 1f + 0.5f * flash);
+            Tint(_coreMat, laserColor, coreAlpha * a, intensity * flare);
+            Tint(_haloMat, laserColor, haloAlpha * a, intensity * warm);
 
-            if (!_shownGlint) return;
-
-            // The glint's centre runs from a little above the muzzle to a little past the ground, so
-            // the dash enters and leaves the beam whole rather than popping in at full length.
+            // The glint's place along its sweep, from the wall clock. Its centre runs from a little
+            // above the muzzle to a little past the ground, so the dash enters the beam whole rather
+            // than popping in at full length, and at the end drains into the dot.
             float p    = Mathf.Repeat(Time.unscaledTime / glintSweepSec, 1f);
             float half = glintLength * 0.5f;
             float c    = Mathf.Lerp(-half, 1f + half, p);
-            float t0   = Mathf.Clamp01(c - half);
-            float t1   = Mathf.Clamp01(c + half);
+
+            // The dot's swell as each glint lands: a soft pulse from the moment the dash's centre
+            // reaches the ground, at its height landingRiseSec later and all but gone by the next.
+            float landing = 0f;
+            if (_shownGlint && glintLanding > 0f)
+            {
+                float landed = (1f + half) / (1f + glintLength);   // where c reaches 1
+                float x      = Mathf.Repeat(p - landed, 1f) * glintSweepSec / landingRiseSec;
+                landing      = glintLanding * x * Mathf.Exp(1f - x);
+            }
+
+            if (_shownDot)
+            {
+                float size = dotSize * (1f + landing / 3f);
+                float r    = size * 0.5f;
+                _dot.SetPosition(0, new Vector3(end.x - r, end.y, end.z));
+                _dot.SetPosition(1, new Vector3(end.x + r, end.y, end.z));
+                _dot.widthMultiplier = size;
+                Tint(_dotMat, laserColor, dotAlpha * a, intensity * warm * (1f + landing));
+            }
+
+            if (!_shownGlint) return;
+
+            float t0 = Mathf.Clamp01(c - half);
+            float t1 = Mathf.Clamp01(c + half);
 
             _glint.SetPosition(0, Vector3.LerpUnclamped(origin, end, t0));
             _glint.SetPosition(1, Vector3.LerpUnclamped(origin, end, t1));
             _glint.widthMultiplier = coreWidth * 1.6f;
 
-            Tint(_glintMat, laserColor, glintAlpha * a * Mathf.Sin(p * Mathf.PI), 1f + 0.6f * flash);
+            // Eases in at the muzzle; at the ground the dot swallows it rather than it fading out.
+            float ease = Mathf.SmoothStep(0f, 1f, p / 0.2f);
+            Tint(_glintMat, laserColor, glintAlpha * a * ease, intensity * (1f + 0.6f * flash));
         }
 
         // ── Construction ─────────────────────────────────────────────────────
 
-        LineRenderer MakeLine(string goName, float width, out Material mat)
+        LineRenderer MakeLine(string goName, GlowShape shape, float softness, float width, out Material mat)
         {
             var go = new GameObject(goName);
             go.transform.SetParent(transform, worldPositionStays: false);
@@ -222,8 +304,11 @@ namespace JndUfo
             lr.useWorldSpace      = true;
             lr.positionCount      = 2;
             lr.widthMultiplier    = width;
-            lr.numCapVertices     = 3;
-            lr.numCornerVertices  = 2;
+            // Square ends: the muzzle end sits under the pointer's glow and the ground end under the
+            // dot. Stretch maps U along the line and V across it, which is what the glow shader's
+            // Line and Dot shapes read.
+            lr.numCapVertices     = 0;
+            lr.numCornerVertices  = 0;
             lr.alignment          = LineAlignment.View;
             lr.textureMode        = LineTextureMode.Stretch;
             lr.shadowCastingMode  = UnityEngine.Rendering.ShadowCastingMode.Off;
@@ -233,9 +318,9 @@ namespace JndUfo
             lr.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
             lr.sortingOrder       = sortingOrder;
 
-            // Sprites/Default, as the tower lasers use: honours vertex colour including alpha, and
-            // multiplies in the _Color tint that Tint() drives per frame.
-            mat = new Material(Shader.Find("Sprites/Default"));
+            // Additive light, multiplied by vertex colour and by the _Color tint that Tint() drives
+            // per frame.
+            mat = GlowMaterial.Create(shape, Color.white, softness, goName);
             lr.sharedMaterial = mat;
             lr.enabled        = false;
             return lr;
@@ -245,10 +330,11 @@ namespace JndUfo
         // dissolves — and never change per frame; brightness and alpha ride the tint instead.
         void ApplyGradients()
         {
-            // Beam: full at the muzzle, dissipating toward the ground. White, so the tint alone
-            // decides the hue — which is what lets the flare push it past white.
+            // Beam: full at the muzzle, easing off toward the ground. White, so the tint alone
+            // decides the hue — which is what lets the flare push it past white. The dot is even.
             SetGradient(_beamCore, 1f, groundFade);
             SetGradient(_beamHalo, 1f, groundFade);
+            SetGradient(_dot,      1f, 1f);
 
             // Glint: a dash that is bright in the middle and soft at both ends.
             _colorKeys2[0] = new GradientColorKey(Color.white, 0f);
