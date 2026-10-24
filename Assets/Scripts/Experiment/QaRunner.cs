@@ -238,12 +238,17 @@ namespace JndUfo
             _laser.Fire();
         }
 
+        // On the view at rest, as UfoController's own envelope is, which lets the ship's centre reach
+        // either edge: so a spot here is one a participant can fly to, whatever the camera is doing.
         void PlaceUfo(float viewportX)
         {
-            Camera cam = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+            CameraRig rig = CameraRig.Instance;
+            Camera    cam = rig != null ? rig.ActiveCamera : Camera.main;
             if (cam == null) return;
-            _ufo.transform.position = CameraRig.ViewportPointAtZ(
-                cam, Mathf.Clamp(viewportX, 0.02f, 0.98f), UfoHeight, _ufo.fixedZ);
+            float vx = Mathf.Clamp01(viewportX);
+            _ufo.transform.position = rig != null
+                ? rig.RestViewportPointAtZ(vx, UfoHeight, _ufo.fixedZ)
+                : CameraRig.ViewportPointAtZ(cam, vx, UfoHeight, _ufo.fixedZ);
         }
 
         IEnumerator WaitUntil(float realtime)
@@ -307,12 +312,13 @@ namespace JndUfo
         }
 
         // The camera's parallax swing (CameraRig), before the first round: the UFO held at the left edge of
-        // the screen, then the right, then the middle, each long enough for the swing to settle.
+        // the screen (its centre on the edge, half of it cut off, as far as a participant can fly it), then
+        // the right, then the middle, each long enough for the swing to settle.
         IEnumerator ParallaxShots()
         {
             _ufo.FreezeMovement = true;
             _ufo.SetHidden(false);
-            float[] spots = { 0.08f, 0.92f, 0.5f };
+            float[] spots = { 0f, 1f, 0.5f };
             foreach (float vx in spots)
             {
                 for (float until = Time.realtimeSinceStartup + 2.5f; Time.realtimeSinceStartup < until; )

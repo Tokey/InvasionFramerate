@@ -129,7 +129,7 @@ namespace JndUfo
         public int   lapseCount = 4;
         /// <summary>Chance level γ: the odds a blind shot lands on the tower. Geometric — see
         /// <see cref="GuessRateCalculator"/>, which prints the value for the running screen.</summary>
-        public float guessRate = 0.244f;
+        public float guessRate = 0.235f;
         public int   maxTrials = 50;
         public int   minTrials = 8;
         /// <summary>Stop once the posterior SD of the threshold (fps) is at or below this, after
@@ -145,7 +145,7 @@ namespace JndUfo
         /// Half-width of the hit window, world units, calibrated on a 16:9 display. Feeds the
         /// chance-level hit rate directly (γ = 2r / shot-reachable width), so changing it REQUIRES
         /// changing guessRate in ExperimentConfig.csv — GuessRateCalculator prints the right value
-        /// at startup and warns when the CSV disagrees. r = 5.5 gives γ = 0.244 on 16:9.
+        /// at startup and warns when the CSV disagrees. r = 5.5 gives γ = 0.235 on 16:9.
         /// </summary>
         public readonly float closeRadius      = 5.5f;
         public readonly bool  showHitZone      = true;
@@ -236,7 +236,7 @@ namespace JndUfo
             c.lapseMin    = CsvTable.GetFloat(row, "lapseMin", 0f);
             c.lapseMax    = CsvTable.GetFloat(row, "lapseMax", 0.06f);
             c.lapseCount  = Mathf.Max(1, CsvTable.GetInt(row, "lapseCount", 4));
-            c.guessRate   = Mathf.Clamp01(CsvTable.GetFloat(row, "guessRate", 0.244f));
+            c.guessRate   = Mathf.Clamp01(CsvTable.GetFloat(row, "guessRate", 0.235f));
             c.maxTrials   = Mathf.Max(1, CsvTable.GetInt(row, "maxTrials", 50));
             c.minTrials   = Mathf.Max(0, CsvTable.GetInt(row, "minTrials", 8));
             c.stopSD      = Mathf.Max(0f, CsvTable.GetFloat(row, "stopSD", 2f));
@@ -383,7 +383,7 @@ namespace JndUfo
             // stopSD is ~4% of the searched range on every row. guessRate is the laser's geometric
             // chance level on 16:9 (see GuessRateCalculator).
             const string tail = "0,15,100,-10";
-            const string grid = "50,1,7,10,0,0.06,4,0.244,50,8";
+            const string grid = "50,1,7,10,0,0.06,4,0.235,50,8";
             sb.AppendLine($"60,down,50,1,1,random,unity,{tail},{grid},2");
             sb.AppendLine($"144,down,120,2,2,random,unity,{tail},{grid},5");
             sb.AppendLine($"500,down,415,5,5,random,unity,{tail},{grid},17");

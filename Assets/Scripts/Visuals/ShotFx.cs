@@ -152,6 +152,9 @@ namespace JndUfo
         // Particle pools, bounded: past the cap Emit drops particles rather than growing the pool,
         // so even fire at the cooldown's limit cannot allocate.
         const int SparkPool = 96;
+        // Points along the pulse, every tenth of it: a line takes its colour from its gradient at its points
+        // only, and the comet's bright head sits at 0.8 of its length, where two end points would miss it.
+        const int PulsePoints = 11;
         const int EmberPool = 64;
 
         // Seconds the city glow takes to come up. A five-unit wash cut in at full strength in one
@@ -221,6 +224,7 @@ namespace JndUfo
             _glow        = MakeLine("BoltGlow", 1.8f, out _glowMat);
             _core        = MakeLine("BoltCore", 1f,   out _coreMat);
             _pulse       = MakeLine("Pulse",    1.2f, out _pulseMat);
+            _pulse.positionCount = PulsePoints;
             _impactFlash = MakeQuad("ImpactFlash", GlowShape.Dot,  2.2f, out _impactMat);
             _cityGlow    = MakeQuad("CityGlow",    GlowShape.Dot,  1.3f, out _cityMat);
             _ring        = MakeQuad("Shockwave",   GlowShape.Ring, 1f,   out _ringMat);
@@ -359,8 +363,8 @@ namespace JndUfo
                 return;
             }
 
-            _pulse.SetPosition(0, Vector3.LerpUnclamped(_from, _to, t0));
-            _pulse.SetPosition(1, Vector3.LerpUnclamped(_from, _to, t1));
+            for (int i = 0; i < PulsePoints; i++)
+                _pulse.SetPosition(i, Vector3.LerpUnclamped(_from, _to, Mathf.Lerp(t0, t1, i / (PulsePoints - 1f))));
             _pulse.widthMultiplier = pulseWidth;
 
             Color p = GlowMaterial.Scaled(Color.Lerp(hot, Color.white, 0.5f), pulseIntensity);

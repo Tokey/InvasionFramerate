@@ -123,8 +123,9 @@ namespace JndUfo
             // range its height is read against.
             _planeZ     = _ufo != null ? _ufo.fixedZ : 0f;
             _flightLow  = _ufo != null ? _ufo.minY : _restPosition.y - 5f;
-            float top   = _restPosition.y + RestHalfHeight() * 0.95f;
-            _flightHigh = _ufo != null && _ufo.maxY > 0f ? Mathf.Min(_ufo.maxY, top) : top;
+            // The same ceiling as UfoController.Clamped: a set maxY up to the top of the view, else just under it.
+            float top   = _restPosition.y + RestHalfHeight();
+            _flightHigh = _ufo != null && _ufo.maxY > 0f ? Mathf.Min(_ufo.maxY, top) : top - RestHalfHeight() * 0.05f;
             if (_flightHigh <= _flightLow + 0.01f) _flightHigh = _flightLow + 1f;
         }
 
@@ -185,14 +186,14 @@ namespace JndUfo
         }
 
         // Where the swing is heading: the UFO's place across the view at rest (x, -1 at the left edge to 1 at
-        // the right) and in its flight band (y, -1 at the bottom to 1 at the top). Read against the camera
-        // at rest, never the swung one, so the swing cannot feed back into itself.
+        // the right, where the UFO's centre can reach) and in its flight band (y, -1 at the bottom to 1 at the
+        // top). Read against the camera at rest, never the swung one, so the swing cannot feed back into itself.
         Vector2 SwingTarget()
         {
             Vector3 p     = parallaxTarget.position;
             float   halfH = RestHalfHeight();
             float   halfW = halfH * (cam != null ? cam.aspect : 16f / 9f);
-            float   x     = halfW > 1e-4f ? (p.x - _restPosition.x) / (halfW * 0.96f) : 0f;
+            float   x     = halfW > 1e-4f ? (p.x - _restPosition.x) / halfW : 0f;
             float   mid   = (_flightLow + _flightHigh) * 0.5f;
             float   y     = (p.y - mid) / ((_flightHigh - _flightLow) * 0.5f);
             return new Vector2(Mathf.Clamp(x, -1f, 1f), Mathf.Clamp(y, -1f, 1f));
@@ -359,6 +360,25 @@ namespace JndUfo
             float hx = Mathf.Max(Mathf.Abs(right.x - center.x), Mathf.Abs(center.x - left.x));
             float hy = Mathf.Max(Mathf.Abs(top.y   - center.y), Mathf.Abs(center.y - bottom.y));
             return new Vector2(hx, hy);
+        }
+
+        /// <summary>
+        /// <see cref="ViewportPointAtZ"/> for the camera at rest: its settled position and aim, without the
+        /// shake, the handheld wander or the parallax swing. The UFO's flight envelope is measured on this,
+        /// so none of them can carry the ship past the edge of the screen. Perspective only; otherwise, or
+        /// when this rig does not own the camera's transform, it measures the live camera.
+        /// </summary>
+        public Vector3 RestViewportPointAtZ(float vx, float vy, float worldZ)
+        {
+            Camera c = ActiveCamera;
+            if (c == null) return new Vector3(0f, 0f, worldZ);
+            if (!AxesFromRest || c.orthographic) return ViewportPointAtZ(c, vx, vy, worldZ);
+
+            float   tanV = Mathf.Tan(c.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            Vector3 dir  = _restRotation * new Vector3((2f * vx - 1f) * tanV * c.aspect, (2f * vy - 1f) * tanV, 1f);
+            if (Mathf.Abs(dir.z) < 1e-6f) return new Vector3(_restPosition.x, _restPosition.y, worldZ);
+            float t = Mathf.Abs((worldZ - _restPosition.z) / dir.z);
+            return _restPosition + dir * t;
         }
 
         /// <summary>

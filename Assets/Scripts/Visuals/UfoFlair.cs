@@ -464,13 +464,13 @@ namespace JndUfo
 
         // ── Construction ─────────────────────────────────────────────────────
 
+        // The ship's size (UfoController.size): the rig's world scale, and the trails' widths with it.
+        float ShipSize => _ufo != null ? Mathf.Max(0.01f, _ufo.size) : 1f;
+
         /// <summary>
         /// Lifts the hull into the rig. Runs once, from UfoController.Awake, so before any Start:
         /// the livery is applied after this and finds the hull where it now draws from.
         /// </summary>
-        // The ship's size (UfoController.size): the rig's world scale, and the trails' widths with it.
-        float ShipSize => _ufo != null ? Mathf.Max(0.01f, _ufo.size) : 1f;
-
         void BuildRig()
         {
             Transform    root       = transform;
@@ -501,8 +501,11 @@ namespace JndUfo
 
             // Undo the root's scale so the rig below has an even world scale, the ship's size. A
             // flattened root (a zero axis) cannot be undone; the rig then works in the root's scale.
+            // UfoController applies the size to the root in its Awake; if this is built first (a
+            // UfoFlair placed on the ship by hand can be), build for the root as it is about to be.
             Vector3 s = root.lossyScale;
             float   k = ShipSize;
+            if (_ufo != null && !_ufo.SizeApplied) s *= k;
             if (Mathf.Abs(s.x) > 1e-5f && Mathf.Abs(s.y) > 1e-5f && Mathf.Abs(s.z) > 1e-5f)
                 norm.localScale = new Vector3(k / s.x, k / s.y, k / s.z);
 
@@ -521,7 +524,7 @@ namespace JndUfo
             }
 
             // The side pods and anything else on the hull spin with it. Their rotations are
-            // axis-aligned and the rig's scale is 1, so keeping their world pose is exact.
+            // axis-aligned and the rig's scale is even, so keeping their world pose is exact.
             for (int i = 0; i < count; i++) carried[i].SetParent(_spin, worldPositionStays: true);
         }
 

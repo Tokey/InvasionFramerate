@@ -27,10 +27,17 @@ namespace JndUfo
     /// With nothing in front of it any more its whole length is on show, and a soft-edged line of
     /// light sits in the scene where a hard-edged strip reads as drawn on top of it.
     ///
+    /// In front of the towers: the beam runs down through the tower row, and the towers are solid
+    /// models standing a few units deep on the play plane, dense enough that one stands under the ship
+    /// almost wherever it flies. Drawn where it is, the beam would vanish into the first rooftop below
+    /// it. So every point of it is drawn <see cref="drawInFront"/> nearer the camera, along the line of
+    /// sight through it: it covers exactly the same pixels, only nearer, past the front of any tower.
+    /// The foreground grass is far nearer still, so it keeps covering the beam's foot as before.
+    ///
     /// Sorting: every renderer here sits at <see cref="sortingOrder"/> (−1), under the rest of the
     /// scene's transparents. Light added to light does not care about order; this only keeps any
-    /// alpha-blended transparent drawn over the sight rather than having the sight's light added on
-    /// top of it.
+    /// alpha-blended transparent (the grass) drawn over the sight rather than having the sight's light
+    /// added on top of it.
     ///
     /// Built once in Awake, from <see cref="LaserFirer"/>, on the muzzle object: parented under the
     /// ship so UfoController.SetHidden takes it down with the hull. Nothing allocates per frame.
@@ -64,6 +71,13 @@ namespace JndUfo
         [Tooltip("Brightness at the ground end relative to the muzzle end, so the beam eases off " +
                  "toward the ground rather than ending as a hard bar.")]
         [Range(0f, 1f)] public float groundFade = 0.55f;
+
+        [Tooltip("How much nearer the camera the sight is drawn, world units, each point moved along the " +
+                 "line of sight through it: the same pixels, but in front of the towers, whose models stand " +
+                 "a few units deep on the play plane and would otherwise hide the beam under the first " +
+                 "rooftop. The grass in front is 30 or more units nearer and still covers its foot. 0 draws " +
+                 "it on the play plane.")]
+        [Range(0f, 20f)] public float drawInFront = 10f;
 
         [Tooltip("A small soft glow where the beam meets the ground line: the laser's dot on the city.")]
         public bool groundDot = true;
@@ -112,9 +126,15 @@ namespace JndUfo
         const float GlintSoftness = 1f;
         const float DotSoftness   = 2f;
 
+        // Points along the glint. A line takes its colour from its gradient at its points only, and the
+        // glint's is clear at both ends and bright in the middle: drawn with just its two end points it
+        // would be clear all the way along.
+        const int GlintPoints = 5;
+
         LaserFirer    _laser;
         UfoController _ufo;
         TowerManager  _tower;
+        Camera        _cam;
 
         LineRenderer _beamCore, _beamHalo, _glint, _dot;
         Material     _coreMat,  _haloMat,  _glintMat, _dotMat;
@@ -147,6 +167,7 @@ namespace JndUfo
             _beamCore = MakeLine("SightBeamCore",  GlowShape.Line, CoreSoftness,  coreWidth,        out _coreMat);
             _beamHalo = MakeLine("SightBeamHalo",  GlowShape.Line, HaloSoftness,  haloWidth,        out _haloMat);
             _glint    = MakeLine("SightBeamGlint", GlowShape.Line, GlintSoftness, coreWidth * 1.6f, out _glintMat);
+            _glint.positionCount = GlintPoints;
 
             // The ground dot is a line too: two points exactly as far apart as the line is wide,
             // which the glow shader's Dot shape turns into a round glow facing the camera. A quad
@@ -159,11 +180,13 @@ namespace JndUfo
             ApplyGradients();
         }
 
-        // Not Awake: the livery colour is on a component that may not have run its own Awake yet.
+        // Not Awake: the livery colour is on a component that may not have run its own Awake yet,
+        // and nor may the camera rig.
         void Start()
         {
             if (_laser == null) _laser = GetComponent<LaserFirer>();
             if (matchLivery && _ufo != null) laserColor = _ufo.liveryTint;
+            _cam = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
         }
 
         void OnDestroy()
@@ -237,8 +260,14 @@ namespace JndUfo
             length        = Mathf.Max(0.05f, length);
             Vector3 end   = origin + dir * length;
 
-            _beamCore.SetPosition(0, origin); _beamCore.SetPosition(1, end);
-            _beamHalo.SetPosition(0, origin); _beamHalo.SetPosition(1, end);
+            // Where it is drawn: nearer the camera, on the same pixels (see the class summary). The
+            // widths shrink by the same fraction as the distance, so they keep their size on screen.
+            Vector3 o = Pull(origin, out float ko);
+            Vector3 e = Pull(end,    out float ke);
+            float   k = 0.5f * (ko + ke);
+
+            _beamCore.SetPosition(0, o); _beamCore.SetPosition(1, e);
+            _beamHalo.SetPosition(0, o); _beamHalo.SetPosition(1, e);
 
             // Still unless breathe is turned up; flares with the muzzle flash.
             float breath = 1f - breathe + breathe * pulse;
@@ -246,8 +275,8 @@ namespace JndUfo
             float warm   = 1f + 0.5f * flash;
             float a      = _level * breath;
 
-            _beamHalo.widthMultiplier = haloWidth * flare;
-            _beamCore.widthMultiplier = coreWidth * warm;
+            _beamHalo.widthMultiplier = haloWidth * flare * k;
+            _beamCore.widthMultiplier = coreWidth * warm * k;
 
             Tint(_coreMat, laserColor, coreAlpha * a, intensity * flare);
             Tint(_haloMat, laserColor, haloAlpha * a, intensity * warm);
@@ -271,10 +300,10 @@ namespace JndUfo
 
             if (_shownDot)
             {
-                float size = dotSize * (1f + landing / 3f);
+                float size = dotSize * (1f + landing / 3f) * ke;
                 float r    = size * 0.5f;
-                _dot.SetPosition(0, new Vector3(end.x - r, end.y, end.z));
-                _dot.SetPosition(1, new Vector3(end.x + r, end.y, end.z));
+                _dot.SetPosition(0, new Vector3(e.x - r, e.y, e.z));
+                _dot.SetPosition(1, new Vector3(e.x + r, e.y, e.z));
                 _dot.widthMultiplier = size;
                 Tint(_dotMat, laserColor, dotAlpha * a, intensity * warm * (1f + landing));
             }
@@ -284,13 +313,27 @@ namespace JndUfo
             float t0 = Mathf.Clamp01(c - half);
             float t1 = Mathf.Clamp01(c + half);
 
-            _glint.SetPosition(0, Vector3.LerpUnclamped(origin, end, t0));
-            _glint.SetPosition(1, Vector3.LerpUnclamped(origin, end, t1));
-            _glint.widthMultiplier = coreWidth * 1.6f;
+            for (int i = 0; i < GlintPoints; i++)
+                _glint.SetPosition(i, Vector3.LerpUnclamped(o, e, Mathf.Lerp(t0, t1, i / (GlintPoints - 1f))));
+            _glint.widthMultiplier = coreWidth * 1.6f * k;
 
             // Eases in at the muzzle; at the ground the dot swallows it rather than it fading out.
             float ease = Mathf.SmoothStep(0f, 1f, p / 0.2f);
             Tint(_glintMat, laserColor, glintAlpha * a * ease, intensity * (1f + 0.6f * flash));
+        }
+
+        // p moved drawInFront nearer the camera along the line of sight through it, so it lands on the same
+        // pixel. k is the fraction of its distance from the camera that is left.
+        Vector3 Pull(Vector3 p, out float k)
+        {
+            k = 1f;
+            if (_cam == null || drawInFront <= 0f) return p;
+            Transform c = _cam.transform;
+            Vector3   v = p - c.position;
+            float     d = Vector3.Dot(v, c.forward);
+            if (d <= 2f * drawInFront) return p;   // too near the camera to move that far
+            k = 1f - drawInFront / d;
+            return c.position + v * k;
         }
 
         // ── Construction ─────────────────────────────────────────────────────

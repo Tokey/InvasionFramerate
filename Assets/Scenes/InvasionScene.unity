@@ -1252,7 +1252,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::JndUfo.UfoController
   rig: {fileID: 330585548}
-  minY: 2
+  minY: 2.4
   maxY: 20
   fixedZ: 0
   size: 1.3

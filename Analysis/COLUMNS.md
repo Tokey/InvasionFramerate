@@ -22,7 +22,7 @@ number = `blockIndex` in the logs.
 | Stimulus | `baseFps`; `direction` (`down` = altered side at base − Δ, `up` = base + Δ); `minDiffFps`, `maxDiffFps`, `diffStepFps` (the Δ grid QUEST+ searches: min, min + step, … max); `alteredSide` (`random` per round / `left` / `right`); `frameLimiter` (`precise` busy-wait / `unity` targetFrameRate) |
 | Round bounds | `maxCrossingsPerRound` (0 = no cap), `roundTimeoutSec` |
 | Scoring | `hitPoints`, `missPoints` (`hitPoints` also defines `isHit`) |
-| QUEST+ | `threshCount` (θ grid over `minDiffFps`–`maxDiffFps`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ = 0.244, geometric chance on 16:9), `maxTrials`, `minTrials`, `stopSD` (fps) |
+| QUEST+ | `threshCount` (θ grid over `minDiffFps`–`maxDiffFps`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ = 0.235, geometric chance on 16:9), `maxTrials`, `minTrials`, `stopSD` (fps) |
 
 Not in the file, pinned in `StudyConfig`: `closeRadius` = 5.5, `crossingDeadZone` = 0.25,
 `fireCooldown` = 0.25 s, `revealHoldSec` = 2 s, `readyBeatSec` = 0.5 s.

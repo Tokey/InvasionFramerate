@@ -17,11 +17,16 @@ namespace JndUfo.EditorTools
     /// Drop a text file at <c>Temp/AgentBridge/request.txt</c> holding one command per line:
     ///
     ///   refresh              AssetDatabase.Refresh — imports changed files, recompiles scripts
-    ///   build &lt;exePath&gt;     builds the enabled scenes for Windows 64-bit to that .exe
+    ///   build &lt;exePath&gt;     builds the enabled scenes for Windows 64-bit to that .exe; refused when an
+    ///                        open scene has real unsaved edits (Unity would stop in a modal dialog to ask).
+    ///                        A scene merely marked modified, its content the same as its file, is saved first
     ///   render &lt;pngPath&gt;    renders Camera.main in edit mode to a 1920x1080 PNG
     ///   setfloat &lt;Type&gt; &lt;field&gt; &lt;value&gt;   sets a float field on the open scene's first component of
-    ///                        that type, through the Inspector's own machinery, and saves the scene
+    ///                        that type, through the Inspector's own machinery, and saves the scene; refused
+    ///                        when the scene already has unsaved changes, which saving would write too
     ///   setcolor &lt;Type&gt; &lt;field&gt; &lt;r&gt; &lt;g&gt; &lt;b&gt; &lt;a&gt;   likewise for a Color field
+    ///   scenecopy &lt;path&gt;    writes the open scene as it is in memory to that path, as a copy (the scene
+    ///                        keeps its path and its unsaved changes): diff it against the saved file
     ///
     /// Progress and results go to <c>Temp/AgentBridge/status.txt</c>; the request file is deleted
     /// once taken. Nothing happens while the Editor is playing, compiling or importing — a request
@@ -122,6 +127,10 @@ namespace JndUfo.EditorTools
                     ShaderMessages(log);
                     break;
 
+                case "scenecopy":
+                    SceneCopy(arg, log);
+                    break;
+
                 case "setfloat":
                     SetFloat(arg, log);
                     break;
@@ -142,13 +151,10 @@ namespace JndUfo.EditorTools
 
             // With an open scene modified, BuildPlayer stops in a modal dialog to ask whether to save it, and
             // the Editor waits there until someone answers. Refuse instead and say which scene.
-            string dirty = string.Join(", ", Enumerable.Range(0, SceneManager.sceneCount)
-                                                       .Select(SceneManager.GetSceneAt)
-                                                       .Where(sc => sc.isDirty)
-                                                       .Select(sc => sc.path));
-            if (dirty.Length > 0)
+            string edited = UnsavedEdits(log);
+            if (edited.Length > 0)
             {
-                log.AppendLine($"build: not started, {dirty} has unsaved changes and Unity would stop to ask " +
+                log.AppendLine($"build: not started, {edited} has unsaved changes and Unity would stop to ask " +
                                "about them. Save or revert it in the Editor, then build again.");
                 return;
             }
@@ -188,6 +194,12 @@ namespace JndUfo.EditorTools
             foreach (MonoBehaviour mb in UnityEngine.Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include))
             {
                 if (mb == null || mb.GetType().Name != a[0]) continue;
+                if (UnsavedEdits(log).Length > 0)
+                {
+                    log.AppendLine($"setfloat: not done, '{mb.gameObject.scene.path}' already has unsaved changes and " +
+                                   "saving would write them too. Save or revert it in the Editor, then try again.");
+                    return;
+                }
                 var so = new SerializedObject(mb);
                 SerializedProperty prop = so.FindProperty(a[1]);
                 if (prop == null || prop.propertyType != SerializedPropertyType.Float)
@@ -220,6 +232,12 @@ namespace JndUfo.EditorTools
             foreach (MonoBehaviour mb in UnityEngine.Object.FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include))
             {
                 if (mb == null || mb.GetType().Name != a[0]) continue;
+                if (UnsavedEdits(log).Length > 0)
+                {
+                    log.AppendLine($"setcolor: not done, '{mb.gameObject.scene.path}' already has unsaved changes and " +
+                                   "saving would write them too. Save or revert it in the Editor, then try again.");
+                    return;
+                }
                 var so = new SerializedObject(mb);
                 SerializedProperty prop = so.FindProperty(a[1]);
                 if (prop == null || prop.propertyType != SerializedPropertyType.Color)
@@ -239,6 +257,48 @@ namespace JndUfo.EditorTools
         }
 
         // Every compiler message (errors and warnings) of the project's own shaders in Resources/Shaders.
+        // The open scenes with real unsaved edits, comma-separated; empty if none. Something in this project
+        // marks the scene dirty within seconds of every save without changing a byte of it, so a dirty flag
+        // alone says nothing: each dirty scene is written to a scratch copy and compared with its file. One
+        // that matches is saved, which writes the same bytes and clears the flag; one that differs holds
+        // someone's edits and is left exactly as it is.
+        static string UnsavedEdits(StringBuilder log)
+        {
+            var edited = new StringBuilder();
+            string tmp = Path.Combine("Temp", "AgentBridge", "_dirty_check.unity");
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                Scene sc = SceneManager.GetSceneAt(i);
+                if (!sc.isDirty) continue;
+                bool same = !string.IsNullOrEmpty(sc.path) && File.Exists(sc.path)
+                         && UnityEditor.SceneManagement.EditorSceneManager.SaveScene(sc, tmp, saveAsCopy: true)
+                         && File.ReadAllText(sc.path).Replace("\r", "") == File.ReadAllText(tmp).Replace("\r", "");
+                try { File.Delete(tmp); File.Delete(tmp + ".meta"); } catch (IOException) { }
+                if (same && UnityEditor.SceneManagement.EditorSceneManager.SaveScene(sc))
+                {
+                    log.AppendLine($"  '{sc.path}' was marked modified but matched its file byte for byte; saved");
+                    continue;
+                }
+                if (edited.Length > 0) edited.Append(", ");
+                edited.Append(string.IsNullOrEmpty(sc.path) ? sc.name : sc.path);
+            }
+            return edited.ToString();
+        }
+
+        // "path": writes the open scene, as it is in memory, to that path as a copy. The scene keeps its own
+        // path and its unsaved changes, so diffing the copy against the saved file shows what those are.
+        static void SceneCopy(string path, StringBuilder log)
+        {
+            if (string.IsNullOrEmpty(path)) { log.AppendLine("scenecopy: no path given"); return; }
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                Scene sc = SceneManager.GetSceneAt(i);
+                string to = SceneManager.sceneCount == 1 ? path : path + "." + i + ".unity";
+                bool ok = UnityEditor.SceneManagement.EditorSceneManager.SaveScene(sc, to, saveAsCopy: true);
+                log.AppendLine($"scenecopy: '{sc.path}' dirty={sc.isDirty} -> {to} ok={ok}");
+            }
+        }
+
         static void ShaderMessages(StringBuilder log)
         {
             foreach (string guid in AssetDatabase.FindAssets("t:Shader", new[] { "Assets/Resources/Shaders" }))

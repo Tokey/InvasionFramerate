@@ -312,7 +312,10 @@ namespace JndUfo
             Debug.Log(report);
             foreach (StudyConfig block in _blocks)
             {
-                if (Mathf.Abs(block.guessRate - gamma) > 0.02f)
+                // Tight: a stale value is typically off by under 0.01 (moving the UFO's edge clamp
+                // from 2% to 0% moved γ by 0.008), and on a 16:9 screen the CSV's three decimals
+                // match the computed γ to well within this.
+                if (Mathf.Abs(block.guessRate - gamma) > 0.005f)
                     Debug.LogWarning($"[GuessRate] ExperimentConfig.csv row {block.blockIndex} has " +
                                       $"guessRate={block.guessRate:0.000} but this screen implies {gamma:0.000}. " +
                                       "A γ far from chance biases the threshold — update the CSV unless " +

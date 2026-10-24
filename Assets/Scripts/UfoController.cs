@@ -24,9 +24,11 @@ namespace JndUfo
         public CameraRig rig;
 
         [Header("Y Clamp")]
-        [Tooltip("Lowest the UFO may descend (world Y).")]
-        public float minY = 2f;
-        [Tooltip("Highest the UFO may ascend (world Y). 0 = top of visible view.")]
+        [Tooltip("Lowest the UFO may descend (world Y). High enough that the ship's lowest point, its " +
+                 "belly turret, clears the tallest tower and its beacon: at size 1.3 that is 2.4.")]
+        public float minY = 2.4f;
+        [Tooltip("Highest the UFO may ascend (world Y). 0 = just under the top of the view. A set value " +
+                 "never takes the ship's centre above the top of the view.")]
         public float maxY = 0f;
 
         [Header("Fixed Depth")]
@@ -77,6 +79,9 @@ namespace JndUfo
         /// </summary>
         public bool FreezeMovement { get; set; }
 
+        /// <summary>True once Awake has applied <see cref="size"/> to this transform's scale.</summary>
+        public bool SizeApplied { get; private set; }
+
         /// <summary>
         /// True while the UFO is withdrawn from view — between rounds, under the reset veil.
         /// Only the visuals go: the controller keeps tracking the pointer so unhiding does not
@@ -124,6 +129,7 @@ namespace JndUfo
 
             // Before UfoFlair, which builds its rig from the ship's scale as it then stands.
             transform.localScale *= size;
+            SizeApplied = true;
 
             // Here rather than in Start: UfoFlair moves the hull into its rig in its own Awake, and
             // the livery (Start, below) has to find the hull where it now draws.
@@ -182,27 +188,32 @@ namespace JndUfo
         // GuessRateCalculator assumes this band: change one, change the other.
         Vector3 Clamped(Camera cam, Vector3 pos)
         {
-            float ceilY = maxY > 0f
-                ? maxY
-                : (rig != null
-                    ? rig.ViewCenterAtZ(fixedZ).y + rig.ViewHalfExtentsAtZ(fixedZ).y * 0.95f
-                    : 20f);
-
-            float minX, maxX;
-            if (cam != null)
+            // Measured on the view at rest (CameraRig.RestViewportPointAtZ): the shake after a shot moves
+            // the camera up to about a unit, and an envelope that moved with it would leave the ship that
+            // far past the edge once the camera settled. Only the pan between rounds moves it.
+            float minX = -20f, maxX = 20f, topY = 20f, bottomY = -20f;
+            if (rig != null || cam != null)
             {
-                Vector3 lw = CameraRig.ViewportPointAtZ(cam, 0f, 0.5f, fixedZ);
-                Vector3 rw = CameraRig.ViewportPointAtZ(cam, 1f, 0.5f, fixedZ);
-                minX = Mathf.Min(lw.x, rw.x);
-                maxX = Mathf.Max(lw.x, rw.x);
+                Vector3 l = ViewPoint(cam, 0f, 0.5f), r = ViewPoint(cam, 1f, 0.5f);
+                Vector3 b = ViewPoint(cam, 0.5f, 0f), t = ViewPoint(cam, 0.5f, 1f);
+                minX = Mathf.Min(l.x, r.x);
+                maxX = Mathf.Max(l.x, r.x);
+                topY = Mathf.Max(b.y, t.y);
+                bottomY = Mathf.Min(b.y, t.y);
             }
-            else { minX = -20f; maxX = 20f; }
+
+            // A set ceiling still never lets the centre above the top of the view, so at worst half the
+            // ship is cut off there, as at the sides; 0 keeps it just under the top.
+            float ceilY = maxY > 0f ? Mathf.Min(maxY, topY) : topY - (topY - bottomY) * 0.025f;
 
             pos.x = Mathf.Clamp(pos.x, minX, maxX);
-            pos.y = Mathf.Clamp(pos.y, minY, ceilY);
+            pos.y = Mathf.Clamp(pos.y, minY, Mathf.Max(minY, ceilY));
             pos.z = fixedZ;
             return pos;
         }
+
+        Vector3 ViewPoint(Camera cam, float vx, float vy) =>
+            rig != null ? rig.RestViewportPointAtZ(vx, vy, fixedZ) : CameraRig.ViewportPointAtZ(cam, vx, vy, fixedZ);
 
         /// <summary>
         /// Withdraws the UFO from view, or puts it back exactly as it was. Cheap enough to toggle
