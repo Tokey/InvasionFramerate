@@ -28,6 +28,12 @@ namespace JndUfo
     /// (the impact point itself, on the ground line), the way the old ground fog did. Its sway and motes move,
     /// slowly, so like everything that moves they show the frame rate; keep the settings the same for a whole
     /// study. Created and built by <see cref="TowerManager"/> at Start.
+    ///
+    /// The endless world (the world scroll; see <see cref="WorldRepeat"/>): built with a period, each row's texture
+    /// holds exactly one period of meadow, baked to tile (JndUfo/GrassBake's _Period), and the row is one wide quad
+    /// over it repeating across the period and the view either side; the foreground jumps whole periods to stay under
+    /// the camera, and the wind is a function of world position (JndUfo/Grass's _WorldX), so a jump changes nothing on
+    /// screen and the meadow is endless.
     /// </summary>
     public class Foreground : MonoBehaviour
     {
@@ -57,6 +63,7 @@ namespace JndUfo
         const float DesignGroundPx  = 222.2f;  // the ground line the rows below are laid out for; they follow the real one
         const float SideMargin      = 4f;      // world units of grass past the widest view any pan reaches
         const float QuadBottom      = -0.4f;   // fraction of the screen's height: far below it, for the shake
+        const float EndlessMargin   = 2f;      // world units more in the endless world: the shake, drift and swing
 
         struct RowSpec
         {
@@ -145,6 +152,8 @@ namespace JndUfo
         static readonly int WindId      = Shader.PropertyToID("_Wind");
         static readonly int MotesId     = Shader.PropertyToID("_Motes");
         static readonly int MoteLookId  = Shader.PropertyToID("_MoteLook");
+        static readonly int PeriodId    = Shader.PropertyToID("_Period");
+        static readonly int WorldXId    = Shader.PropertyToID("_WorldX");
 
         sealed class Row
         {
@@ -164,8 +173,11 @@ namespace JndUfo
 
         /// <summary>Builds the rows for <paramref name="cam"/> at rest, wide enough for pans of
         /// ±<paramref name="panRange"/> around <paramref name="originX"/>, around the ground line at
-        /// <paramref name="groundY"/> on the play plane <paramref name="playZ"/>. Call once.</summary>
-        public void Build(Camera cam, float originX, float panRange, float groundY, float playZ)
+        /// <paramref name="groundY"/> on the play plane <paramref name="playZ"/> — or, with
+        /// <paramref name="endlessPeriod"/>, repeating with that period for the endless world (see the class
+        /// summary). Call once.</summary>
+        public void Build(Camera cam, float originX, float panRange, float groundY, float playZ,
+                          float endlessPeriod = 0f)
         {
             if (_built || cam == null) return;
 
@@ -192,7 +204,7 @@ namespace JndUfo
             {
                 RowSpec spec = Rows[i];
                 spec.MassTop += _shift;
-                _rows[i] = BuildRow(spec, i, bake, draw, camY, camZ, tan, aspect, originX, panRange);
+                _rows[i] = BuildRow(spec, i, bake, draw, camY, camZ, tan, aspect, originX, panRange, endlessPeriod);
             }
 
             Apply();
@@ -201,13 +213,23 @@ namespace JndUfo
         }
 
         Row BuildRow(in RowSpec spec, int index, Shader bake, Shader draw, float camY, float camZ, float tan,
-                     float aspect, float originX, float panRange)
+                     float aspect, float originX, float panRange, float endlessPeriod)
         {
             float d      = spec.Distance;
             float k      = ReferenceHeight * 0.5f / (tan * d);       // reference px per world unit, here
             float z      = camZ + d;
             float halfW  = tan * d * aspect + panRange + SideMargin; // world units
             float widthPx = 2f * halfW * k;
+
+            // The endless world: the texture holds one period of meadow, baked to tile, and the quad reaches a period
+            // and the view either side of the strip's middle, which the strip keeps within half a period of the
+            // camera.
+            bool endless = endlessPeriod > 0f;
+            if (endless)
+            {
+                halfW   = endlessPeriod * 0.5f + tan * d * aspect + SideMargin + EndlessMargin;
+                widthPx = endlessPeriod * k;
+            }
 
             float clumpMax = 1f + spec.ClumpStrength;
             float tallest  = Mathf.Max(spec.Grass.w, Mathf.Max(spec.Leaf.w, spec.Stem.w)) * clumpMax;
@@ -231,8 +253,19 @@ namespace JndUfo
             row.Bake.SetVector(StemAId,  spec.Stem);
             row.Bake.SetVector(StemBId,  WithReach(spec.StemShape, spec.Stem, spec.StemLean, spec.StemShape.y, spec.Blur, clumpMax));
             row.Bake.SetFloat(StemLeanId, spec.StemLean);
+            if (endless) row.Bake.SetFloat(PeriodId, widthPx);   // the texture's width is exactly one period
 
             int texW = Mathf.Clamp(Mathf.CeilToInt(widthPx), 64, 4096);
+            if (endless)
+            {
+                // A texel per reference px, up to what the GPU takes: wider than that, the period is stretched.
+                int cap = SystemInfo.maxTextureSize;
+                texW = Mathf.Clamp(Mathf.RoundToInt(widthPx), 64, cap);
+                if (Mathf.RoundToInt(widthPx) > cap)
+                    Debug.LogWarning($"[Foreground] The {spec.Name} row's period is {widthPx:0} px, more than this GPU's " +
+                                     $"{cap} px textures: its grass is stretched {widthPx / cap:0.00}x. A shorter " +
+                                     "worldScrollPeriod keeps it sharp.");
+            }
             int texH = Mathf.Clamp(Mathf.CeilToInt(bandHi - bandLo), 16, 1024);
             var desc = new RenderTextureDescriptor(texW, texH, RenderTextureFormat.ARGB32, 0)
             {
@@ -248,6 +281,8 @@ namespace JndUfo
                 filterMode = FilterMode.Trilinear,
                 wrapMode   = TextureWrapMode.Clamp,
             };
+            // Endless, the period repeats across the row; up and down it still clamps (solid below, empty above).
+            if (endless) row.Silhouette.wrapModeU = TextureWrapMode.Repeat;
             Bake(row);
 
             // The quad, from far below the screen to the tips of the tallest stems.
@@ -256,7 +291,11 @@ namespace JndUfo
             row.Quad = new Mesh { name = "GrassRow_" + spec.Name, hideFlags = HideFlags.DontSave };
             row.Quad.vertices  = new[] { new Vector3(originX - halfW, y0, z), new Vector3(originX + halfW, y0, z),
                                          new Vector3(originX + halfW, y1, z), new Vector3(originX - halfW, y1, z) };
-            row.Quad.uv        = new[] { new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(0f, 1f) };
+            // Endless, u counts periods, 0 at the period's left end (originX - period / 2), so across the quad the
+            // texture repeats, and where it repeats the meadow carries on.
+            float u0 = endless ? (endlessPeriod * 0.5f - halfW) / endlessPeriod : 0f;
+            float u1 = endless ? (endlessPeriod * 0.5f + halfW) / endlessPeriod : 1f;
+            row.Quad.uv        = new[] { new Vector2(u0, 0f), new Vector2(u1, 0f), new Vector2(u1, 1f), new Vector2(u0, 1f) };
             row.Quad.triangles = new[] { 0, 2, 1, 0, 3, 2 };
             row.Quad.RecalculateBounds();
 
@@ -264,7 +303,8 @@ namespace JndUfo
             row.Draw.mainTexture = row.Silhouette;
             row.Draw.SetColor(RimId,   spec.Rim);
             row.Draw.SetFloat(ShadeId, spec.Shade);
-            row.Draw.SetVector(AreaId, new Vector4(widthPx, quadLo, bandHi, 0f));
+            row.Draw.SetVector(AreaId, new Vector4(widthPx, quadLo, bandHi, endless ? k : 0f));
+            if (endless) row.Draw.SetFloat(WorldXId, 1f);   // the flutter and motes by world X: see JndUfo/Grass
             float swayBase = spec.MassTop - spec.MassAmp - 6f;
             float swayTop  = spec.MassTop + spec.MassAmp + 0.8f * tallest;
             row.Draw.SetVector(BandId, new Vector4(bandLo, bandHi, swayBase, Mathf.Max(1f, swayTop - swayBase)));

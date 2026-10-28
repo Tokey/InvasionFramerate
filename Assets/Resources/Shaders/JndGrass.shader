@@ -12,6 +12,11 @@
 // update on the CPU. The randomness is sums of sines at unrelated rates, so it never visibly repeats and
 // keeps its precision however long the session runs.
 //
+// The endless world (_WorldX = 1): the row is one wide quad over a texture that repeats (see Foreground), and the
+// row jumps whole periods to stay under the camera. Everything that moves is then a function of WORLD position —
+// the gusts and buffeting always are, and the flutter and the motes become so, at _Area.w reference px per world
+// unit — so a jump changes nothing on screen. Off, all as before.
+//
 // Premultiplied: alpha is the grass's coverage, colour already weighted by it, the motes and the backlit
 // edges added on top. Transparent, depth-tested, sorted back to front by distance with every other
 // transparent, so the play plane's effects (drawn first, being farther) go behind it. Built-in-style CG, no
@@ -32,6 +37,7 @@ Shader "JndUfo/Grass"
         _Motes ("Motes (cell px, chance, low px, high px)", Vector) = (300, 0.3, 200, 260)
         _MoteLook ("Mote Look (radius px, softness px, level)", Vector) = (4, 1.5, 0.3, 0)
         [HDR] _MoteColor ("Mote Colour", Color) = (1, 0.72, 0.42, 1)
+        _WorldX ("Flutter and Motes by World X (endless world)", Float) = 0
     }
 
     SubShader
@@ -63,6 +69,7 @@ Shader "JndUfo/Grass"
             float4 _Motes;
             float4 _MoteLook;
             half4  _MoteColor;
+            float  _WorldX;
 
             struct appdata
             {
@@ -151,13 +158,17 @@ Shader "JndUfo/Grass"
                 float Y = lerp(_Area.y, _Area.z, i.uv.y);
                 float t = _Time.y;
 
+                // Where the flutter and the motes are drawn from: along the row, or in the endless world along the
+                // world, in the same reference px (see the header).
+                float Xw = _WorldX > 0.5 ? i.wx * _Area.w : X;
+
                 // The wind: a lean downwind that a gust deepens, buffeting that a gust stirs up, and a quick
                 // flutter. Nothing moves at the roots; the tips move most.
                 float sway   = saturate((Y - _Band.z) / _Band.w);
                 sway *= sway;
                 float gust   = Gust(i.wx + _Wind.z, t);
                 float buffet = 0.6 * sin(t * 3.1 + i.wx * 0.7 + _Wind.z) + 0.4 * sin(t * 4.7 + i.wx * 1.6);
-                float flut   = sin(X * 0.19 + t * 5.0 + 3.0 * sin(X * 0.031 + t * 0.6));
+                float flut   = sin(Xw * 0.19 + t * 5.0 + 3.0 * sin(Xw * 0.031 + t * 0.6));
                 float dx     = (_Wind.x * (0.25 + 0.75 * gust + 0.55 * buffet * (0.35 + 0.65 * gust))
                               + _Wind.y * flut * (0.5 + 0.5 * gust)) * sway * _Wind.w;
 
@@ -175,7 +186,7 @@ Shader "JndUfo/Grass"
                 half3 col  = lerp(_Base.rgb, _Upper.rgb, smoothstep(_Ground.x, _Ground.y, sy)) * _Shade;
                 half  edge = cov * (1.0 - cov) * 4.0;
                 half3 rgb  = col * cov + _Rim.rgb * (edge * up * up * (0.6 + 0.8 * gust * _Wind.w));
-                rgb += Motes(X, Y, t);
+                rgb += Motes(Xw, Y, t);
                 return half4(rgb, cov);
             }
             ENDCG

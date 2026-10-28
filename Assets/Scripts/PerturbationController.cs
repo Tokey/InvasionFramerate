@@ -67,7 +67,20 @@ namespace JndUfo
             public float MeasuredAlteredFps => alteredSec > 0f ? alteredFrames / alteredSec : float.NaN;
             public float MeasuredLeftFps    => alteredSide == Side.Left  ? MeasuredAlteredFps : MeasuredBaseFps;
             public float MeasuredRightFps   => alteredSide == Side.Right ? MeasuredAlteredFps : MeasuredBaseFps;
+
+            /// <summary>The same round seen from a copy of its boundary that the world scroll repeats with the
+            /// frame rates the other way round (see TowerManager.BoundaryPeriod): its altered side swapped,
+            /// everything else as it was.</summary>
+            public TrialRecord Flipped()
+            {
+                TrialRecord r = this;
+                r.alteredSide = Opposite(alteredSide);
+                return r;
+            }
         }
+
+        /// <summary>The other side.</summary>
+        public static Side Opposite(Side s) => s == Side.Left ? Side.Right : Side.Left;
 
         /// <summary>Which side's cap paced a frame. None between rounds, when the base cap applies but
         /// no split is in force.</summary>
@@ -273,8 +286,10 @@ namespace JndUfo
         {
             if (ufoController == null || towerManager == null) return;
 
+            // How far past the boundary the UFO is, signed by side — past the nearest of its copies, with the
+            // sign turned at every other one, when the world scroll repeats it (see TowerManager.SideAlong).
             Vector3 right = rig != null ? rig.Right : Vector3.right;
-            float along = Vector3.Dot(ufoController.transform.position - towerManager.TowerBase, right);
+            float along = towerManager.SideAlong(ufoController.transform.position, right);
 
             int sideSign;
             if (_lastSideSign == 0)

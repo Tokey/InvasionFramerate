@@ -5,6 +5,8 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace JndUfo
 {
@@ -25,10 +27,27 @@ namespace JndUfo
     ///       parallax swing: the UFO held at the left edge, the right edge and the middle; then five
     ///       frames 0.2 s apart with the UFO still, to see the scene's own motion.
     ///
+    ///   Invasion.exe -jndSeams [folder]
+    ///       Checks the endless world (the world scroll on) for seams: with time stopped and everything that
+    ///       moves on the wall clock put still, it photographs the view a hair before and a hair after the
+    ///       point where each strip of repeating scenery jumps a period, both ways, and compares the two
+    ///       pictures pixel by pixel. A seamless jump changes nothing; the report gives how many pixels
+    ///       changed and by how much, and both pictures are saved. Also a few views far along the world.
+    ///   Invasion.exe -jndProfile [folder] [-jndWorldScroll]
+    ///       What each part of the scene costs: uncapped, the UFO sweeping across the view (or, with
+    ///       -jndWorldScroll, flying steadily across the endless world, the camera following), every
+    ///       effect is switched off and on again in turn — three times each, interleaved with the scene
+    ///       as it is, so a drift in the PC's speed cannot pass for a cost — and the frame time it saves
+    ///       is reported, largest first, beside a control that switches nothing (the noise). With
+    ///       -jndWorldScroll it also times the camera standing still against scrolling. About four
+    ///       minutes. Run it with and without -jndWorldScroll to see what the endless world costs.
+    ///
     /// Either can be run with parts of the scene switched off, to see what each costs or how the
     /// scene looks without it: -jndNoBackdrop (the city drawn in focus, by the main camera),
     /// -jndNoForeground (no grass), -jndNoParallax (no camera swing). The benchmark's report lists
-    /// the switches it ran with.
+    /// the switches it ran with. The world scroll (GameManager.worldScroll) is off for every check
+    /// unless a profile is asked for it with -jndWorldScroll: it is settled before the scenery is
+    /// built, which decides whether the world is endless.
     ///
     /// Neither is a session. ExperimentDirector stands down — no participant number is taken,
     /// nothing is written under Data/Logs, no prompts — and the rounds are driven from here
@@ -38,7 +57,7 @@ namespace JndUfo
     /// </summary>
     public class QaRunner : MonoBehaviour
     {
-        enum RunMode { None, Benchmark, Capture }
+        enum RunMode { None, Benchmark, Capture, Profile, Seams }
 
         static bool    s_parsed;
         static RunMode s_mode;
@@ -65,6 +84,8 @@ namespace JndUfo
             {
                 RunMode m = args[i] == "-jndBenchmark" ? RunMode.Benchmark
                           : args[i] == "-jndCapture"   ? RunMode.Capture
+                          : args[i] == "-jndProfile"   ? RunMode.Profile
+                          : args[i] == "-jndSeams"     ? RunMode.Seams
                           : RunMode.None;
                 if (m == RunMode.None) continue;
 
@@ -79,6 +100,13 @@ namespace JndUfo
         static void Boot()
         {
             if (!Active) return;
+
+            // Every Awake has run here, but no Start: TowerManager builds the scenery in its Start, endless if the
+            // world scroll is on by then. So it is settled now — on only for a profile asked to scroll. The other
+            // checks place the UFO and the tower by fractions of the view, which the scroll would drag along.
+            GameManager game = GameManager.Instance != null ? GameManager.Instance : FindAnyObjectByType<GameManager>();
+            if (game != null) game.worldScroll = ScrollWanted;
+
             var go = new GameObject("QaRunner");
             DontDestroyOnLoad(go);
             go.AddComponent<QaRunner>();
@@ -133,6 +161,16 @@ namespace JndUfo
                 yield break;
             }
 
+            // The checks place the UFO and the tower by fractions of the view, which the world scroll would
+            // drag along after the UFO every frame. Settled in Boot already; this catches a scene that turns it
+            // on later.
+            if (_game.worldScroll && !ScrollWanted)
+            {
+                Debug.Log("[QaRunner] World scroll is on in the scene — switched off for the checks.");
+                _game.worldScroll = false;
+                if (CameraRig.Instance != null) CameraRig.Instance.StopScrollNow();
+            }
+
             // Shots come from here only: no stray click fires one, and with firing off the round
             // clock never arms.
             _laser.SetFiringEnabled(false);
@@ -140,8 +178,10 @@ namespace JndUfo
             ApplySwitches();
 
             Debug.Log($"[QaRunner] {s_mode} → {_dir}{(Switches.Length > 0 ? " with" + Switches : "")}");
-            if (s_mode == RunMode.Benchmark) yield return Benchmark();
-            else                             yield return Capture();
+            if      (s_mode == RunMode.Benchmark) yield return Benchmark();
+            else if (s_mode == RunMode.Profile)   yield return Profile();
+            else if (s_mode == RunMode.Seams)     yield return Seams();
+            else                                  yield return Capture();
 
             Application.Quit(0);
         }
@@ -150,13 +190,16 @@ namespace JndUfo
 
         static bool HasArg(string arg) => Array.IndexOf(Environment.GetCommandLineArgs(), arg) >= 0;
 
+        // Whether this check runs with the world scroll on: the seam check always, a profile when asked.
+        static bool ScrollWanted => s_mode == RunMode.Seams || (s_mode == RunMode.Profile && HasArg("-jndWorldScroll"));
+
         // The switches given, for the log and the report: " -jndNoBackdrop -jndNoParallax", or "".
         static string Switches
         {
             get
             {
                 var sb = new StringBuilder();
-                foreach (string a in new[] { "-jndNoBackdrop", "-jndNoForeground", "-jndNoParallax" })
+                foreach (string a in new[] { "-jndNoBackdrop", "-jndNoForeground", "-jndNoParallax", "-jndWorldScroll" })
                     if (HasArg(a)) sb.Append(' ').Append(a);
                 return sb.ToString();
             }
@@ -361,6 +404,444 @@ namespace JndUfo
             Destroy(shot);
         }
 
+        // ── -jndSeams ────────────────────────────────────────────────────────
+
+        // How far either side of a jump the two pictures are taken, world units: far below a pixel anywhere.
+        const float SeamDelta = 0.0005f;
+
+        IEnumerator Seams()
+        {
+            // Stop everything that moves, so only a jump can change the picture: scaled time stops every shader
+            // (they read _Time), the particles and the weather's fall; the camera's wander and swing run on the wall
+            // clock, so off (they ease out); the UFO, the readout and the towers' beacons likewise.
+            Time.timeScale = 0f;
+            CameraRig rig = CameraRig.Instance;
+            if (rig != null) { rig.handheld = false; rig.parallax = false; }
+            _game.worldScrollHandheldFollow = false;   // locked on, so the camera stands exactly where it is put
+            _ufo.FreezeMovement = true;
+            _ufo.SetHidden(true);
+            if (_ui != null && _ui.showDebug) _ui.SetDebugVisible(false);
+            if (_tower.towerField != null)
+                foreach (Renderer r in _tower.towerField.GetComponentsInChildren<Renderer>(true))
+                    if (r.name.StartsWith("Beacon_", StringComparison.Ordinal)) r.enabled = false;
+            for (float end = Time.realtimeSinceStartup + 2.5f; Time.realtimeSinceStartup < end; ) yield return null;
+
+            var inv = CultureInfo.InvariantCulture;
+            var sb  = new StringBuilder();
+            sb.Append("# Invasion seam check, ").Append(DateTime.Now.ToString("u", inv)).Append(", screen ")
+              .Append(Screen.width).Append('x').Append(Screen.height).Append('\n');
+            sb.Append("# Each row: the view a hair before and a hair after a strip jumps a period (")
+              .Append(SeamDelta.ToString("0.0000", inv)).Append(" world units either side), time stopped.\n");
+            sb.Append("# 'control' rows move the camera the same distance without crossing a jump: sub-pixel detail (the\n");
+            sb.Append("# towers' window mullions, thin grass) shimmers under any move, so a jump is seamless when it changes\n");
+            sb.Append("# no more than its control.\n");
+            sb.Append("strip,period,jump_at_x,direction,kind,pixels_changed_over_8,pixels_changed_over_24,max_channel_diff,mean_abs_diff\n");
+
+            int n = 0;
+            float y = _ufo.transform.position.y, z = _ufo.transform.position.z;
+            foreach (WorldRepeat strip in FindObjectsByType<WorldRepeat>())
+            {
+                for (int dir = 1; dir >= -1; dir -= 2)
+                {
+                    // The next place this strip jumps, to the right or to the left of where the camera is. Three
+                    // pictures: two short of it (the control), and one past it (the jump).
+                    float edge = strip.CentreX + dir * strip.Period * 0.5f;
+                    _ufo.transform.position = new Vector3(edge - 3f * dir * SeamDelta, y, z);
+                    yield return Settle();
+                    Texture2D c = Grab();
+                    _ufo.transform.position = new Vector3(edge - dir * SeamDelta, y, z);
+                    yield return Settle();
+                    Texture2D a = Grab();
+                    _ufo.transform.position = new Vector3(edge + dir * SeamDelta, y, z);
+                    yield return Settle();
+                    Texture2D b = Grab();
+
+                    string tag = string.Format(inv, "seam_{0}_{1}_{2}", strip.name, dir > 0 ? "right" : "left", n++);
+                    File.WriteAllBytes(Path.Combine(_dir, tag + "_a.png"), a.EncodeToPNG());
+                    File.WriteAllBytes(Path.Combine(_dir, tag + "_b.png"), b.EncodeToPNG());
+                    for (int kind = 0; kind < 2; kind++)
+                    {
+                        Compare(kind == 0 ? c : a, kind == 0 ? a : b, out int over8, out int over24, out int max, out double mean);
+                        string what = kind == 0 ? "control" : "jump";
+                        sb.Append(Csv(strip.name)).Append(',').Append(strip.Period.ToString("0.00", inv)).Append(',')
+                          .Append(edge.ToString("0.00", inv)).Append(',').Append(dir > 0 ? "right" : "left").Append(',')
+                          .Append(what).Append(',').Append(over8).Append(',').Append(over24).Append(',').Append(max).Append(',')
+                          .Append(mean.ToString("0.0000", inv)).Append('\n');
+                        Debug.Log($"[QaRunner] seam {strip.name} {(dir > 0 ? "right" : "left")} at x {edge:0.00}, {what}: " +
+                                  $"{over8} px changed by more than 8/255, {over24} by more than 24/255, max {max}/255");
+                    }
+                    Destroy(a); Destroy(b); Destroy(c);
+                }
+            }
+
+            // A few views far along the endless world, to look at.
+            foreach (float x in new[] { 1000f, 5000f, -3000f })
+            {
+                _ufo.transform.position = new Vector3(x, y, z);
+                yield return Settle();
+                Texture2D v = Grab();
+                File.WriteAllBytes(Path.Combine(_dir, string.Format(inv, "far_{0:0}.png", x)), v.EncodeToPNG());
+                Destroy(v);
+            }
+
+            string path = Path.Combine(_dir, $"seams_{DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", inv)}.csv");
+            File.WriteAllText(path, sb.ToString());
+            Debug.Log($"[QaRunner] Seam check written to {path}");
+            Time.timeScale = 1f;
+        }
+
+        // A few frames for the camera to follow the UFO and every strip to settle where it jumps.
+        static IEnumerator Settle()
+        {
+            for (int i = 0; i < 3; i++) yield return null;
+            yield return new WaitForEndOfFrame();
+        }
+
+        static Texture2D Grab() => ScreenCapture.CaptureScreenshotAsTexture();
+
+        static void Compare(Texture2D a, Texture2D b, out int over8, out int over24, out int max, out double mean)
+        {
+            Color32[] pa = a.GetPixels32(), pb = b.GetPixels32();
+            over8 = over24 = max = 0;
+            long sum = 0;
+            int count = Mathf.Min(pa.Length, pb.Length);
+            for (int i = 0; i < count; i++)
+            {
+                int d = Mathf.Max(Mathf.Abs(pa[i].r - pb[i].r), Mathf.Max(Mathf.Abs(pa[i].g - pb[i].g), Mathf.Abs(pa[i].b - pb[i].b)));
+                sum += d;
+                if (d > max) max = d;
+                if (d > 8)  over8++;
+                if (d > 24) over24++;
+            }
+            mean = count > 0 ? (double)sum / count : 0;
+        }
+
+        // ── -jndProfile ──────────────────────────────────────────────────────
+
+        // How fast the UFO flies across the endless world while profiled, world units a second: a brisk search.
+        const float ProfileScrollSpeed = 20f;
+        // Each timed window, the part of it thrown away after a switch (a texture reallocated, a shader warmed),
+        // and how many times each effect is switched off, every one beside a window of the scene as it is.
+        const float ProfileWindowSec = 1.5f;
+        const float ProfileSettleSec = 0.25f;
+        const int   ProfileRepeats   = 3;
+
+        // A part of the scene that can be switched off, and back on as it was. Set is null when the scene has none.
+        sealed class Effect
+        {
+            public string       Name;
+            public Action<bool> Set;
+        }
+
+        float[] _profBuf;              // the window being timed: frame deltas, ms
+        int     _profN;
+        bool    _profTiming;           // Update fills _profBuf while true
+        bool    _profMoving = true;    // the UFO is flying (or sweeping)
+        float   _profT0;
+
+        IEnumerator Profile()
+        {
+            bool scroll = _game.worldScroll;
+            _profBuf = new float[200_000];
+            AudioListener.volume = 0f;   // minutes of the engine's drone help no one; sound is not what is timed
+
+            // Uncapped and the split off, as in the benchmark's sweep: this PC's frame rate with the scene as it is.
+            _split.CancelTrial();
+            _split.enabled = false;
+            FrameLimiter.Apply(0, FrameLimiterMode.Precise);
+            _ufo.FreezeMovement = true;
+            _ufo.SetHidden(false);
+            _profT0 = Time.realtimeSinceStartup;
+
+            List<Effect> effects = ProfileEffects(scroll);
+
+            // Untimed: shaders, textures, the endless strips' first jumps.
+            for (float end = Time.realtimeSinceStartup + 3f; Time.realtimeSinceStartup < end; )
+            {
+                FlyStep();
+                yield return null;
+            }
+
+            var results = new List<(string name, bool na, double baseMs, double offMs, float baseMed, float offMed,
+                                    int windows, int frames)>();
+            double allBase = 0; int allBaseFrames = 0;
+            foreach (Effect e in effects)
+            {
+                if (e.Set == null)
+                {
+                    results.Add((e.Name, true, 0, 0, 0, 0, 0, 0));
+                    continue;
+                }
+
+                double baseMs = 0, offMs = 0;
+                float  baseMed = 0f, offMed = 0f;
+                int    baseN = 0, offN = 0;
+                for (int k = 0; k < ProfileRepeats; k++)
+                {
+                    yield return TimeWindow();
+                    baseMs += Sum(); baseN += _profN; baseMed += Median();
+
+                    e.Set(false);
+                    yield return TimeWindow();
+                    offMs += Sum(); offN += _profN; offMed += Median();
+                    e.Set(true);
+                }
+                allBase += baseMs; allBaseFrames += baseN;
+                results.Add((e.Name, false, baseMs / Mathf.Max(1, baseN), offMs / Mathf.Max(1, offN),
+                             baseMed / ProfileRepeats, offMed / ProfileRepeats, 2 * ProfileRepeats, baseN + offN));
+                Debug.Log($"[QaRunner] profiled '{e.Name}'");
+            }
+
+            WriteProfile(results, scroll, allBase / Mathf.Max(1, allBaseFrames));
+            _split.enabled = true;
+        }
+
+        // One timed window: the UFO keeps flying; frames are timed once the settle has passed.
+        IEnumerator TimeWindow()
+        {
+            float start = Time.realtimeSinceStartup;
+            _profN      = 0;
+            _profTiming = false;
+            while (Time.realtimeSinceStartup - start < ProfileSettleSec + ProfileWindowSec)
+            {
+                if (!_profTiming && Time.realtimeSinceStartup - start >= ProfileSettleSec) _profTiming = true;
+                FlyStep();
+                yield return null;
+            }
+            _profTiming = false;
+        }
+
+        double Sum()
+        {
+            double s = 0;
+            for (int i = 0; i < _profN; i++) s += _profBuf[i];
+            return s;
+        }
+
+        float Median()
+        {
+            if (_profN == 0) return float.NaN;
+            Array.Sort(_profBuf, 0, _profN);
+            return _profBuf[_profN / 2];
+        }
+
+        // The UFO's flight while profiled: across the endless world at a steady speed, the camera following, or
+        // without the scroll sweeping across the view as the benchmark's uncapped sweep does.
+        void FlyStep()
+        {
+            if (!_profMoving) return;
+            if (_game.worldScroll)
+                _ufo.transform.position += Vector3.right * (ProfileScrollSpeed * Time.unscaledDeltaTime);
+            else
+                PlaceUfo(0.5f + 0.42f * Mathf.Sin((Time.realtimeSinceStartup - _profT0) * 1.3f));
+        }
+
+        // Every part of the scene the profile switches, found now (so switching allocates nothing). Each is put back
+        // exactly as it was.
+        List<Effect> ProfileEffects(bool scroll)
+        {
+            var list = new List<Effect>();
+            list.Add(new Effect { Name = "nothing (control: the noise)", Set = on => { } });
+
+            TowerManager tm  = _tower;
+            Camera       cam = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+
+            // The city: its far layers (drawn out of focus by the backdrop), its near layer, and its sparks. The night
+            // sky's quads are left out — they are children of the city when it is not endless, and are timed on their
+            // own below.
+            var far = new List<Renderer>(); var near = new List<Renderer>(); var sparks = new List<GameObject>();
+            if (tm.city != null)
+                foreach (Renderer r in tm.city.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r is ParticleSystemRenderer) { sparks.Add(r.gameObject); continue; }
+                    if (r.name.StartsWith("Sky", StringComparison.Ordinal)) continue;
+                    (r.gameObject.layer == Backdrop.Layer ? far : near).Add(r);
+                }
+
+            Backdrop bd = tm.backdrop;
+            list.Add(new Effect { Name = "backdrop blur (far city drawn sharp instead)",
+                                  Set  = bd != null && bd.blur ? on => bd.blur = on : null });
+            list.Add(RendererEffect("far city (5 layers, lights, searchlights)", far));
+            list.Add(RendererEffect("near city layer", near));
+            list.Add(ObjectsEffect("city sparks and embers", sparks));
+
+            var stars = new List<Renderer>(); var aurora = new List<Renderer>(); var clouds = new List<Renderer>();
+            if (tm.nightSky != null)
+                foreach (Renderer r in tm.nightSky.GetComponentsInChildren<Renderer>(true))
+                {
+                    if      (r.name.StartsWith("SkyStars",  StringComparison.Ordinal)) stars.Add(r);
+                    else if (r.name.StartsWith("SkyAurora", StringComparison.Ordinal)) aurora.Add(r);
+                    else if (r.name.StartsWith("SkyClouds", StringComparison.Ordinal)) clouds.Add(r);
+                }
+            list.Add(RendererEffect("stars and shooting stars", stars));
+            list.Add(RendererEffect("aurora", aurora));
+            list.Add(RendererEffect("sky clouds", clouds));
+
+            var weather = new List<Renderer>();
+            if (tm.weather != null)
+                foreach (Renderer r in tm.weather.GetComponentsInChildren<Renderer>(true))
+                    if (r.enabled) weather.Add(r);   // off in the scene: nothing to time
+            list.Add(RendererEffect("weather (rain/snow)", weather));
+
+            Foreground fg = tm.foreground;
+            list.Add(new Effect { Name = "foreground grass", Set = fg != null && fg.grass ? on => fg.grass = on : null });
+            list.Add(new Effect { Name = "grass motes",      Set = fg != null && fg.grass && fg.motes ? on => fg.motes = on : null });
+
+            var towers = new List<Renderer>();
+            if (tm.towerField != null) towers.AddRange(tm.towerField.GetComponentsInChildren<Renderer>(true));
+            list.Add(RendererEffect("tower field (towers, beacons)", towers));
+
+            list.Add(new Effect { Name = "UFO (ship, flair, sight)", Set = on => _ufo.SetHidden(!on) });
+            var trails = new List<Renderer>(_ufo.GetComponentsInChildren<TrailRenderer>(true));
+            list.Add(RendererEffect("UFO trails", trails));
+            WeaponSight sight = FindAnyObjectByType<WeaponSight>();
+            if (sight != null)
+            {
+                var lines = new List<Renderer>(sight.GetComponentsInChildren<LineRenderer>(true));
+                Effect sightLines = RendererEffect("weapon sight", lines);
+                list.Add(new Effect { Name = sightLines.Name,
+                                      Set  = sightLines.Set == null ? null : on => { sight.enabled = on; sightLines.Set(on); } });
+            }
+            else list.Add(new Effect { Name = "weapon sight" });
+
+            var camData = cam != null ? cam.GetComponent<UniversalAdditionalCameraData>() : null;
+            list.Add(new Effect { Name = "post-processing (bloom, tonemapping)",
+                                  Set  = camData != null && camData.renderPostProcessing
+                                         ? on => camData.renderPostProcessing = on : null });
+            var urp = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            int msaa = urp != null ? urp.msaaSampleCount : 1;
+            list.Add(new Effect { Name = $"MSAA {msaa}x", Set = msaa > 1 ? on => urp.msaaSampleCount = on ? msaa : 1 : null });
+            list.Add(new Effect { Name = "HDR", Set = cam != null && cam.allowHDR ? on => cam.allowHDR = on : null });
+            CameraClearFlags clear = cam != null ? cam.clearFlags : CameraClearFlags.Nothing;
+            list.Add(new Effect { Name = "skybox",
+                                  Set  = clear == CameraClearFlags.Skybox
+                                         ? on => cam.clearFlags = on ? CameraClearFlags.Skybox : CameraClearFlags.SolidColor
+                                         : null });
+
+            CameraRig rig = CameraRig.Instance;
+            bool parallax = rig != null && rig.parallax, handheld = rig != null && rig.handheld;
+            list.Add(new Effect { Name = "camera parallax swing and handheld wander",
+                                  Set  = parallax || handheld ? on => { rig.parallax = on && parallax; rig.handheld = on && handheld; } : null });
+
+            list.Add(new Effect { Name = "debug readout (HUD)",
+                                  Set  = _ui != null && _ui.showDebug ? on => _ui.SetDebugVisible(on) : null });
+
+            // Everything behind and below the play plane at once: the floor under the scenery's cost.
+            var scenery = new List<Effect>();
+            foreach (Effect e in list)
+                if (e.Set != null && (e.Name.StartsWith("far city", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("near city", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("city sparks", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("stars", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("aurora", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("sky clouds", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("weather", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("foreground", StringComparison.Ordinal) ||
+                                      e.Name.StartsWith("tower field", StringComparison.Ordinal)))
+                    scenery.Add(e);
+            list.Add(new Effect { Name = "ALL scenery (city, sky, weather, grass, towers)",
+                                  Set  = on => { foreach (Effect e in scenery) e.Set(on); } });
+
+            // With the scroll: the camera standing still against scrolling — what moving the world itself costs.
+            if (scroll)
+                list.Add(new Effect { Name = "scrolling (ship and camera stand still instead)",
+                                      Set  = on => _profMoving = on });
+            return list;
+        }
+
+        // Switches a set of renderers off, and back on as each one was.
+        static Effect RendererEffect(string name, List<Renderer> renderers)
+        {
+            if (renderers.Count == 0) return new Effect { Name = name };
+            var was = new bool[renderers.Count];
+            return new Effect
+            {
+                Name = name,
+                Set  = on =>
+                {
+                    for (int i = 0; i < renderers.Count; i++)
+                    {
+                        if (renderers[i] == null) continue;
+                        if (!on) { was[i] = renderers[i].enabled; renderers[i].enabled = false; }
+                        else     renderers[i].enabled = was[i];
+                    }
+                },
+            };
+        }
+
+        // Deactivates a set of objects, and puts back the ones that were active.
+        static Effect ObjectsEffect(string name, List<GameObject> objects)
+        {
+            if (objects.Count == 0) return new Effect { Name = name };
+            var was = new bool[objects.Count];
+            return new Effect
+            {
+                Name = name,
+                Set  = on =>
+                {
+                    for (int i = 0; i < objects.Count; i++)
+                    {
+                        if (objects[i] == null) continue;
+                        if (!on) { was[i] = objects[i].activeSelf; objects[i].SetActive(false); }
+                        else     objects[i].SetActive(was[i]);
+                    }
+                },
+            };
+        }
+
+        void WriteProfile(List<(string name, bool na, double baseMs, double offMs, float baseMed, float offMed,
+                                int windows, int frames)> results, bool scroll, double baselineMs)
+        {
+            var inv = CultureInfo.InvariantCulture;
+            string stamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss", inv);
+            string path  = Path.Combine(_dir, $"profile_{stamp}{(scroll ? "_scroll" : "")}.csv");
+
+            var sb = new StringBuilder(8 * 1024);
+            sb.Append("# Invasion effect profile, ").Append(DateTime.Now.ToString("u", inv)).Append('\n');
+            sb.Append("# CPU ").Append(SystemInfo.processorType).Append(" (").Append(SystemInfo.processorCount)
+              .Append(" threads), GPU ").Append(SystemInfo.graphicsDeviceName).Append(", ")
+              .Append(SystemInfo.graphicsDeviceType).Append('\n');
+            sb.Append("# screen ").Append(Screen.width).Append('x').Append(Screen.height).Append(", ")
+              .Append(Screen.fullScreenMode).Append(", quality level ")
+              .Append(QualitySettings.names[QualitySettings.GetQualityLevel()]).Append('\n');
+            if (Switches.Length > 0) sb.Append("# switches:").Append(Switches).Append('\n');
+            sb.Append("# world scroll ").Append(scroll ? "ON: endless world, UFO flying at " +
+                      ProfileScrollSpeed.ToString("0", inv) + " u/s, camera following" : "off: UFO sweeping across the view")
+              .Append("; uncapped; baseline ").Append(baselineMs.ToString("0.000", inv)).Append(" ms (")
+              .Append((1000.0 / baselineMs).ToString("0", inv)).Append(" fps)\n");
+            sb.Append("# saved = mean frame time with the effect on minus off, each over ").Append(ProfileRepeats)
+              .Append(" windows of ").Append(ProfileWindowSec.ToString("0.0", inv))
+              .Append(" s interleaved; compare with the control row for the noise.\n");
+            sb.Append("effect,base_ms,off_ms,saved_ms,saved_pct,base_fps,off_fps,fps_gain,base_median_ms,off_median_ms,windows,frames\n");
+
+            var lines = new List<(double saved, string text)>();
+            foreach (var r in results)
+            {
+                if (r.na)
+                {
+                    sb.Append(Csv(r.name)).Append(",n/a,,,,,,,,,0,0\n");
+                    continue;
+                }
+                double saved = r.baseMs - r.offMs;
+                double bf = 1000.0 / r.baseMs, of = 1000.0 / r.offMs;
+                sb.Append(Csv(r.name)).Append(',')
+                  .Append(r.baseMs.ToString("0.0000", inv)).Append(',').Append(r.offMs.ToString("0.0000", inv)).Append(',')
+                  .Append(saved.ToString("0.0000", inv)).Append(',').Append((100.0 * saved / r.baseMs).ToString("0.00", inv)).Append(',')
+                  .Append(bf.ToString("0.0", inv)).Append(',').Append(of.ToString("0.0", inv)).Append(',')
+                  .Append((of - bf).ToString("0.0", inv)).Append(',')
+                  .Append(r.baseMed.ToString("0.0000", inv)).Append(',').Append(r.offMed.ToString("0.0000", inv)).Append(',')
+                  .Append(r.windows).Append(',').Append(r.frames).Append('\n');
+                lines.Add((saved, $"{r.name}: {saved:0.0000} ms ({100.0 * saved / r.baseMs:0.0}%), {bf:0} -> {of:0} fps"));
+            }
+            File.WriteAllText(path, sb.ToString());
+
+            lines.Sort((a, b) => b.saved.CompareTo(a.saved));
+            Debug.Log($"[QaRunner] Profile, world scroll {(scroll ? "on" : "off")}, baseline {baselineMs:0.000} ms " +
+                      $"({1000.0 / baselineMs:0} fps) — frame time each effect costs, largest first:");
+            foreach (var l in lines) Debug.Log("[QaRunner]   " + l.text);
+            Debug.Log($"[QaRunner] Profile written to {path}");
+        }
+
         // ── -jndBenchmark ────────────────────────────────────────────────────
 
         // What paced a frame, for the report's rows.
@@ -377,6 +858,9 @@ namespace JndUfo
 
         void Update()
         {
+            // The profile's window being timed (see Profile): this frame's delta, in a buffer made up front.
+            if (_profTiming && _profN < _profBuf.Length) _profBuf[_profN++] = Time.unscaledDeltaTime * 1000f;
+
             if (_phase < 0 || _dt == null || _frames >= MaxFrames) return;
 
             // Read after PerturbationController.Update (order -200): PacedFps / PacedBy describe the

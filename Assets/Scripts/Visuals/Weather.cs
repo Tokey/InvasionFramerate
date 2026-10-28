@@ -105,11 +105,21 @@ namespace JndUfo
         WeatherKind _kindOn;
         float       _amountOn, _brightnessOn;
 
+        // The endless world: the layers follow the camera across (see Build), carried this far from where they were
+        // built.
+        bool        _follow;
+        float       _originX, _carried;
+
         /// <summary>Builds the layers for <paramref name="cam"/> at rest, wide enough for pans of
-        /// ±<paramref name="panRange"/> around <paramref name="originX"/>. Call once.</summary>
-        public void Build(Camera cam, float originX, float panRange)
+        /// ±<paramref name="panRange"/> around <paramref name="originX"/>. With <paramref name="followCamera"/> — the
+        /// endless world — they then follow the camera across without end: the drops are drawn from world position
+        /// (JndUfo/Precipitation), so carrying the quads along leaves the rain or snow itself in the world. Call once;
+        /// with <paramref name="followCamera"/>, on an object of its own (this one is moved).</summary>
+        public void Build(Camera cam, float originX, float panRange, bool followCamera = false)
         {
             if (_built || cam == null) return;
+            _follow  = followCamera;
+            _originX = originX;
             Shader shader = Shader.Find("JndUfo/Precipitation");
             if (shader == null || !shader.isSupported)
             {
@@ -181,6 +191,22 @@ namespace JndUfo
                 float  fall   = (float)((t * l.Fall) % period);
                 l.Mat.SetVector(MotionId, new Vector4(fall, l.Slant, l.Length, l.Wobble));
             }
+        }
+
+        // The endless world: carries the layers to stay centred on the camera's rest X (CameraRig runs first, at -50).
+        // Only a change is written.
+        void LateUpdate()
+        {
+            if (!_follow || !_built) return;
+            CameraRig rig = CameraRig.Instance;
+            float camX = rig != null ? rig.RestX : Camera.main != null ? Camera.main.transform.position.x : _originX;
+            float carried = camX - _originX;
+            if (carried == _carried) return;
+            _carried = carried;
+
+            Vector3 p = transform.position;
+            p.x = carried;
+            transform.position = p;
         }
 
         // Pushes the Inspector's settings to the layers. Only on a change.

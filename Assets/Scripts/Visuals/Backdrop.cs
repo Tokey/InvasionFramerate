@@ -64,6 +64,7 @@ namespace JndUfo
         RenderTexture  _rtA, _rtB;    // A: the city, drawn and then blurred; B: halfway through the blur
         CommandBuffer  _cmd;
         int            _w, _h;
+        readonly Plane[] _frustum = new Plane[6];   // the main camera's, refilled every draw
         bool           _built, _on;
 
         /// <summary>Sets the backdrop up behind <paramref name="main"/>, for everything already on
@@ -193,10 +194,15 @@ namespace JndUfo
             _cmd.SetViewProjectionMatrices(_main.worldToCameraMatrix, _main.projectionMatrix);
             _cmd.SetGlobalVector(TimeId, new Vector4(t / 20f, t, t * 2f, t * 3f));
             _cmd.SetGlobalVector(CameraPosId, _main.transform.position);
+            // Only what the main camera can see: DrawRenderer culls nothing itself, and the endless world keeps copies
+            // of every far layer a period to either side of the camera, mostly out of view. Anything in view is drawn
+            // exactly as before. The non-allocating overloads, so this costs no garbage.
+            GeometryUtility.CalculateFrustumPlanes(_main.projectionMatrix * _main.worldToCameraMatrix, _frustum);
             for (int i = 0; i < _draw.Length; i++)
             {
                 Renderer r = _draw[i];
-                if (r != null && r.enabled && r.gameObject.activeInHierarchy)
+                if (r != null && r.enabled && r.gameObject.activeInHierarchy &&
+                    GeometryUtility.TestPlanesAABB(_frustum, r.bounds))
                     _cmd.DrawRenderer(r, r.sharedMaterial, 0, 0);
             }
             _cmd.Blit(_rtA, _rtB, _blurMat, 0);

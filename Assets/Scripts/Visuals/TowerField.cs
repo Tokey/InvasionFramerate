@@ -36,6 +36,13 @@ namespace JndUfo
     /// Every instance is made at Start; dealing a round only moves, toggles and re-materials them, with
     /// arrays prepared up front, so it allocates nothing. Its own System.Random keeps the experiment's
     /// UnityEngine.Random sequence untouched. Created and driven by <see cref="TowerManager"/>.
+    ///
+    /// The endless world (the world scroll; see <see cref="WorldRepeat"/>): built with a period, the field repeats
+    /// with it. Each place in the period — the boundary's among them — is dealt once a round (model, height, turn,
+    /// offset from its slot, beacon) and every copy of the period stands the same tower there, so the boundary tower
+    /// recurs once a period and each of its copies is exactly as hidden as the first. The row is laid over one period
+    /// and the view either side of the strip's middle; the strip jumps whole periods to stay under the camera, so the
+    /// row it shows is endless. In the reveal every copy of the boundary tower lights up.
     /// </summary>
     public class TowerField : MonoBehaviour
     {
@@ -83,8 +90,8 @@ namespace JndUfo
         [Min(0.01f)] public float beaconSize = 0.34f;
 
         /// <summary>Renderers of the tower standing on the boundary this round that light up in the reveal
-        /// (its flat ground tile is left out).</summary>
-        public Renderer[] BoundaryRenderers => _boundary != null ? _boundary.Lit : s_noRenderers;
+        /// (its flat ground tile is left out) — in the endless world, of the first copy dealt.</summary>
+        public Renderer[] BoundaryRenderers => _boundaries.Count > 0 ? _boundaries[0].Lit : s_noRenderers;
 
         /// <summary>World position of the top of the boundary tower this round.</summary>
         public Vector3 BoundaryTop { get; private set; }
@@ -133,21 +140,32 @@ namespace JndUfo
         bool          _crossfading;
         float         _crossStart;
         float         _leavingFrom;    // the leaving row's fade when its crossfade began
-        Instance      _boundary;
+        readonly List<Instance> _boundaries = new List<Instance>(8);   // the boundary's tower(s) this round
         bool          _glowOn;         // the reveal's glow is on
-        Instance      _lit;            // the tower wearing it, if any (it may be leaving)
+        readonly List<Instance> _lit = new List<Instance>(8);          // the towers wearing it (they may be leaving)
         Mesh          _quad;
         System.Random _rng;
         float         _groundY, _playZ, _xMin, _xMax, _targetHeight;
+
+        // The endless world: the period, the places in it, half the span a row is laid over, and each place's draw
+        // for the round — its model, height (a multiple of the target), turn, offset from its slot and beacon.
+        float      _period, _halfSpan;
+        int        _places;
+        Model[]    _placeModel;
+        float[]    _placeHeight, _placeYaw, _placeOffset;
+        bool[]     _placeBeacon;
+        WorldRepeat _strip;
 
         /// <summary>
         /// Makes the pool from <paramref name="models"/> (prefabs or model assets) in the
         /// <paramref name="body"/> material (and a copy of it for the second group), with
         /// <paramref name="highlight"/> ready for the reveal, and sizes the field to the camera's view at
-        /// every pan. Call once, before the first <see cref="Deal"/>.
+        /// every pan. With <paramref name="endlessPeriod"/> (a whole number of <see cref="spacing"/>s), the field
+        /// repeats with that period instead, for the endless world: see the class summary. Call once, before the
+        /// first <see cref="Deal"/>.
         /// </summary>
         public void Build(IList<GameObject> models, Material body, Material highlight, float groundY, float playZ,
-                          Camera cam, float originX, float panRange)
+                          Camera cam, float originX, float panRange, float endlessPeriod = 0f)
         {
             if (_models.Count > 0) return;
 
@@ -169,6 +187,17 @@ namespace JndUfo
             _xMin = originX - halfW - panRange - sideMargin;
             _xMax = originX + halfW + panRange + sideMargin;
 
+            // The endless world: a row is laid over one period and the view either side of the strip's middle, which
+            // the strip keeps within half a period of the camera — so the view is covered at every jump.
+            if (endlessPeriod > 0f)
+            {
+                _period   = endlessPeriod;
+                _places   = Mathf.Max(1, Mathf.RoundToInt(_period / Mathf.Max(1f, spacing)));
+                _halfSpan = _period * 0.5f + halfW + sideMargin;
+                _xMin     = originX - _halfSpan;
+                _xMax     = originX + _halfSpan;
+            }
+
             int modelCount = 0;
             if (models != null) foreach (GameObject m in models) if (m != null) modelCount++;
             if (modelCount == 0 || body == null)
@@ -185,6 +214,23 @@ namespace JndUfo
             // Two whole rows must fit at once: the one fading out and the one fading in.
             int slots   = Mathf.CeilToInt((_xMax - _xMin) / Mathf.Max(1f, spacing)) + 3;
             int perPool = Mathf.Max(poolPerModel, Mathf.CeilToInt(2f * slots / modelCount) + 2);
+
+            // The endless world deals each place in the period a model, the models shared out evenly (see
+            // DealEndless), and a row shows each place at most this many times (its copies are a period apart) —
+            // so this many of a model fit both rows at once. One place more per model than an even share, in case
+            // a model fails to measure.
+            if (_period > 0f)
+            {
+                int perPlace       = Mathf.FloorToInt(2f * _halfSpan / _period) + 1;
+                int placesPerModel = Mathf.CeilToInt(_places / (float)modelCount) + 1;
+                perPool = Mathf.Max(poolPerModel, 2 * perPlace * placesPerModel + 2);
+
+                _placeModel  = new Model[_places];
+                _placeHeight = new float[_places];
+                _placeYaw    = new float[_places];
+                _placeOffset = new float[_places];
+                _placeBeacon = new bool[_places];
+            }
 
             foreach (GameObject prefab in models)
             {
@@ -207,7 +253,8 @@ namespace JndUfo
             }
 
             Debug.Log($"[TowerField] {_models.Count} tower models x {perPool}, spacing {spacing:0.0}u over " +
-                      $"x {_xMin:0.0}..{_xMax:0.0}, towers {_targetHeight:0.0}u tall on average.");
+                      $"x {_xMin:0.0}..{_xMax:0.0}, towers {_targetHeight:0.0}u tall on average" +
+                      (_period > 0f ? $", repeating every {_period:0.0}u ({_places} places)." : "."));
         }
 
         void OnDestroy()
@@ -281,23 +328,27 @@ namespace JndUfo
                 foreach (Renderer b in _beacons[old]) b.enabled = false;
             }
             foreach (Renderer b in _beacons[_group]) b.enabled = false;
-            _boundary = null;
+            _boundaries.Clear();
 
-            float s      = Mathf.Max(1f, spacing);
-            float j      = jitter * s;
-            float anchor = boundaryX - Rand(-j, j);   // the boundary's own slot, offset like any other
-            int   beacon = 0;
-
-            PlaceTower(boundaryX, true, ref beacon);
-
-            int kMin = Mathf.FloorToInt((_xMin - anchor) / s) - 1;
-            int kMax = Mathf.CeilToInt((_xMax - anchor) / s) + 1;
-            for (int k = kMin; k <= kMax; k++)
+            if (_period > 0f) DealEndless(boundaryX);
+            else
             {
-                if (k == 0) continue;
-                float x = anchor + k * s + Rand(-j, j);
-                if (x < _xMin || x > _xMax) continue;
-                PlaceTower(x, false, ref beacon);
+                float s      = Mathf.Max(1f, spacing);
+                float j      = jitter * s;
+                float anchor = boundaryX - Rand(-j, j);   // the boundary's own slot, offset like any other
+                int   beacon = 0;
+
+                PlaceTower(boundaryX, true, ref beacon);
+
+                int kMin = Mathf.FloorToInt((_xMin - anchor) / s) - 1;
+                int kMax = Mathf.CeilToInt((_xMax - anchor) / s) + 1;
+                for (int k = kMin; k <= kMax; k++)
+                {
+                    if (k == 0) continue;
+                    float x = anchor + k * s + Rand(-j, j);
+                    if (x < _xMin || x > _xMax) continue;
+                    PlaceTower(x, false, ref beacon);
+                }
             }
 
             if (animate)
@@ -325,22 +376,103 @@ namespace JndUfo
             if (on == _glowOn) return;
             _glowOn = on;
             if (!on) Unlight();
-            else if (_boundary != null)
+            else
             {
-                _lit = _boundary;
-                for (int i = 0; i < _lit.Lit.Length; i++)
-                    if (_lit.Lit[i] != null) _lit.Lit[i].sharedMaterials = _lit.Highlight[i];
+                for (int b = 0; b < _boundaries.Count; b++)
+                {
+                    Instance inst = _boundaries[b];
+                    _lit.Add(inst);
+                    for (int i = 0; i < inst.Lit.Length; i++)
+                        if (inst.Lit[i] != null) inst.Lit[i].sharedMaterials = inst.Highlight[i];
+                }
             }
         }
 
-        // Puts the lit tower, if any, back in its row's material.
+        // Puts the lit tower(s), if any, back in their row's material.
         void Unlight()
         {
-            if (_lit == null) return;
-            Material[][] back = _lit.Group == 0 ? _lit.GroupA : _lit.GroupB;
-            for (int i = 0; i < _lit.Lit.Length; i++)
-                if (_lit.Lit[i] != null) _lit.Lit[i].sharedMaterials = back[i];
-            _lit = null;
+            for (int l = 0; l < _lit.Count; l++)
+            {
+                Instance inst = _lit[l];
+                Material[][] back = inst.Group == 0 ? inst.GroupA : inst.GroupB;
+                for (int i = 0; i < inst.Lit.Length; i++)
+                    if (inst.Lit[i] != null) inst.Lit[i].sharedMaterials = back[i];
+            }
+            _lit.Clear();
+        }
+
+        // ── The endless world ────────────────────────────────────────────────
+
+        /// <summary>
+        /// Deals a row that repeats with the period: each place in the period is dealt once — the boundary's place
+        /// first, offset from its slot like any other — and every slot at that place in the row gets the same tower.
+        /// The row covers one period and the view either side of the strip's middle as it stands now, in world
+        /// positions; the strip (a child of which every tower is) then jumps whole periods with the camera.
+        /// </summary>
+        void DealEndless(float boundaryX)
+        {
+            float s = _period / _places;   // the spacing, exactly: the period is a whole number of it
+            float j = jitter * s;
+
+            // Each place's draw. The models are shared out evenly across the places, in a random order, so no model
+            // needs more instances than its pool holds.
+            for (int p = 0; p < _places; p++)
+            {
+                _placeOffset[p] = Rand(-j, j);
+                _placeHeight[p] = 1f + Rand(-heightVariation, heightVariation);
+                _placeYaw[p]    = Rand(0f, 360f);
+                _placeBeacon[p] = beacons && Rand(0f, 1f) < beaconShare;
+                _placeModel[p]  = _models[p % _models.Count];
+            }
+            for (int p = _places - 1; p > 0; p--)
+            {
+                int q = _rng.Next(p + 1);
+                (_placeModel[p], _placeModel[q]) = (_placeModel[q], _placeModel[p]);
+            }
+
+            float anchor = boundaryX - _placeOffset[0];   // place 0 is the boundary's: its tower stands on boundaryX
+            if (_strip == null) _strip = GetComponent<WorldRepeat>();   // attached by TowerManager after Build
+            float centre = _strip != null ? _strip.CentreX : (_xMin + _xMax) * 0.5f;
+            float lo     = centre - _halfSpan, hi = centre + _halfSpan;
+            int   kMin   = Mathf.FloorToInt((lo - anchor) / s) - 1;
+            int   kMax   = Mathf.CeilToInt((hi - anchor) / s) + 1;
+            int   beacon = 0;
+            for (int k = kMin; k <= kMax; k++)
+            {
+                int   p = ((k % _places) + _places) % _places;
+                float x = anchor + k * s + _placeOffset[p];
+                if (x < lo || x > hi) continue;
+                PlaceAt(x, p, ref beacon);
+            }
+        }
+
+        // A tower at x from place p's draw.
+        void PlaceAt(float x, int p, ref int beacon)
+        {
+            Instance inst = TakeInstance(_placeModel[p]) ?? TakeInstance();
+            if (inst == null) return;
+            Stand(inst, x, _targetHeight * _placeHeight[p], Quaternion.Euler(0f, _placeYaw[p], 0f), p == 0);
+
+            List<Renderer> rowBeacons = _beacons[_group];
+            if (_placeBeacon[p] && beacon < rowBeacons.Count)
+            {
+                Renderer b = rowBeacons[beacon++];
+                b.transform.position = new Vector3(x, _groundY + _targetHeight * _placeHeight[p] + beaconSize * 0.15f,
+                                                   _playZ - 0.4f);
+                b.enabled = true;
+            }
+        }
+
+        // A free instance of the given model, or null if its pool is spent.
+        Instance TakeInstance(Model m)
+        {
+            int pick = _rng.Next(m.Pool.Count);
+            for (int k = 0; k < m.Pool.Count; k++)
+            {
+                Instance inst = m.Pool[(pick + k) % m.Pool.Count];
+                if (inst.Row == Row.None) return inst;
+            }
+            return null;
         }
 
         void PlaceTower(float x, bool isBoundary, ref int beacon)
@@ -350,8 +482,23 @@ namespace JndUfo
 
             Model m      = inst.Model;
             float height = _targetHeight * (1f + Rand(-heightVariation, heightVariation));
-            float scale  = height / m.Height;
             Quaternion yaw = Quaternion.Euler(0f, Rand(0f, 360f), 0f);
+            Stand(inst, x, height, yaw, isBoundary);
+
+            List<Renderer> rowBeacons = _beacons[_group];
+            if (beacons && beacon < rowBeacons.Count && Rand(0f, 1f) < beaconShare)
+            {
+                Renderer b = rowBeacons[beacon++];
+                b.transform.position = new Vector3(x, _groundY + height + beaconSize * 0.15f, _playZ - 0.4f);
+                b.enabled = true;
+            }
+        }
+
+        // Stands an instance at x, this tall and turned this way, in the current row.
+        void Stand(Instance inst, float x, float height, Quaternion yaw, bool isBoundary)
+        {
+            Model m      = inst.Model;
+            float scale  = height / m.Height;
 
             Transform t = inst.Go.transform;
             t.rotation   = yaw * m.BaseRotation;
@@ -371,23 +518,17 @@ namespace JndUfo
 
             if (isBoundary)
             {
-                _boundary   = inst;
-                BoundaryTop = new Vector3(x, _groundY + height, _playZ);
-            }
-
-            List<Renderer> rowBeacons = _beacons[_group];
-            if (beacons && beacon < rowBeacons.Count && Rand(0f, 1f) < beaconShare)
-            {
-                Renderer b = rowBeacons[beacon++];
-                b.transform.position = new Vector3(x, _groundY + height + beaconSize * 0.15f, _playZ - 0.4f);
-                b.enabled = true;
+                if (_boundaries.Count == 0) BoundaryTop = new Vector3(x, _groundY + height, _playZ);
+                _boundaries.Add(inst);
             }
         }
 
         // The leaving row is gone: its towers back in the pool, its beacons off, its group unseen.
         void ClearLeaving()
         {
-            if (_lit != null && _lit.Row == Row.Leaving) Unlight();   // the glow itself stays on: see SetBoundaryHighlight
+            // The lit towers are all of one row, so the first says whether they are leaving. The glow itself stays
+            // on: see SetBoundaryHighlight.
+            if (_lit.Count > 0 && _lit[0].Row == Row.Leaving) Unlight();
             for (int i = 0; i < _leaving.Count; i++) Release(_leaving[i]);
             _leaving.Clear();
             int g = 1 - _group;

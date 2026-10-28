@@ -127,6 +127,10 @@ namespace JndUfo
         static string SideCell(PerturbationController.Side s) =>
             s == PerturbationController.Side.Left ? SideLeft : SideRight;
 
+        // A side as seen from a copy of the boundary across which the frame rates run the other way round.
+        static PerturbationController.Side Turned(PerturbationController.Side s, bool turned) =>
+            turned ? PerturbationController.Opposite(s) : s;
+
         // ── Private ──────────────────────────────────────────────────────────
         List<StudyConfig> _blocks;
         List<PracticePair> _practice = new List<PracticePair>();
@@ -432,7 +436,10 @@ namespace JndUfo
                 gameManager.hitDisplayDuration = Config.revealHoldSec;
                 gameManager.readyBeatDuration  = Config.readyBeatSec;
             }
-            if (towerManager != null)
+            // Scrolling the world, the phase's start prompt deals it instead, about the ship (GameManager.
+            // HoldForPhaseStart) — in this same frame, and two deals in one frame would cut the row on screen off
+            // rather than let it fade.
+            if (towerManager != null && (gameManager == null || !gameManager.worldScroll))
             {
                 towerManager.MoveTowerToRandomPosition();
                 towerManager.ApplyVisibility();
@@ -568,6 +575,8 @@ namespace JndUfo
         IEnumerator WaitForStartKey(string title, string body)
         {
             if (laser != null) laser.SetFiringEnabled(false);
+            // Released at the end of PhaseStartingGun, which always follows.
+            if (gameManager != null) gameManager.HoldForPhaseStart();
             overlay.Show(title, body);
 
             while (Keyboard.current == null || !Keyboard.current[startKey].wasPressedThisFrame)
@@ -593,6 +602,7 @@ namespace JndUfo
                 perturbation.BeginTrial();
             }
             if (overlay != null) yield return overlay.GoBeat(Config.readyBeatSec);
+            if (gameManager != null) gameManager.ReleasePhaseStart();
         }
 
         // Per-phase frame index and clock, both restarting at zero — the phase column tells the two
@@ -761,19 +771,25 @@ namespace JndUfo
                 _hasPrevUfoPos = true;
             }
 
-            if (towerManager != null) t.towerX = towerManager.TowerBase.x;
+            // The endless world repeats the boundary once a period, the frame rates swapping sides at every copy.
+            // Each row is written as if the copy nearest the UFO were the only boundary: towerX is that copy, and
+            // where the rates run the other way round across it, side and alteredSide are turned too — so ufoX -
+            // towerX is the distance to a real boundary and side == alteredSide still says the UFO was on the
+            // altered side, exactly as without the scroll. Without it, the boundary itself, nothing turned.
+            bool turned = false;
+            if (towerManager != null) t.towerX = towerManager.BoundaryXNear(t.ufoX, out turned);
 
             if (perturbation != null)
             {
                 t.baseFps   = perturbation.CurrentBaseFps;
                 t.targetFps = perturbation.PacedFps;
                 t.pacedBy   = perturbation.PacedBy;
-                t.side      = SideCell(perturbation.CurrentSide);
+                t.side      = SideCell(Turned(perturbation.CurrentSide, turned));
                 t.crossed   = perturbation.CrossedThisFrame;
                 if (perturbation.SplitActive)
                 {
                     t.diffFps     = perturbation.CurrentTrial.diffFps;
-                    t.alteredSide = SideCell(perturbation.CurrentTrial.alteredSide);
+                    t.alteredSide = SideCell(Turned(perturbation.CurrentTrial.alteredSide, turned));
                 }
             }
 

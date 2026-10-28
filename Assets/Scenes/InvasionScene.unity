@@ -208,6 +208,9 @@ MonoBehaviour:
   ufoFlashHz: 8
   cameraPanDuration: 0.45
   cameraPanRange: 6
+  worldScroll: 1
+  worldScrollReach: 30
+  worldScrollRevealPan: 0.4
   skyboxSpinAmount: 60
   fpsRevealDelay: 0.12
 --- !u!4 &263729326

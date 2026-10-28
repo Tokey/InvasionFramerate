@@ -76,12 +76,24 @@ namespace JndUfo
         Mesh     _quad;
         bool     _built;
 
+        // The endless world: the sky follows the camera across (see Build). The rest X it was built around, how far
+        // it has been carried from there, and the shooting stars' start rectangle as built.
+        bool     _follow;
+        float    _originX, _carried;
+        Vector4  _skyRect;
+
         /// <summary>Builds the sky for <paramref name="cam"/> at rest, wide enough for pans of
-        /// ±<paramref name="panRange"/> around <paramref name="originX"/>. Call once.</summary>
-        public void Build(Camera cam, float originX, float panRange)
+        /// ±<paramref name="panRange"/> around <paramref name="originX"/>. With <paramref name="followCamera"/> — the
+        /// endless world — it then follows the camera across without end: every layer is drawn from world position
+        /// (JndUfo/SkyStars, SkyAurora, SkyClouds), so carrying the quads along leaves the sky itself where it is in
+        /// the world, sliding by as slowly as its distance makes it. Call once; with <paramref name="followCamera"/>,
+        /// on an object of its own (this one is moved).</summary>
+        public void Build(Camera cam, float originX, float panRange, bool followCamera = false)
         {
             if (_built || cam == null) return;
-            _built = true;
+            _built   = true;
+            _follow  = followCamera;
+            _originX = originX;
 
             float camY = cam.transform.position.y, camZ = cam.transform.position.z;
             float tan  = Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
@@ -109,8 +121,9 @@ namespace JndUfo
 
                     // Shooting stars start inside the view at rest, high in the sky.
                     float hw = tan * (StarsZ - camZ) * asp;
-                    _starMat.SetVector("_SkyRect", new Vector4(originX - hw, YAt(0.3f, StarsZ, camY, camZ, tan),
-                                                               originX + hw, YAt(1.0f, StarsZ, camY, camZ, tan)));
+                    _skyRect = new Vector4(originX - hw, YAt(0.3f, StarsZ, camY, camZ, tan),
+                                           originX + hw, YAt(1.0f, StarsZ, camY, camZ, tan));
+                    _starMat.SetVector("_SkyRect", _skyRect);
                     AddQuad("SkyStars", _starMat, StarsZ, 0.26f, 1.12f, originX, panRange, camY, camZ, tan, asp,
                             Backdrop.SortingOrder - 3);
                 }
@@ -149,6 +162,25 @@ namespace JndUfo
                 }
                 else Debug.LogWarning("[NightSky] JndUfo/SkyClouds is missing or unsupported — no clouds.");
             }
+        }
+
+        // The endless world: carries the quads to stay centred on the camera's rest X (CameraRig runs first, at
+        // -50), and the shooting stars' start rectangle with them, so meteors still begin inside the view. Only
+        // a change is written.
+        void LateUpdate()
+        {
+            if (!_follow) return;
+            CameraRig rig = CameraRig.Instance;
+            float camX = rig != null ? rig.RestX : Camera.main != null ? Camera.main.transform.position.x : _originX;
+            float carried = camX - _originX;
+            if (carried == _carried) return;
+            _carried = carried;
+
+            Vector3 p = transform.position;
+            p.x = carried;
+            transform.position = p;
+            if (_starMat != null)
+                _starMat.SetVector("_SkyRect", _skyRect + new Vector4(carried, 0f, carried, 0f));
         }
 
         void OnDestroy()

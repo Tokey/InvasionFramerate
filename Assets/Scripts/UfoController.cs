@@ -152,6 +152,14 @@ namespace JndUfo
                 _prevDelayedPos = delayedPos;
                 _initialized    = true;
 
+                // Scrolling the world, the ship starts where it stays: the middle of the screen.
+                if (rig != null && rig.ScrollFollowing)
+                {
+                    transform.position = Clamped(cam, ViewPoint(cam, 0.5f, 0.5f));
+                    VirtualViewportX   = 0.5f;
+                    return;
+                }
+
                 // One-time raycast to place the UFO at the mouse world position.
                 Ray initRay = cam.ScreenPointToRay(new Vector3(delayedPos.x, delayedPos.y, 0f));
                 float idz   = initRay.direction.z;
@@ -180,7 +188,24 @@ namespace JndUfo
 
             Vector3 worldDelta = ScreenDeltaToWorld(cam, screenDelta);
             transform.position = Clamped(cam, transform.position + worldDelta);
+
+            // Where the ship would be on screen without the scroll: moved by the pointer alone, and held at
+            // the edge as the view would hold it. Glides and pans are not the pointer's and leave it alone.
+            if (rig != null && rig.ScrollFollowing)
+            {
+                float width = Mathf.Abs(ViewPoint(cam, 1f, 0.5f).x - ViewPoint(cam, 0f, 0.5f).x);
+                if (width > 1e-4f) VirtualViewportX = Mathf.Clamp01(VirtualViewportX + worldDelta.x / width);
+            }
         }
+
+        /// <summary>
+        /// With the world scrolling, where the ship would be across the screen (0 = left edge, 1 = right) if the
+        /// camera held still as it does without the scroll: the pointer's own travel, clamped at the edges as the
+        /// view clamps the ship. The scroll keeps the ship in the middle of the screen, so its real place there
+        /// says nothing; this is what each round's boundary is dealt against, so it lies as far from the ship,
+        /// in pointer travel, as it would without the scroll. Starts in the middle, where the ship does.
+        /// </summary>
+        public float VirtualViewportX { get; private set; } = 0.5f;
 
         // The flight envelope: X from the viewport's edges, Y between the floor and either the
         // configured ceiling or just under the top of the view. The ship's centre reaches either edge,
@@ -200,6 +225,16 @@ namespace JndUfo
                 maxX = Mathf.Max(l.x, r.x);
                 topY = Mathf.Max(b.y, t.y);
                 bottomY = Mathf.Min(b.y, t.y);
+
+                // Scrolling the world, the view moves with the ship, so it cannot bound it: the ship flies as far
+                // as the scroll reaches (the edge of the city that was built), its centre at most at the edge of
+                // the view the camera has at the end of the scroll.
+                if (rig != null && rig.ScrollFollowing)
+                {
+                    float halfW = (maxX - minX) * 0.5f;
+                    minX = rig.ScrollMinX - halfW;
+                    maxX = rig.ScrollMaxX + halfW;
+                }
             }
 
             // A set ceiling still never lets the centre above the top of the view, so at worst half the

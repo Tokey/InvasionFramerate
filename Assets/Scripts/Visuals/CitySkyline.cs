@@ -54,6 +54,14 @@ namespace JndUfo
     ///
     /// Created and built by <see cref="TowerManager"/> at Start. Sparks and embers at the damage sites
     /// are <see cref="CitySparks"/>' job; it reads <see cref="DamageSites"/>.
+    ///
+    /// The endless world (the world scroll; see <see cref="WorldRepeat"/>): built with a period, every layer is
+    /// one period of city exactly, its last building flush with the period's end, its rolling height profile
+    /// wrapping round, so that copies laid a period apart join like any two neighbours. TowerManager copies the
+    /// whole city a period to either side and keeps it under the camera. The period is the smallest whole number
+    /// of the scroll's that is wider than the widest layer's view, so no building ever shows twice on screen. The
+    /// few wide, even pieces — the two glow bands, the water and its sky — are built once, wide enough for every
+    /// copy, and left uncopied (<see cref="EndlessSingles"/>): additive glows would show three times over.
     /// </summary>
     public class CitySkyline : MonoBehaviour
     {
@@ -127,6 +135,13 @@ namespace JndUfo
 
         /// <summary>True once <see cref="Build"/> has run.</summary>
         public bool Built { get; private set; }
+
+        /// <summary>The length of city that repeats in the endless world (world units); 0 when not endless.</summary>
+        public float EndlessPeriod { get; private set; }
+
+        /// <summary>In the endless world, the city's pieces that must not be copied a period to either side: they are
+        /// built wide enough for every copy already. Empty when not endless.</summary>
+        public IReadOnlyList<GameObject> EndlessSingles => _singles;
 
         // ── Layers ───────────────────────────────────────────────────────────
 
@@ -203,6 +218,11 @@ namespace JndUfo
         readonly List<DamageSite> _sites     = new List<DamageSite>();
         readonly List<Material>   _materials = new List<Material>();
         readonly List<Mesh>       _meshes    = new List<Mesh>();
+        readonly List<GameObject> _singles   = new List<GameObject>();
+
+        // How far past the view, at the play plane's depth, the endless world's single pieces reach: the camera's
+        // shake, handheld drift and parallax swing, with room to spare. Scaled up with depth like the view.
+        const float EndlessMargin = 12f;
 
         System.Random _rng;
         float _camY, _camZ, _tanHalf, _aspect, _groundY, _playZ;
@@ -232,10 +252,12 @@ namespace JndUfo
         /// <summary>
         /// Builds the city for <paramref name="cam"/> as it stands now (its rest position), wide enough for
         /// pans of ±<paramref name="panRange"/> around <paramref name="originX"/>. The ground line sits at
-        /// <paramref name="groundY"/> on the play plane <paramref name="playZ"/>. Runs once; later calls do
-        /// nothing.
+        /// <paramref name="groundY"/> on the play plane <paramref name="playZ"/>. With
+        /// <paramref name="endlessBasePeriod"/>, one period of an endless city instead (see the class summary),
+        /// its period a whole number of that one. Runs once; later calls do nothing.
         /// </summary>
-        public void Build(Camera cam, float groundY, float playZ, float originX, float panRange)
+        public void Build(Camera cam, float groundY, float playZ, float originX, float panRange,
+                          float endlessBasePeriod = 0f)
         {
             if (Built || cam == null) return;
             Built = true;
@@ -249,6 +271,17 @@ namespace JndUfo
             _playZ   = playZ;
             _waterEdgeZ = playZ - QuayFront;
             _sites.Clear();
+
+            // The endless world's period: the smallest whole number of the scroll's that is wider than the widest
+            // layer's view, so no layer ever shows the same building twice on screen.
+            EndlessPeriod = 0f;
+            if (endlessBasePeriod > 0f)
+            {
+                float widest = 0f;
+                foreach (Layer layer in Layers) widest = Mathf.Max(widest, ScreenWidthAt(layer.Z + layer.ZJitter));
+                EndlessPeriod = endlessBasePeriod * Mathf.Max(1, Mathf.CeilToInt(widest / endlessBasePeriod));
+            }
+            bool endless = EndlessPeriod > 0f;
 
             Shader cityShader  = Shader.Find("JndUfo/City");
             Shader lightShader = Shader.Find("JndUfo/CityLights");
@@ -297,7 +330,10 @@ namespace JndUfo
 
             if (water) BuildEmbankment(nearLights, cityShader, originX, panRange, waterY);
 
-            AddGlowBands(lights, nearLights, originX, panRange);
+            // Endless, the glows go in meshes of their own, left uncopied (see EndlessSingles).
+            MeshBuilder glowFar  = endless ? new MeshBuilder(4) : lights;
+            MeshBuilder glowNear = endless ? new MeshBuilder(4) : nearLights;
+            AddGlowBands(glowFar, glowNear, originX, panRange);
             if (searchlights) AddSearchlights(lights, originX);
 
             if (lightOk)
@@ -321,14 +357,34 @@ namespace JndUfo
                     AddReflection("Reflect_Lights",     farMesh,  refl, waterY, far: true);
                     AddReflection("Reflect_LightsNear", nearMesh, refl, waterY, far: false);
                 }
+
+                if (endless)
+                {
+                    Mesh glowFarMesh  = glowFar.ToMesh("City_GlowFar");
+                    Mesh glowNearMesh = glowNear.ToMesh("City_GlowNear");
+                    _singles.Add(AddRenderer("City_GlowFar",  glowFarMesh,  lightMat, far: true));
+                    _singles.Add(AddRenderer("City_GlowNear", glowNearMesh, lightMat, far: false));
+                    if (water)
+                    {
+                        _singles.Add(AddReflection("Reflect_GlowFar",  glowFarMesh,  refl, waterY, far: true));
+                        _singles.Add(AddReflection("Reflect_GlowNear", glowNearMesh, refl, waterY, far: false));
+                    }
+                }
             }
 
             if (water) AddWater(originX, panRange, waterY);
 
             Debug.Log($"[CitySkyline] Built {buildings} buildings in {Layers.Length} layers, " +
                       $"{(lights.VertexCount + nearLights.VertexCount) / 4} lights, {_sites.Count} damage sites " +
-                      $"(seed {seed}){(water ? ", with the waterfront" : "")}.");
+                      $"(seed {seed}){(water ? ", with the waterfront" : "")}" +
+                      (endless ? $", one {EndlessPeriod:0.0}-unit period of an endless city." : "."));
         }
+
+        // The half-width a single piece of the endless city needs at depth z: the period, the view and room for the
+        // camera's shake, drift and swing either side of the strip's middle, which the strip keeps within half a
+        // period of the camera.
+        float EndlessHalfWidth(float z) =>
+            EndlessPeriod * 0.5f + ScreenWidthAt(z) * 0.5f + EndlessMargin * DepthScale(z);
 
         // ── Waterfront ───────────────────────────────────────────────────────
 
@@ -365,7 +421,7 @@ namespace JndUfo
         // the water's surface, so the surface (drawn over it, part-transparent) decides how much of it shows,
         // and its material keeps only what is seen through the water (see SetClip). A far layer's reflection
         // is as far away, optically, as the layer: out of focus with it.
-        void AddReflection(string goName, Mesh mesh, Material mat, float waterY, bool far)
+        GameObject AddReflection(string goName, Mesh mesh, Material mat, float waterY, bool far)
         {
             var go = new GameObject(goName) { layer = far ? Backdrop.Layer : 0 };
             go.transform.SetParent(transform, worldPositionStays: false);
@@ -380,6 +436,7 @@ namespace JndUfo
             r.reflectionProbeUsage       = ReflectionProbeUsage.Off;
             r.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
             r.allowOcclusionWhenDynamic  = false;
+            return go;
         }
 
         /// <summary>
@@ -400,6 +457,7 @@ namespace JndUfo
             float backZ  = _playZ + QuayBack;
             float nearHW = ScreenWidthAt(edgeZ) * 0.5f + panRange + sideMargin;
             float backHW = ScreenWidthAt(backZ) * 0.5f + (panRange + sideMargin) * DepthScale(backZ);
+            if (EndlessPeriod > 0f) nearHW = backHW = EndlessPeriod * 0.5f;   // one period, copied a period apart
             var ledgeFront = new Color(0.034f, 0.030f, 0.032f);
             var ledgeBack  = new Color(0.010f, 0.011f, 0.018f);
             mb.Quad(Plain(mb, new Vector3(originX - nearHW, _groundY, edgeZ), ledgeFront),
@@ -425,8 +483,12 @@ namespace JndUfo
             var post = new Color(0.010f, 0.011f, 0.016f);
             const float postH = 0.95f, postW = 0.05f;
             float lampZ = edgeZ + 0.25f;
-            float phase = Rand(0f, lampSpacing);
-            for (float lx = originX - nearHW + phase; lx < originX + nearHW; lx += lampSpacing)
+            // Endless, a whole number of lamps to the period, so the row runs on evenly across every copy.
+            float spacing = EndlessPeriod > 0f
+                ? EndlessPeriod / Mathf.Max(1, Mathf.RoundToInt(EndlessPeriod / lampSpacing))
+                : lampSpacing;
+            float phase = Rand(0f, spacing);
+            for (float lx = originX - nearHW + phase; lx < originX + nearHW; lx += spacing)
             {
                 mb.Quad(Plain(mb, new Vector3(lx - postW, _groundY, lampZ), post),
                         Plain(mb, new Vector3(lx + postW, _groundY, lampZ), post),
@@ -445,14 +507,16 @@ namespace JndUfo
             // out of focus with the far city's reflections that lie over it.
             var sky = new MeshBuilder(4);
             const float skyZ = 700f;
-            float skyHW = ScreenWidthAt(skyZ) * 0.5f + (panRange + sideMargin) * DepthScale(skyZ);
+            float skyHW = EndlessPeriod > 0f ? EndlessHalfWidth(skyZ)
+                                             : ScreenWidthAt(skyZ) * 0.5f + (panRange + sideMargin) * DepthScale(skyZ);
             var skyTop = new Color(0.040f, 0.040f, 0.060f);
             var skyLow = new Color(0.008f, 0.010f, 0.018f);
             sky.Quad(Plain(sky, new Vector3(originX - skyHW, waterY - 900f, skyZ), skyLow),
                      Plain(sky, new Vector3(originX + skyHW, waterY - 900f, skyZ), skyLow),
                      Plain(sky, new Vector3(originX + skyHW, waterY, skyZ), skyTop),
                      Plain(sky, new Vector3(originX - skyHW, waterY, skyZ), skyTop));
-            AddRenderer("City_SkyReflection", sky.ToMesh("City_SkyReflection"), mat, far: true);
+            GameObject skyGo = AddRenderer("City_SkyReflection", sky.ToMesh("City_SkyReflection"), mat, far: true);
+            if (EndlessPeriod > 0f) _singles.Add(skyGo);   // even across, and wide enough for every copy
         }
 
         /// <summary>The water's surface: from just under the embankment out past the bottom of the screen.</summary>
@@ -467,7 +531,7 @@ namespace JndUfo
 
             float edgeZ = _waterEdgeZ;
             const float nearZ = -85f;   // past the bottom of the screen, camera shake included
-            float hw = ScreenWidthAt(edgeZ) * 0.5f + panRange + sideMargin;
+            float hw = EndlessPeriod > 0f ? EndlessHalfWidth(edgeZ) : ScreenWidthAt(edgeZ) * 0.5f + panRange + sideMargin;
 
             var mb = new MeshBuilder(8);
             int a = mb.AddLight(new Vector3(originX - hw, waterY, nearZ), Vector4.zero, Vector4.zero, Vector4.zero);
@@ -480,7 +544,8 @@ namespace JndUfo
             mat.SetFloat("_NearZ", -60f);
             mat.SetFloat("_FarZ", edgeZ);
             _materials.Add(mat);
-            AddRenderer("City_Water", mb.ToMesh("City_Water"), mat, far: false);
+            GameObject waterGo = AddRenderer("City_Water", mb.ToMesh("City_Water"), mat, far: false);
+            if (EndlessPeriod > 0f) _singles.Add(waterGo);   // its ripples go by world position: one wide quad
         }
 
         // A vertex with a flat colour and no windows, rim or haze — for the embankment's plain surfaces.
@@ -517,7 +582,7 @@ namespace JndUfo
         float DepthScale(float z) => (z - _camZ) / Mathf.Max(0.01f, _playZ - _camZ);
 
         // far: on the backdrop layer, drawn out of focus (see Backdrop).
-        void AddRenderer(string goName, Mesh mesh, Material mat, bool far)
+        GameObject AddRenderer(string goName, Mesh mesh, Material mat, bool far)
         {
             _meshes.Add(mesh);
             var go = new GameObject(goName) { layer = far ? Backdrop.Layer : 0 };
@@ -531,6 +596,7 @@ namespace JndUfo
             r.reflectionProbeUsage       = ReflectionProbeUsage.Off;
             r.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
             r.allowOcclusionWhenDynamic  = false;
+            return go;
         }
 
         // ── Layers ───────────────────────────────────────────────────────────
@@ -545,6 +611,15 @@ namespace JndUfo
             float profileX = Rand(0f, 1000f);
             float profileY = Rand(0f, 1000f);
 
+            // Endless: exactly one period, so the copies laid a period to either side join it like any two
+            // neighbours (see the class summary).
+            bool endless = EndlessPeriod > 0f;
+            if (endless)
+            {
+                xMin = originX - EndlessPeriod * 0.5f;
+                xMax = originX + EndlessPeriod * 0.5f;
+            }
+
             // Landmarks and broken buildings stand at fixed fractions of the starting view.
             bool[] landmarkDone = new bool[LandmarkAt.Length];
             int damageWanted = L.Role == Role.Main ? Mathf.Max(0, damagedBuildings - 1)
@@ -553,13 +628,23 @@ namespace JndUfo
             int damageMade = 0;
 
             int count = 0;
-            float x = xMin - Rand(L.WMin, L.WMax) * screenW;
+            float x = endless ? xMin : xMin - Rand(L.WMin, L.WMax) * screenW;
             while (x < xMax)
             {
+                // Endless, too little room left for a building is left as a gap like any other.
+                if (endless && xMax - x < L.WMin * screenW * 0.5f) break;
+
                 float w = Rand(L.WMin, L.WMax) * screenW;
+                // Endless, the period's last building ends exactly at its edge, so the next copy's first stands flush
+                // with it: stretched to the edge when it would leave too little room for another, cut to it when it
+                // would pass it. It is the last: the gaps can be negative (overlaps), so the walk must stop on it
+                // rather than step back under the edge.
+                bool last = endless && (x + w > xMax || xMax - (x + w) < L.WMin * screenW);
+                if (last) w = xMax - x;
                 float z = L.Z + Rand(0f, L.ZJitter);
 
-                float profile = Mathf.PerlinNoise(profileX + x * 0.045f / ds, profileY);
+                float profile = endless ? WrappedProfile(x - xMin, ds, profileX, profileY)
+                                        : Mathf.PerlinNoise(profileX + x * 0.045f / ds, profileY);
                 float v = Mathf.Lerp(L.VMin, L.VMax, Mathf.Lerp((float)_rng.NextDouble(), profile, L.Profile));
 
                 // Is this the building at one of the landmark or damage positions?
@@ -597,6 +682,7 @@ namespace JndUfo
                 {
                     w = Mathf.Max(w, Rand(0.055f, 0.075f) * screenW);
                     v = Rand(0.47f, 0.55f);
+                    if (endless && x + w > xMax) w = xMax - x;
                 }
 
                 float depth = Rand(L.DepthMin, L.DepthMax);
@@ -613,10 +699,21 @@ namespace JndUfo
                 }
 
                 count++;
+                if (last) break;
                 x += w + Rand(L.GapMin, L.GapMax) * screenW;
             }
 
             return count;
+        }
+
+        // The skyline's rolling height profile wrapped round the endless city's period: the same noise, sampled round a
+        // circle whose circumference is the period in the noise's own units, so it rolls as it does along a line and
+        // meets itself where the period does. `along` is world units from the period's left end.
+        float WrappedProfile(float along, float ds, float px, float py)
+        {
+            float a = 2f * Mathf.PI * along / EndlessPeriod;
+            float r = EndlessPeriod * 0.045f / ds / (2f * Mathf.PI);
+            return Mathf.PerlinNoise(px + r * Mathf.Cos(a), py + r * Mathf.Sin(a));
         }
 
         Facade MakeFacade(in Layer L, bool damaged)
@@ -946,8 +1043,12 @@ namespace JndUfo
         /// </summary>
         void AddGlowBands(MeshBuilder farLights, MeshBuilder nearLights, float originX, float panRange)
         {
+            // Endless, each band is one piece for every copy of the city, its even middle wide enough for the view at
+            // every jump of the strip: a band fades out over the outer sixth of its half-width (JndUfo/CityLights).
+            bool endless = EndlessPeriod > 0f;
             const float horizonZ = 520f;
-            float hw = ScreenWidthAt(horizonZ) * 0.5f + (panRange + sideMargin) * DepthScale(horizonZ);
+            float hw = endless ? EndlessHalfWidth(horizonZ) * 1.25f
+                               : ScreenWidthAt(horizonZ) * 0.5f + (panRange + sideMargin) * DepthScale(horizonZ);
             float y0 = YAt(0.22f, horizonZ), y1 = YAt(0.70f, horizonZ);
             AddLight(farLights, new Vector3(originX, (y0 + y1) * 0.5f, horizonZ), hw, (y1 - y0) * 0.5f, 1f, 1.7f,
                      horizonGlow, 0f, 0f, 1f, 0f);
@@ -955,7 +1056,8 @@ namespace JndUfo
             // From just below the ground line on the screen up past the near rooftops' feet.
             const float streetZ = 6f;
             float groundV = 0.5f + (_groundY - _camY) / (2f * _tanHalf * Mathf.Max(1f, _playZ - _camZ));
-            float sw = ScreenWidthAt(streetZ) * 0.5f + (panRange + sideMargin) * DepthScale(streetZ);
+            float sw = endless ? EndlessHalfWidth(streetZ) * 1.25f
+                               : ScreenWidthAt(streetZ) * 0.5f + (panRange + sideMargin) * DepthScale(streetZ);
             float s0 = YAt(groundV - 0.026f, streetZ), s1 = YAt(groundV + 0.134f, streetZ);
             AddLight(nearLights, new Vector3(originX, (s0 + s1) * 0.5f, streetZ), sw, (s1 - s0) * 0.5f, 1f, 2.2f,
                      streetGlow, 0f, 0f, 1f, 0f);

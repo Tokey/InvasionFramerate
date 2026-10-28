@@ -148,6 +148,11 @@ namespace JndUfo
         // The reveal's pacing, in seconds after it begins, fitted to how long it stays up (Pace).
         float _rollStart, _rollSec, _measuredAt, _washStart, _washEnd;
 
+        // Tracking (Show's track): the boundary in the world, and where it was last laid out on screen.
+        bool    _track;
+        Vector3 _towerBase;
+        float   _hitRadius, _split, _zone;
+
         void Awake() => Build();
 
         void OnDestroy()
@@ -163,30 +168,25 @@ namespace JndUfo
         /// the boundary was and <paramref name="hitRadius"/> the hit zone's half-width, both in world
         /// units. <paramref name="holdSec"/> is how long the reveal will stay up, counted from the end
         /// of <paramref name="delaySec"/> to <see cref="Hide"/>; the animation is paced to land well
-        /// inside it. 0 uses <see cref="defaultHoldSec"/>.
+        /// inside it. 0 uses <see cref="defaultHoldSec"/>. With <paramref name="track"/> the split
+        /// follows the boundary every frame, for a camera that moves while the reveal is up (the
+        /// world scroll); without it, it is laid out once, here. <paramref name="settleShiftX"/> is how far
+        /// (world X) the camera is about to pan: the numbers' size and placement are fitted once, to the
+        /// view it lands on, so only the split moves while it pans rather than the numbers jumping between
+        /// layouts on the way.
         /// </summary>
         public void Show(PerturbationController.TrialRecord trial, Vector3 towerBase, float hitRadius,
-                         float delaySec = 0f, float holdSec = 0f)
+                         float delaySec = 0f, float holdSec = 0f, bool track = false, float settleShiftX = 0f)
         {
             if (_root == null) Build();
             if (_root == null || !trial.valid) return;
 
-            // Where the boundary and the hit-zone lines fall on screen. The camera looks straight
-            // down +Z, so vertical lines in the world stay vertical on screen.
-            float split = 0.5f, zone = 0.12f;
-            Camera cam = _canvas.renderMode == RenderMode.ScreenSpaceCamera && _canvas.worldCamera != null
-                ? _canvas.worldCamera
-                : CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
-            if (cam != null)
-            {
-                Vector3 vp = cam.WorldToViewportPoint(towerBase);
-                Vector3 ve = cam.WorldToViewportPoint(towerBase + Vector3.right * hitRadius);
-                if (vp.z > 0f)
-                {
-                    split = Mathf.Clamp(vp.x, 0.02f, 0.98f);
-                    zone  = Mathf.Clamp(Mathf.Abs(ve.x - vp.x), 0.01f, 0.45f);
-                }
-            }
+            _track     = track;
+            _towerBase = towerBase;
+            _hitRadius = hitRadius;
+            Project(towerBase, hitRadius, out float split, out float zone);
+            _split = split;
+            _zone  = zone;
 
             // Live before measuring: the layout below asks TextMeshPro to lay the text out.
             _root.gameObject.SetActive(true);
@@ -200,7 +200,13 @@ namespace JndUfo
                       trial.alteredSide == PerturbationController.Side.Right, trial.baseFps,
                       leftFaster ? slowerColor : fasterColor);
 
-            Layout(split, zone);
+            Place(split, zone);
+            if (track && settleShiftX != 0f)
+            {
+                Project(towerBase - Vector3.right * settleShiftX, hitRadius, out float settled, out float settledZone);
+                Fit(settled, settledZone);
+            }
+            else Fit(split, zone);
             Pace(holdSec);
 
             _shownAt = Time.realtimeSinceStartup + Mathf.Max(0f, delaySec);
@@ -252,11 +258,43 @@ namespace JndUfo
             Drift(_right, h);
         }
 
+        // Where the boundary and the hit-zone lines fall on screen. The camera looks straight down +Z, so
+        // vertical lines in the world stay vertical on screen.
+        void Project(Vector3 towerBase, float hitRadius, out float split, out float zone)
+        {
+            split = 0.5f;
+            zone  = 0.12f;
+            Camera cam = _canvas.renderMode == RenderMode.ScreenSpaceCamera && _canvas.worldCamera != null
+                ? _canvas.worldCamera
+                : CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+            if (cam == null) return;
+
+            Vector3 vp = cam.WorldToViewportPoint(towerBase);
+            Vector3 ve = cam.WorldToViewportPoint(towerBase + Vector3.right * hitRadius);
+            if (vp.z > 0f)
+            {
+                split = Mathf.Clamp(vp.x, 0.02f, 0.98f);
+                zone  = Mathf.Clamp(Mathf.Abs(ve.x - vp.x), 0.01f, 0.45f);
+            }
+        }
+
         // ── Per frame ────────────────────────────────────────────────────────
 
-        void Update()
+        // LateUpdate, so a tracked split reads the camera as CameraRig has posed it for this frame.
+        void LateUpdate()
         {
             if (_state == State.Hidden) return;
+
+            if (_track)
+            {
+                Project(_towerBase, _hitRadius, out float split, out float zone);
+                if (!Mathf.Approximately(split, _split) || !Mathf.Approximately(zone, _zone))
+                {
+                    _split = split;
+                    _zone  = zone;
+                    Place(split, zone);
+                }
+            }
 
             // realtimeSinceStartup throughout: the reveal must animate on the wall clock whatever
             // the frame rate, and unscaledTime is only stamped once per frame.
@@ -365,21 +403,30 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// Splits the screen at the tower, points each side's tint outward from it, and sizes and
-        /// places the two number blocks. See the class summary for the rules; all of it is in
+        /// Splits the screen at the tower and points each side's tint outward from it. All of it is in
         /// canvas units.
         /// </summary>
-        void Layout(float split, float zoneHalf)
+        void Place(float split, float zoneHalf)
+        {
+            float W = CanvasWidth;
+            float z = zoneHalf * W;            // the hit zone's half-width
+
+            SetArea(_left,  0f,    split);
+            SetArea(_right, split, 1f);
+            SetWash(_left,  split * W, z);
+            SetWash(_right, W - split * W, z);
+        }
+
+        /// <summary>
+        /// Sizes and places the two number blocks for a split. See the class summary for the rules; all
+        /// of it is in canvas units.
+        /// </summary>
+        void Fit(float split, float zoneHalf)
         {
             float W  = CanvasWidth;
             float xs = split * W;              // the tower line
             float z  = zoneHalf * W;           // the hit zone's half-width
             float wl = xs, wr = W - xs;        // each side's width
-
-            SetArea(_left,  0f,    split);
-            SetArea(_right, split, 1f);
-            SetWash(_left,  wl, z);
-            SetWash(_right, wr, z);
 
             // The scale each block fits at between the beam and its hit-zone line, or the screen
             // edge where that comes first — together with its gap from the beam, which scales with

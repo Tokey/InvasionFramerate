@@ -324,8 +324,8 @@ namespace JndUfo
         }
 
         // Reads CameraRig.RestX, which PanTo writes from its coroutine — coroutines resume before
-        // LateUpdate, so the value is already current for this frame regardless of which
-        // component's LateUpdate Unity happens to run first.
+        // LateUpdate, so the value is already current for this frame — and which the world scroll
+        // writes in CameraRig's LateUpdate, run ahead of this one by its execution order.
         void LateUpdate() => ApplyFogFollow();
 
         /// <summary>
@@ -438,6 +438,7 @@ namespace JndUfo
 
         void PlaceTowerAt(float x)
         {
+            BoundaryX = x;
             Vector3 pos = new Vector3(x, groundY, fixedZ);
             if (tower != null) tower.MoveTo(pos);
             if (cloud != null) cloud.MoveOver(pos);
@@ -450,6 +451,71 @@ namespace JndUfo
             // The beam is left as it is: one still fading from the last reveal finishes over the tower it
             // marked. Every caller puts the beam down (ApplyVisibility) once the move is done.
             UpdateTowerLaserPosition();
+        }
+
+        // ── Endless world ────────────────────────────────────────────────────
+
+        /// <summary>True when the scenery was built endless for the world scroll (GameManager.worldScroll on at
+        /// start): the city, the towers, the grass and the sky repeat without end, and so does the boundary.</summary>
+        public bool EndlessScenery { get; private set; }
+
+        /// <summary>
+        /// World units from one copy of the boundary to the next in the endless world; 0 without it. The tower
+        /// field repeats with this period, so a boundary tower stands at <see cref="BoundaryX"/> + k × period for
+        /// every whole k, and the frame rates swap sides at every copy: across an even copy (k = 0 is the boundary
+        /// as dealt) they run as dealt, across an odd one the other way round. So the world reads base | altered |
+        /// base | altered ... without end, and crossing any copy changes the frame rate.
+        /// </summary>
+        public float BoundaryPeriod { get; private set; }
+
+        /// <summary>Where this round's boundary was dealt (world X). <see cref="TowerBase"/> is the same, until the
+        /// round ends in the endless world and <see cref="FocusBoundaryNear"/> moves it onto a copy.</summary>
+        public float BoundaryX { get; private set; }
+
+        /// <summary>
+        /// How far past the boundary <paramref name="worldPos"/> is along <paramref name="right"/>, signed by side:
+        /// positive on the right. In the endless world it is measured from the nearest copy of the boundary, along
+        /// X (the camera never turns), with the sign turned across every odd copy — so it is positive exactly where
+        /// the frame rate of the dealt boundary's right side runs, its size is the distance to the nearest copy, and
+        /// it never jumps: half a period from two copies, it is the same measured from either.
+        /// </summary>
+        public float SideAlong(Vector3 worldPos, Vector3 right)
+        {
+            if (BoundaryPeriod <= 0f) return Vector3.Dot(worldPos - TowerBase, right);
+            float rel = worldPos.x - BoundaryX;
+            int   k   = Mathf.RoundToInt(rel / BoundaryPeriod);
+            float d   = rel - k * BoundaryPeriod;
+            return (k & 1) == 0 ? d : -d;
+        }
+
+        /// <summary>The X of the copy of the boundary nearest world <paramref name="x"/>, and whether the frame rates
+        /// run the other way round across it (an odd copy). Without the endless world, the boundary itself.</summary>
+        public float BoundaryXNear(float x, out bool flipped)
+        {
+            flipped = false;
+            if (BoundaryPeriod <= 0f) return TowerBase.x;
+            int k = Mathf.RoundToInt((x - BoundaryX) / BoundaryPeriod);
+            flipped = (k & 1) != 0;
+            return BoundaryX + k * BoundaryPeriod;
+        }
+
+        /// <summary>
+        /// In the endless world, makes the copy of the boundary nearest world <paramref name="x"/> the one the round
+        /// ended at: the scene's target tower (and its cloud) moves onto it, so the score, the reveal's beam, lit
+        /// tower and frame rates, and the shot log all take that copy for the boundary. Returns true when the frame
+        /// rates run the other way round across it, so the caller can turn the round's record to match. The dealt
+        /// boundary (<see cref="BoundaryX"/>), and so the side the frame rates go by, are unchanged. Without the
+        /// endless world, does nothing and returns false.
+        /// </summary>
+        public bool FocusBoundaryNear(float x)
+        {
+            if (BoundaryPeriod <= 0f) return false;
+            float bx = BoundaryXNear(x, out bool flipped);
+            var pos = new Vector3(bx, groundY, fixedZ);
+            if (tower != null) tower.MoveTo(pos);
+            if (cloud != null) cloud.MoveOver(pos);
+            UpdateTowerLaserPosition();   // the beam rises over this copy (it is down until the reveal)
+            return flipped;
         }
 
         // ── Shot reveal helpers (called by GameManager) ──────────────────────
@@ -856,6 +922,11 @@ namespace JndUfo
 
         // ── Scenery ──────────────────────────────────────────────────────────
 
+        /// <summary>How far either side of the rig's origin the scenery was built to reach (world units), once
+        /// <see cref="SceneryBuilt"/>. The camera must not be taken past it.</summary>
+        public float BuiltPanRange { get; private set; }
+        public bool  SceneryBuilt  { get; private set; }
+
         /// <summary>
         /// Builds the night city, the tower field, the foreground and the out-of-focus backdrop, once, for the
         /// camera at rest and every pan it can make. They live on objects of their own at the scene root — not
@@ -867,7 +938,24 @@ namespace JndUfo
         {
             Camera cam      = rig != null ? rig.ActiveCamera : Camera.main;
             float  originX  = rig != null ? rig.OriginX : (cam != null ? cam.transform.position.x : 0f);
-            float  panRange = GameManager.Instance != null ? GameManager.Instance.cameraPanRange : 6f;
+            float  panRange = GameManager.Instance != null ? GameManager.Instance.SceneryRange : 6f;
+            BuiltPanRange   = panRange;
+            SceneryBuilt    = true;
+
+            // The endless world (the world scroll on at start): every strip of scenery is built as one period that
+            // repeats, and WorldRepeat keeps it under the camera however far it goes. The period is the scroll's,
+            // rounded to a whole number of the tower field's lattice, so the field repeats exactly with it; the city
+            // picks a whole number of these, wide enough that no building shows twice on screen.
+            GameManager gm = GameManager.Instance;
+            EndlessScenery = gm != null && gm.worldScroll;
+            float period   = 0f;
+            if (EndlessScenery)
+            {
+                if (towerField == null) towerField = new GameObject("TowerField").AddComponent<TowerField>();
+                float spacing = Mathf.Max(1f, towerField.spacing);
+                period = spacing * Mathf.Max(1, Mathf.RoundToInt(gm.worldScrollPeriod / spacing));
+            }
+            BoundaryPeriod = period;
 
             if (_silhouetteMat == null)
             {
@@ -888,29 +976,44 @@ namespace JndUfo
                 _towerGlowMat = GlowMaterial.Create(GlowShape.Flat, Color.clear, 1f, "TowerReveal");
 
             if (city == null) city = new GameObject("City").AddComponent<CitySkyline>();
-            city.Build(cam, groundY, fixedZ, originX, panRange);
+            city.Build(cam, groundY, fixedZ, originX, panRange, period);
 
             if (citySparks == null) citySparks = city.gameObject.AddComponent<CitySparks>();
             citySparks.Build(city.DamageSites);
 
-            if (nightSky == null) nightSky = city.gameObject.AddComponent<NightSky>();
-            nightSky.Build(cam, originX, panRange);
+            // The sky follows the camera in the endless world (its stars, aurora and clouds are drawn from world
+            // position, so they stay put in the world): on an object of its own, so neither moves the other — the
+            // city jumps whole periods, the sky glides — and the city's copies do not copy the sky.
+            if (nightSky == null)
+                nightSky = (EndlessScenery ? new GameObject("NightSky") : city.gameObject).AddComponent<NightSky>();
+            nightSky.Build(cam, originX, panRange, followCamera: EndlessScenery);
+
+            // Copied a period to either side — sparks included, built above as the city's children — once the whole
+            // strip is built. The few wide, even pieces the city names are left single.
+            if (EndlessScenery) WorldRepeat.Attach(city.gameObject, city.EndlessPeriod, originX, copies: true,
+                                                   single: new List<GameObject>(city.EndlessSingles));
 
             if (towerField == null) towerField = new GameObject("TowerField").AddComponent<TowerField>();
             var models = new List<GameObject>();
             if (skylineBuildings != null)
                 foreach (SkylineBuilding b in skylineBuildings)
                     if (b != null && b.prefab != null) models.Add(b.prefab);
-            towerField.Build(models, _silhouetteMat, _towerGlowMat, groundY, fixedZ, cam, originX, panRange);
+            towerField.Build(models, _silhouetteMat, _towerGlowMat, groundY, fixedZ, cam, originX, panRange, period);
+            if (EndlessScenery) WorldRepeat.Attach(towerField.gameObject, period, originX, copies: false);
 
             if (foreground == null) foreground = new GameObject("Foreground").AddComponent<Foreground>();
-            foreground.Build(cam, originX, panRange, groundY, fixedZ);
+            foreground.Build(cam, originX, panRange, groundY, fixedZ, period);
+            if (EndlessScenery) WorldRepeat.Attach(foreground.gameObject, period, originX, copies: false);
 
             if (weather == null) weather = new GameObject("Weather").AddComponent<Weather>();
-            weather.Build(cam, originX, panRange);
+            weather.Build(cam, originX, panRange, followCamera: EndlessScenery);
 
             if (backdrop == null) backdrop = new GameObject("Backdrop").AddComponent<Backdrop>();
             backdrop.Build(cam);
+
+            if (EndlessScenery)
+                Debug.Log($"[TowerManager] Endless world: the boundary and the towers repeat every {period:0.0} units, " +
+                          $"the city every {city.EndlessPeriod:0.0}.");
         }
 
         // Puts the fog bank back, whole and centred, for the next round. Only has work to do with groundFog on.

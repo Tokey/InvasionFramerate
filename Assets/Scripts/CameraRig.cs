@@ -3,6 +3,9 @@ using UnityEngine;
 
 namespace JndUfo
 {
+    // Early, so the camera is posed before anything that reads it in LateUpdate — the fog follows RestX, and
+    // with GameManager.worldScroll on RestX is written in this LateUpdate rather than by a pan coroutine.
+    [DefaultExecutionOrder(-50)]
     public class CameraRig : MonoBehaviour
     {
         public static CameraRig Instance { get; private set; }
@@ -94,7 +97,47 @@ namespace JndUfo
         UfoController _ufo;
         float      _planeZ, _flightLow, _flightHigh;
 
+        // World scroll (GameManager.worldScroll): its ease in and out.
+        float      _scrollWeight;
+
+        // The hand-held follow (GameManager.worldScrollHandheldFollow): its ease in and out; the damped spring the
+        // camera rides after the ship — position, velocity, and the ship's X last frame; and the extra wobble it puts
+        // on the camera this frame.
+        float      _followWeight, _followX, _followV, _followPrev, _followShake;
+        bool       _followPrimed;
+
+        // The hand-held follow's limits: the ship never leads the camera by more than this share of half the view
+        // (past it the camera is dragged along at the ship's speed); its wobble is full at this pan speed (world
+        // units a second), and wanders at this rate.
+        const float FollowMaxLead    = 0.6f;
+        const float FollowShakeSpeed = 25f;
+        const float FollowShakeHz    = 0.9f;
+
         public float OriginX => _originX;
+
+        /// <summary>
+        /// True while the camera is following the UFO across. The UFO's X is then bounded by
+        /// <see cref="ScrollMinX"/> and <see cref="ScrollMaxX"/> rather than by the view, which moves with it.
+        /// </summary>
+        public bool ScrollFollowing => _scrollWeight >= 1f && WorldScroll;
+
+        /// <summary>The farthest the scroll can take the camera's rest X, either side: without end over the endless
+        /// city, else the edge of the city that was built (see GameManager.ScrollReach).</summary>
+        public float ScrollMinX => _originX - ScrollReach;
+        public float ScrollMaxX => _originX + ScrollReach;
+
+        float ScrollReach => GameManager.Instance != null ? GameManager.Instance.ScrollReach : 0f;
+
+        /// <summary>
+        /// Drops the world scroll at once, without its ease out, and puts the camera back at its origin. For
+        /// the command-line checks (<see cref="QaRunner"/>), which place things by fractions of a view that
+        /// must hold still. Switch GameManager.worldScroll off first, or it starts again next frame.
+        /// </summary>
+        public void StopScrollNow()
+        {
+            _scrollWeight   = 0f;
+            _restPosition.x = _originX;
+        }
 
         /// <summary>
         /// The camera's settled X, excluding shake and the handheld wander. Anything that follows
@@ -127,6 +170,9 @@ namespace JndUfo
             float top   = _restPosition.y + RestHalfHeight();
             _flightHigh = _ufo != null && _ufo.maxY > 0f ? Mathf.Min(_ufo.maxY, top) : top - RestHalfHeight() * 0.05f;
             if (_flightHigh <= _flightLow + 0.01f) _flightHigh = _flightLow + 1f;
+
+            // On from the first frame rather than easing in, so the scene opens with the ship already centred.
+            if (WorldScroll) _scrollWeight = 1f;
         }
 
         void LateUpdate()
@@ -137,6 +183,8 @@ namespace JndUfo
                 _restPosition = Vector3.Lerp(_restPosition, desired,
                     1f - Mathf.Exp(-followLerp * Time.unscaledDeltaTime));
             }
+
+            ApplyWorldScroll();
 
             // The parallax swing: a turn of the camera about a point on the play plane straight ahead of it.
             Quaternion swing = Quaternion.identity;
@@ -181,8 +229,115 @@ namespace JndUfo
                 turn  = Quaternion.Euler(Wander(t, 7.13f) * a, Wander(t, 11.9f) * a, Wander(t, 15.3f) * a * 0.5f);
             }
 
+            // The hand-held follow's wobble: while the camera pans after the ship, a quicker, larger wander of its own,
+            // growing with the pan's speed — an operator's hands on a camera on the move. A function of time and the
+            // follow's speed alone, so the same at any frame rate; on top of the handheld wander, not instead of it.
+            if (_followShake > 0f)
+            {
+                float t = Time.unscaledTime * FollowShakeHz;
+                float a = _followShake;
+                drift += new Vector3(Wander(t, 21.7f) * 0.2f, Wander(t, 25.3f) * 0.14f, 0f) * a;
+                turn  *= Quaternion.Euler(Wander(t, 29.1f) * 0.1f * a, Wander(t, 33.7f) * 0.1f * a, Wander(t, 37.3f) * 0.08f * a);
+            }
+
             transform.position = pivot + swing * (_restPosition - pivot) + _shakeOffset + drift;
             transform.rotation = swing * _restRotation * turn;
+        }
+
+        bool WorldScroll => GameManager.Instance != null && GameManager.Instance.worldScroll && _ufo != null;
+
+        // The world scroll: the camera's rest X follows the UFO, so the city slides past — without end over the endless
+        // city, else as far as the city was built (ScrollMinX..ScrollMaxX). Locked on, the ship holds the middle of the
+        // screen; with the hand-held follow the camera rides a damped spring after it instead (see StepFollow). Both
+        // eased in and out when toggled mid-play, so switching never jumps the view; the scroll on from the start is on
+        // from the first frame.
+        void ApplyWorldScroll()
+        {
+            float dt = Time.unscaledDeltaTime;
+            _scrollWeight = Mathf.MoveTowards(_scrollWeight, WorldScroll ? 1f : 0f, dt / HandheldEaseSec);
+            _followShake  = 0f;
+            if (_scrollWeight <= 0f || _ufo == null)
+            {
+                _followPrimed = false;
+                return;
+            }
+
+            GameManager gm = GameManager.Instance;
+            float target = Mathf.Clamp(_ufo.transform.position.x, ScrollMinX, ScrollMaxX);
+            float x      = target;
+
+            // The spring rides along even while the follow is off, so switching it on starts from where the ship is.
+            if (!_followPrimed)
+            {
+                _followX      = target;
+                _followV      = 0f;
+                _followPrimed = true;
+            }
+            else if (dt > 0f && gm != null)
+            {
+                float u = (target - _followPrev) / dt;   // the ship's speed across the frame
+                StepFollow(target, u, dt, gm.followResponse, gm.followDamping);
+
+                // Never so far behind that the ship leaves the middle of the view: past the limit the camera is
+                // dragged along at the ship's own speed.
+                float lead = FollowMaxLead * RestHalfHeight() * (cam != null ? cam.aspect : 16f / 9f);
+                if (Mathf.Abs(_followX - target) > lead)
+                {
+                    _followX = Mathf.Clamp(_followX, target - lead, target + lead);
+                    _followV = u;
+                }
+            }
+            _followPrev = target;
+
+            _followWeight = Mathf.MoveTowards(_followWeight, gm != null && gm.worldScrollHandheldFollow ? 1f : 0f,
+                                              dt / HandheldEaseSec);
+            if (_followWeight > 0f)
+            {
+                float fw = _followWeight * _followWeight * (3f - 2f * _followWeight);
+                x = Mathf.Lerp(target, _followX, fw);
+                _followShake = fw * gm.followShake * Mathf.Clamp01(Mathf.Abs(_followV) / FollowShakeSpeed);
+            }
+
+            float w = _scrollWeight * _scrollWeight * (3f - 2f * _scrollWeight);
+            _restPosition.x = Mathf.Lerp(_restPosition.x, x, w);
+        }
+
+        // One frame of the hand-held follow: a damped spring (natural frequency omega, damping zeta) pulling the camera
+        // after the ship, solved EXACTLY for a ship moving steadily across the frame — from `target - u * dt` to
+        // `target`. So the camera takes the same path at any frame rate: the frame rate changes where the boundary is,
+        // and a follow that lagged by more at one rate than another would give it away by moving the picture. At a
+        // steady speed the camera trails by 2 zeta u / omega, settling after the ship stops (overshooting a touch with
+        // zeta below 1).
+        void StepFollow(float target, float u, float dt, float omega, float zeta)
+        {
+            omega = Mathf.Max(0.1f, omega);
+            zeta  = Mathf.Clamp(zeta, 0.05f, 1f);
+
+            // Relative to the path the camera would settle onto at this speed: there the spring is at rest.
+            float settle = -2f * zeta * u / omega;
+            float z      = _followX - (target - u * dt) - settle;
+            float zv     = _followV - u;
+            float a      = zeta * omega;
+            float e      = Mathf.Exp(-a * dt);
+
+            float z1, zv1;
+            if (zeta >= 0.999f)
+            {
+                float k = zv + omega * z;              // critically damped
+                z1  = (z + k * dt) * e;
+                zv1 = (zv - omega * k * dt) * e;
+            }
+            else
+            {
+                float b = omega * Mathf.Sqrt(1f - zeta * zeta);
+                float c = Mathf.Cos(b * dt), s = Mathf.Sin(b * dt);
+                float B = (zv + a * z) / b;
+                z1  = e * (z * c + B * s);
+                zv1 = e * (zv * c - (a * B + b * z) * s);
+            }
+
+            _followX = target + settle + z1;
+            _followV = u + zv1;
         }
 
         // Where the swing is heading: the UFO's place across the view at rest (x, -1 at the left edge to 1 at
