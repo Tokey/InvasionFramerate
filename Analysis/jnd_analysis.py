@@ -3,10 +3,26 @@
 JND analysis for the frame-rate study: CHI-ready figures, tables and statistics.
 
 The game ("Invasion - Frame Rate") splits the screen at a hidden tower: one side runs at the
-block's base frame rate, the other at base - diffFps. The participant flies the UFO across and
-shoots where they think the boundary is; a shot within closeRadius of the tower base is a hit.
-QUEST+ chooses diffFps every round and estimates the threshold theta (in fps) per block. Three
-blocks per session, one per base rate (60, 144, 500 fps), in a Latin-square order.
+block's base frame rate, the other at base - diffFps (direction "down") or base + diffFps
+("up"). The participant shoots where they think the boundary is; a shot within closeRadius of
+the tower base is a hit. QUEST+ chooses diffFps every round and estimates the threshold theta
+(in fps) per block. One block per row of ExperimentConfig.csv, in a Latin-square order; the
+original design has three, one per base rate (60, 144, 500 fps), all "down".
+
+Every block is also played in a level (levelType): "manual" (the participant flies the UFO with
+the mouse, the camera is still), "scroll" (the same, but the camera follows the UFO over an
+endless world) or "auto" (the UFO flies back and forth on its own and the participant only
+clicks). A condition is therefore (level, direction, base rate), and the figures and tables key
+a block by participant and base rate only. So the analysis runs once per (level, direction)
+combination the data hold: with one combination it writes into --out as it always did; with
+several, each gets its own <out>/<levelType>_<direction>/ (and the console says so). Blocks of
+one participant that would still share a base rate within a run - two rows differing only in,
+say, autoPath - split that run further by the config columns that tell them apart, so two
+conditions are never merged. --level and --direction restrict the data at load time (session
+blocks, shots, frames; practice rounds carry the level they practise and are kept with it).
+Logs written before levelType was logged carry no level: it is inferred from how far the UFO
+flew (the scrolling level travels far beyond one screen), can be set with --legacy-level, and
+report.md says when it was inferred.
 
 Reads every participant folder under --data (each holds SessionLog_<id>.csv and
 ShotLog_<id>.csv, and optionally PlayerLog_<id>.csv) and writes into --out:
@@ -65,6 +81,9 @@ them), which reproduces the online estimate when gamma is the value the block ra
 (checked on every run, see report.md). gamma is read off each block's cfg_guessRate, so
 sessions run with different values are each replayed with their own; --gamma overrides it
 for every block, and every threshold, curve and trace is then recomputed under the new value.
+The chance rate a screen implies depends on the level: a blind shot anywhere in the view
+(manual, scroll), or a click at a random moment of the auto level's flight path; the report
+checks each block's gamma against the one its own level and screen give.
 
 Blocks that were abandoned (endReason "abandoned") are not measurements: they are listed in
 the report and left out of every threshold summary and test. A block whose estimate is pressed
@@ -83,6 +102,8 @@ Usage
     python jnd_analysis.py --only P1 P3            # or folder names, e.g. 1_EHux
     python jnd_analysis.py --formats png svg       # png is the default; also svg, tif
     python jnd_analysis.py --figs "Fig01*" "Fig_roundmap*"   # rebuild only some figures
+    python jnd_analysis.py --level auto --direction up       # one condition of a mixed dataset
+    python jnd_analysis.py --legacy-level scroll   # level of logs from before levelType was logged
 
 Requires: numpy, pandas, matplotlib, scipy
 """
@@ -123,10 +144,35 @@ DEFAULT_DATA = Path(__file__).resolve().parent.parent / "Pre Pilot"
 COL_W = 3.337
 TEXT_W = 7.006
 
-# The three settings: the base frame rate of a block. Each is played once per session.
+# The settings: the base frame rate of a block, each played once per session. These are the
+# original design's three; a run replaces them with the base rates its own blocks hold
+# (set_conditions), so a config with other rates, or a run with only some of them, draws what
+# is there. Every figure reads these names when it draws, never a copy taken earlier.
 FPS_LEVELS = (60, 144, 500)
 CONDITIONS = FPS_LEVELS
 COND_X = {60: 0.0, 144: 1.0, 500: 2.0}              # x of each setting on a condition axis
+
+# The level types and directions a block can have (ExperimentConfig levelType / direction), and
+# the ones of the run being drawn: within one run every block shares both, so they are text and
+# units for the whole run (how the altered side differs, which chance rate applies).
+LEVEL_TYPES = ("manual", "scroll", "auto")
+DIRECTIONS = ("down", "up")
+LEVEL = "manual"
+DIRECTION = "down"
+
+# Logs from before levelType was logged: the scrolling level is told by how far the UFO flew. A
+# still camera plus the +-6 pan between rounds keeps it within the view's width + 13 world units
+# of x (59.8 on 16:9, 75.9 on a 3440x1440 ultrawide); the scrolling world carries it far past that
+# within a block. scroll_span() gives the limit for a screen; SCROLL_SPAN is 16:9's.
+SCROLL_PAN = 6.0
+SCROLL_SPAN = 60.0
+
+
+def scroll_span(aspect):
+    """The farthest a still camera lets the UFO's x range over a block on a screen of this aspect:
+    the view's width at the play plane, the pan either way between rounds, and a unit to spare."""
+    a = aspect if aspect and np.isfinite(aspect) and aspect > 0 else 16 / 9
+    return 2 * CAM_DIST * math.tan(math.radians(CAM_FOV_DEG / 2)) * a + 2 * SCROLL_PAN + 1
 
 # A block counts as unreliable when its final posterior SD is above this multiple of its stop
 # rule (cfg_stopSD, which differs by base rate), or when the estimate is pressed against an end
@@ -144,6 +190,21 @@ FPS_COLOR = {60: "#1c5cab", 144: "#ad1457", 500: "#eb6834"}
 FPS_MARKER = {60: "o", 144: "s", 500: "D"}
 FPS_MS = {60: 4.2, 144: 3.9, 500: 3.6}               # a square or diamond reads larger than a circle
 FPS_LS = {60: "-", 144: (0, (3.6, 1.8)), 500: (0, (5.0, 1.4, 1.2, 1.4))}
+DECLARED_RATES = frozenset(FPS_COLOR)
+
+# Any other base rate takes the next fall-back, in rising order of rate (assign_styles). The
+# colours were picked against the three above with the same validator, all pairs on white: teal,
+# violet and olive keep every pair at protan/deutan dE >= 8.9 and normal-vision dE >= 16.9, each
+# >= 3.5:1 contrast; the fourth (ochre) drops to dE 5.7 against the 500 fps orange, legal only
+# because marker and dash always differ too. Hues stay clear of the outcome accents (hit green,
+# miss red). Markers avoid the ones that mean something else here (^ edge mark, x abandoned,
+# * SD target, < > crossing direction). Markers cycle at a different length from colours and
+# dashes, so even a rate past the last colour keeps a combination of its own.
+FALLBACK_COLOR = ("#1296ae", "#a25afc", "#425a00", "#966c00")
+FALLBACK_MARKER = ("v", "P", "p", "h", "8")
+FALLBACK_MS = {"v": 4.3, "P": 4.0, "p": 4.1, "h": 4.0, "8": 3.9}
+FALLBACK_LS = ((0, (7.0, 2.2)), (0, (1.2, 1.3)), (0, (5.0, 1.3, 1.2, 1.3, 1.2, 1.3)),
+               (0, (2.2, 1.0, 0.8, 1.0)))
 
 INK, INK_2, MUTED = "#0b0b0b", "#52514e", "#898781"
 GRID, AXIS = "#e4e3dc", "#8c8b85"
@@ -175,6 +236,11 @@ CAM_FOV_DEG = 15.0
 CAM_DIST = 100.0
 SPAWN_FRACTION = 0.8
 CLOSE_RADIUS = 5.5
+
+# The auto level's flight path as the config sets it (cfg_auto*), with the game's defaults for
+# a blank or missing cell. Only the horizontal path matters for the chance rate; height and bob
+# do not move the shot.
+AUTO_DEFAULTS = {"autoSpeed": 8.0, "autoPath": "linear", "autoSweep": 0.9, "autoTurnSec": 0.6}
 
 
 def log(msg=""):
@@ -288,6 +354,81 @@ def cond_label(fps, short=False):
     return f"{fps}" if short else f"{fps} fps"
 
 
+def assign_styles(rates):
+    """Colour, marker, marker size and dash for every base rate in `rates`. 60/144/500 keep
+    their declared look; any other rate takes the next fall-back in rising order of rate the
+    first time it is seen, and keeps it - called with every rate of the dataset before the runs
+    are split, a rate looks the same in every run folder."""
+    extra = sum(1 for f in FPS_COLOR if f not in DECLARED_RATES)
+    for f in sorted({int(r) for r in rates}):
+        if f in FPS_COLOR:
+            continue
+        if extra == len(FALLBACK_COLOR):
+            log(f"  NOTE: more than {len(FALLBACK_COLOR)} base rates besides 60/144/500 - colours repeat "
+                "from here on (marker and dash still differ)")
+        FPS_COLOR[f] = FALLBACK_COLOR[extra % len(FALLBACK_COLOR)]
+        FPS_MARKER[f] = FALLBACK_MARKER[extra % len(FALLBACK_MARKER)]
+        FPS_MS[f] = FALLBACK_MS[FPS_MARKER[f]]
+        FPS_LS[f] = FALLBACK_LS[extra % len(FALLBACK_LS)]
+        extra += 1
+
+
+def set_conditions(rates, direction="down", level="manual"):
+    """Point the module's condition names at one run: its base rates (sorted) on x slots
+    0, 1, 2, ..., every pair of them as a paired contrast (neighbours first, then wider gaps:
+    for 60/144/500 the original 144-60, 500-144, 500-60), and the direction and level the run's
+    text and units describe. A run with 60/144/500 down leaves every name as it was declared."""
+    global FPS_LEVELS, CONDITIONS, CONTRASTS, DIRECTION, LEVEL
+    rates = tuple(sorted({int(f) for f in rates}))
+    assign_styles(rates)
+    FPS_LEVELS = CONDITIONS = rates
+    COND_X.clear()
+    COND_X.update({f: float(i) for i, f in enumerate(rates)})
+    CONTRASTS = [(rates[i], rates[i + gap]) for gap in range(1, len(rates)) for i in range(len(rates) - gap)]
+    DIRECTION, LEVEL = direction, level
+
+
+def number_word(n, capital=False):
+    w = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}.get(n, str(n))
+    return w.capitalize() if capital else w
+
+
+def rates_text(fps_list=None):
+    """'60, 144 and 500' for the run's base rates."""
+    fs = [str(f) for f in (FPS_LEVELS if fps_list is None else fps_list)]
+    return fs[0] if len(fs) == 1 else ", ".join(fs[:-1]) + " and " + fs[-1]
+
+
+def the_rates():
+    """'the three base rates' / 'the base rate' (a run with one), for captions."""
+    n = len(FPS_LEVELS)
+    return "the base rate" if n == 1 else f"the {number_word(n)} base rates"
+
+
+def altered_sign(direction):
+    """+1 where the altered side runs at base + diff ('up'), -1 at base - diff ('down');
+    `direction` may be one value or an array of them."""
+    d = np.char.lower(np.char.strip(np.asarray(direction, dtype=str)))
+    out = np.where(d == "up", 1.0, -1.0)
+    return float(out) if out.ndim == 0 else out
+
+
+def altered_word():
+    """What the altered side is in this run: slower ('down') or faster ('up')."""
+    return "faster" if DIRECTION == "up" else "slower"
+
+
+def altered_expr():
+    return "base + $\\theta$" if DIRECTION == "up" else "base − $\\theta$"
+
+
+def frame_time_expr():
+    """The frame-time difference at threshold as a formula, base-side frames minus altered or
+    the other way round, so it reads as a positive length."""
+    return ("1000/base − 1000/(base + $\\theta$)" if DIRECTION == "up"
+            else "1000/(base − $\\theta$) − 1000/base")
+
+
 def cond_handle(fps, hollow=False, ms=None, ls=""):
     return Line2D([], [], marker=FPS_MARKER[fps], ls=ls, ms=ms or FPS_MS[fps],
                   color=FPS_COLOR[fps], mfc=SURFACE if hollow else FPS_COLOR[fps],
@@ -300,12 +441,12 @@ class KeyTuple(tuple):
     label = ""
 
 
-def condition_key(factory=None, fps_list=FPS_LEVELS):
+def condition_key(factory=None, fps_list=None):
     """One legend entry per base rate: colour, marker and dash together, so the key reads in
     greyscale and with any colour-vision deficiency."""
     factory = factory or cond_handle
     out = []
-    for f in fps_list:
+    for f in (FPS_LEVELS if fps_list is None else fps_list):
         h = factory(f)
         h.set_label(cond_label(f))
         out.append(h)
@@ -590,8 +731,9 @@ def save(fig, out_dir, stem, formats, dpi):
     return written
 
 
-def cond_axis(ax, fps_list=FPS_LEVELS, label=True):
+def cond_axis(ax, fps_list=None, label=True):
     """x positions for the base rates, with the rate as the tick label."""
+    fps_list = FPS_LEVELS if fps_list is None else fps_list
     xs = [COND_X[f] for f in fps_list]
     ax.set_xticks(xs, [str(f) for f in fps_list])
     ax.set_xlim(min(xs) - 0.6, max(xs) + 0.7)
@@ -1039,14 +1181,90 @@ def screen_gamma(width_px, height_px, inset=0.0, radius=CLOSE_RADIUS, spawn=SPAW
     return float(reach.mean() / (u1 - u0))
 
 
+def auto_params(row):
+    """The auto level's path settings of a block (its cfg_auto* echo), blank cells at the
+    game's defaults and values held to the ranges the config allows (speed > 0, sweep 0.2-1,
+    turn >= 0)."""
+    def num(k):
+        v = pd.to_numeric(pd.Series([row.get(f"cfg_{k}", np.nan)]), errors="coerce").iloc[0]
+        return float(v) if np.isfinite(v) else AUTO_DEFAULTS[k]
+    path = str(row.get("cfg_autoPath", "") or "").strip().lower()
+    speed = num("autoSpeed")
+    return {"autoSpeed": speed if speed > 0 else AUTO_DEFAULTS["autoSpeed"],
+            "autoPath": path if path in ("linear", "sine") else AUTO_DEFAULTS["autoPath"],
+            "autoSweep": min(1.0, max(0.2, num("autoSweep"))),
+            "autoTurnSec": max(0.0, num("autoTurnSec"))}
+
+
+def auto_path_x(tau, xa, xb, speed, path="linear", turn_sec=0.6):
+    """Where the auto level's UFO is after `tau` seconds of flight, and the path's period - the
+    game's flight exactly, a function of flight time only, so it is the same at every frame rate.
+
+    linear: constant speed V across the band [xa, xb], turning at each end on a half circle of
+    radius R = min(V * turn / pi, L / 2) traced at speed V (so x follows a sine through the
+    turn); sine: x = centre - L/2 * cos(2 pi tau / P) with P = 2L / V (mean speed V)."""
+    tau = np.asarray(tau, float)
+    L, V = xb - xa, float(speed)
+    if path == "sine":
+        P = 2 * L / V
+        return (xa + xb) / 2 - (L / 2) * np.cos(2 * np.pi * tau / P), P
+    R = min(V * turn_sec / math.pi, L / 2)
+    Tl, Tc = (L - 2 * R) / V, math.pi * R / V
+    P = 2 * Tl + 2 * Tc
+    phi = np.mod(tau, P)
+    right = phi < Tl
+    turn_r = ~right & (phi < Tl + Tc)
+    left = ~right & ~turn_r & (phi < 2 * Tl + Tc)
+    turn_l = ~(right | turn_r | left)
+    x = np.empty_like(phi)
+    x[right] = xa + R + V * phi[right]
+    x[left] = xb - R - V * (phi[left] - Tl - Tc)
+    if R > 0:
+        x[turn_r] = xb - R + R * np.sin((phi[turn_r] - Tl) * V / R)
+        x[turn_l] = xa + R - R * np.sin((phi[turn_l] - 2 * Tl - Tc) * V / R)
+    return x, P
+
+
+def auto_gamma(width_px, height_px, speed=AUTO_DEFAULTS["autoSpeed"], path=AUTO_DEFAULTS["autoPath"],
+               sweep=AUTO_DEFAULTS["autoSweep"], turn_sec=AUTO_DEFAULTS["autoTurnSec"],
+               radius=CLOSE_RADIUS, spawn=SPAWN_FRACTION, n=20000):
+    """Chance that a blind click hits on the auto level (the game's GuessRateCalculator): the
+    tower is dealt uniformly over the spawn band, the click falls at a uniformly random moment
+    of one period of the flight, and the shot lands where the UFO is then. The UFO lingers near
+    the ends of its sweep, where a hit window hangs partly off the spawn band, so this is not
+    the blind-shot rate of the manual level. Positions count from the view's left edge."""
+    if not (width_px and height_px):
+        return np.nan
+    W = 2 * math.tan(math.radians(CAM_FOV_DEG / 2)) * CAM_DIST * width_px / height_px
+    xa, xb = (0.5 - sweep / 2) * W, (0.5 + sweep / 2) * W
+    _, P = auto_path_x(np.zeros(1), xa, xb, speed, path, turn_sec)
+    x, _ = auto_path_x((np.arange(n) + 0.5) / n * P, xa, xb, speed, path, turn_sec)
+    m = (1 - spawn) / 2
+    t0, t1 = m * W, (1 - m) * W
+    reach = np.clip(np.minimum(t1, x + radius) - np.maximum(t0, x - radius), 0, None)
+    return float(reach.mean() / (t1 - t0))
+
+
+def level_gamma(level, width_px, height_px, row=None):
+    """The chance rate the block's own level implies on this screen: the blind-shot geometry
+    for manual and scroll (the view the UFO can fly over is the same), the flight path for
+    auto."""
+    if level == "auto":
+        a = auto_params(row if row is not None else {})
+        return auto_gamma(width_px, height_px, a["autoSpeed"], a["autoPath"], a["autoSweep"], a["autoTurnSec"])
+    return screen_gamma(width_px, height_px)
+
+
 # ================================================================ data
 
 TEXT_BLOCK_COLS = {"runId", "latinOrder", "direction", "frameLimiter", "resolution", "startIso",
                    "endIso", "endReason", "jndRangeEdge", "cfg_direction", "cfg_alteredSide",
-                   "cfg_frameLimiter"}
+                   "cfg_frameLimiter", "levelType", "cfg_levelType", "cfg_scrollFollow",
+                   "cfg_autoPath", "cfg_autoStart"}
 TEXT_SHOT_COLS = {"runId", "latinOrder", "direction", "frameLimiter", "phase", "phaseStartIso",
                   "alteredSide", "outcome", "side", "cfg_direction", "cfg_alteredSide",
-                  "cfg_frameLimiter"}
+                  "cfg_frameLimiter", "levelType", "cfg_levelType", "cfg_scrollFollow",
+                  "cfg_autoPath", "cfg_autoStart"}
 
 
 @dataclass
@@ -1089,6 +1307,15 @@ def _runs(mask, *splits):
     return list(zip(np.r_[idx[0], idx[cut + 1]], np.r_[idx[cut], idx[-1]]))
 
 
+PLAYER_COLS = {"blockIndex", "phase", "roundNumber", "frameIndex", "timeSinceStartSec",
+               "unscaledDeltaMs", "targetFps", "pacedBy", "diffFps", "side", "crossed", "ufoX",
+               "ufoY", "towerX", "shotFired", "baseFps"}
+
+
+def read_player_log(path, columns=PLAYER_COLS):
+    return pd.read_csv(path, usecols=lambda c: c in columns, low_memory=False)
+
+
 def load_frames(path, blocks):
     """Frame times by side, where the UFO was, and every crossing, from a PlayerLog.
 
@@ -1096,11 +1323,12 @@ def load_frames(path, blocks):
     pacedBy is set ('base' or 'altered'). The reveal, the veil and the camera pan between
     rounds have it empty and are left out. pacedBy and targetFps describe the cap that paced
     that very frame (unscaledDeltaMs measures it), so a frame's error is its time minus
-    1000 / targetFps."""
-    want = {"blockIndex", "phase", "roundNumber", "frameIndex", "timeSinceStartSec",
-            "unscaledDeltaMs", "targetFps", "pacedBy", "diffFps", "side", "crossed", "ufoX",
-            "ufoY", "towerX", "shotFired", "baseFps"}
-    df = pd.read_csv(path, usecols=lambda c: c in want, low_memory=False)
+    1000 / targetFps.
+
+    Only the frames of `blocks` count (every other block's frames map to no base rate), so one
+    PlayerLog - `path` may be the file or the table read_player_log made of it - is summarised
+    once per run with that run's blocks."""
+    df = path if isinstance(path, pd.DataFrame) else read_player_log(path)
     phase = df["phase"].astype(str).str.strip().str.lower().to_numpy()
     paced = df["pacedBy"].astype(str).str.strip().str.lower().to_numpy()
     block = pd.to_numeric(df["blockIndex"], errors="coerce").fillna(-1).to_numpy(int)
@@ -1190,6 +1418,8 @@ class Participant:
     shots: pd.DataFrame
     frames: FrameSummary | None = None
     notes: str = ""
+    level_note: str = ""                    # how the level was known: '' = logged, else inferred / set
+    frames_by: dict = field(default_factory=dict)   # run name -> FrameSummary of that run's blocks
 
 
 def _resolution(cell):
@@ -1235,14 +1465,17 @@ def prepare_shots(df):
     df["absMissX"] = df["missDistX"].abs().where(df["shot"])
     df["weber"] = df["diffFps"] / df["baseFps"]
     df["relativeX"] = df["missDistX"].where(df["shot"])
-    # Signed toward the slower side: positive = the shot landed on the altered side.
+    # Signed toward the altered side: positive = the shot landed on it (the slower side when the
+    # direction is down, the faster one when it is up).
     sgn = np.where(df["alteredSide"].str.lower().eq("right"), 1.0, -1.0)
     df["towardAlteredX"] = df["missDistX"].where(df["shot"]) * sgn
     # Time in the round from the starting gun to the shot (or to the end of the round).
     df["liveSec"] = df["firedAtSec"].where(df["shot"]).fillna(df["timeSinceStartSec"]) - df["trialStartSec"]
     df["exposures"] = df["crossings"]
-    # Per-round points from the running score.
-    df["points"] = df.groupby(["blockIndex", "phase"])["totalScore"].diff().fillna(df["totalScore"])
+    # Per-round points from the running score. A session can hold one practice phase per level
+    # (all blockIndex 0), each with its own score.
+    keys = ["blockIndex", "phase"] + (["levelType"] if "levelType" in df else [])
+    df["points"] = df.groupby(keys)["totalScore"].diff().fillna(df["totalScore"])
     return df
 
 
@@ -1260,7 +1493,87 @@ def discover(root):
     return found
 
 
-def load_participants(root, only=None, exclude=None, frames=True):
+def infer_level(p):
+    """(level, how) for a log written before levelType was logged, when one session was one
+    level: 'scroll' if the UFO's main-phase x spans more than a still camera allows on that
+    screen (scroll_span: about 60 world units on 16:9), else
+    'manual'. The PlayerLog says it best; without one, the ShotLog's shot and tower positions
+    (they ride along with the scrolling world too) are the fall-back."""
+    aspect = float(p.blocks["aspect"].dropna().iloc[0]) if "aspect" in p.blocks and p.blocks["aspect"].notna().any() else None
+    SCROLL_SPAN = scroll_span(aspect)  # noqa: N806 - this screen's limit, under the name the messages use
+    path = getattr(p, "_player_path", None)
+    if path is not None and path.exists():
+        try:
+            df = read_player_log(path, {"phase", "ufoX"})
+            main = df["phase"].astype(str).str.strip().str.lower().eq("main")
+            x = pd.to_numeric(df.loc[main, "ufoX"], errors="coerce").dropna()
+            if len(x):
+                span = float(x.max() - x.min())
+                return ("scroll" if span > SCROLL_SPAN else "manual",
+                        f"inferred: the UFO's main-phase x spans {span:.1f} world units in the PlayerLog, "
+                        f"{'over' if span > SCROLL_SPAN else 'under'} the {SCROLL_SPAN:.1f} only the scrolling "
+                        "level exceeds on this screen")
+        except Exception as exc:  # noqa: BLE001 - fall back to the ShotLog
+            log(f"  {p.folder}: PlayerLog unreadable for the level ({exc})")
+    s = p.shots[p.shots["main"]]
+    x = pd.concat([s["hitX"], s["towerX"]]).dropna() if {"hitX", "towerX"} <= set(s.columns) else pd.Series(dtype=float)
+    if len(x):
+        span = float(x.max() - x.min())
+        return ("scroll" if span > SCROLL_SPAN else "manual",
+                f"inferred without a PlayerLog: shots and towers span {span:.1f} world units in the ShotLog, "
+                f"{'over' if span > SCROLL_SPAN else 'under'} the {SCROLL_SPAN:.1f} only the scrolling level exceeds")
+    return "manual", "no positions logged to infer it from, taken as manual"
+
+
+def label_levels(p, legacy_level=None):
+    """Give every block and round of a session its level and direction (lower case).
+
+    Logs that carry levelType keep it: a block's from the SessionLog, a round's from the
+    ShotLog (practice rounds carry the level they practise). A log from before levelType was
+    logged has one level for the whole session: `legacy_level` when given, else infer_level();
+    p.level_note then says how it was decided, and the blocks are flagged levelInferred."""
+    b, s = p.blocks, p.shots
+    for df in (b, s):
+        d = df["direction"].fillna("").astype(str).str.strip().str.lower() if "direction" in df else pd.Series("", index=df.index)
+        if "cfg_direction" in df:
+            d = d.where(d.isin(DIRECTIONS), df["cfg_direction"].fillna("").astype(str).str.strip().str.lower())
+        df["direction"] = d.where(d.isin(DIRECTIONS), "down")       # the game reads anything else as down
+    lv = (b["levelType"].fillna("").astype(str).str.strip().str.lower() if "levelType" in b
+          else pd.Series("", index=b.index))
+    if "cfg_levelType" in b:
+        lv = lv.where(lv.isin(LEVEL_TYPES), b["cfg_levelType"].fillna("").astype(str).str.strip().str.lower())
+    missing = ~lv.isin(LEVEL_TYPES)
+    session_level = None
+    if missing.any():
+        if legacy_level:
+            session_level, how = legacy_level, "set with --legacy-level"
+        else:
+            session_level, how = infer_level(p)
+        p.level_note = (f"levelType not logged{'' if missing.all() else ' for some blocks'}: "
+                        f"{session_level}, {how}")
+        lv = lv.where(~missing, session_level)
+    b["levelType"] = lv
+    b["levelInferred"] = missing.to_numpy()
+    by_block = dict(zip(b["blockIndex"], b["levelType"]))
+    first = b.sort_values("blockOrdinal")["levelType"].iloc[0]
+    sl = (s["levelType"].fillna("").astype(str).str.strip().str.lower() if "levelType" in s
+          else pd.Series("", index=s.index))
+    own = s["blockIndex"].map(by_block)
+    clash = s["main"] & sl.isin(LEVEL_TYPES) & own.notna() & (sl != own)
+    if clash.any():
+        log(f"  {p.folder}: {int(clash.sum())} main round(s) logged at another level than their block - "
+            "the block's level is used")
+        sl = sl.where(~clash, own)
+    sl = sl.where(sl.isin(LEVEL_TYPES), own)
+    s["levelType"] = sl.fillna(session_level or first)
+
+
+def load_participants(root, only=None, exclude=None, level=None, direction=None, legacy_level=None):
+    """Every usable session under root as a participant, numbered P1, P2, ... in session order
+    over all of them (so a number means the same person in every run and under every filter),
+    each block and round labelled with its level and direction. `level` / `direction` keep only
+    the matching blocks, their rounds, and the practice rounds of the levels kept. Frame
+    summaries are made per run by attach_frames, once the runs are known."""
     found = discover(root)
     loaded = []
     for folder, tag, session_path, shot_path, player_path in found:
@@ -1295,16 +1608,104 @@ def load_participants(root, only=None, exclude=None, frames=True):
         return True
 
     loaded = [p for p in loaded if keep(p)]
-    if frames:
-        for p in loaded:
-            if p._player_path.exists():
-                log(f"  {p.pid}: reading {p._player_path.name} "
-                    f"({p._player_path.stat().st_size / 1e6:.0f} MB)")
-                try:
-                    p.frames = load_frames(p._player_path, p.blocks)
-                except Exception as exc:  # noqa: BLE001
-                    log(f"  {p.pid}: PlayerLog unreadable ({exc}) - frame figures skip it")
-    return loaded
+    kept = []
+    for p in loaded:
+        label_levels(p, legacy_level)
+        if p.level_note:
+            log(f"  {p.pid}: {p.level_note}")
+        b = p.blocks
+        sel = np.ones(len(b), bool)
+        if level:
+            sel &= b["levelType"].eq(level).to_numpy()
+        if direction:
+            sel &= b["direction"].eq(direction).to_numpy()
+        if not sel.all():
+            b = b[sel]
+            if b.empty:
+                log(f"  {p.pid}: no {' '.join(v for v in (level, direction) if v)} block - left out")
+                continue
+            s = p.shots
+            p.blocks = b
+            p.shots = s[(s["main"] & s["blockIndex"].isin(b["blockIndex"]))
+                        | (~s["main"] & s["levelType"].isin(set(b["levelType"])))]
+        kept.append(p)
+    return kept
+
+
+def _cell(v):
+    """A config value as it reads in a folder name: 8.0 -> '8', blank -> 'blank'."""
+    if isinstance(v, float):
+        if not np.isfinite(v):
+            return "blank"
+        v = int(v) if v.is_integer() else v
+    return re.sub(r"[^A-Za-z0-9.]+", "", str(v)) or "blank"
+
+
+def split_runs(participants):
+    """The runs the data need, in a fixed order: one per (levelType, direction). Within a run a
+    block is keyed by participant and base rate, so where one participant played two blocks at
+    the same rate, level and direction, that run is split further by every config column the
+    two differ in (e.g. auto_down_autoPath-linear / auto_down_autoPath-sine) - no two
+    conditions are ever merged. Blocks that differ in nothing cannot be told apart: stop.
+
+    Labels every block with its run (blocks['run']) and returns [(name, level, direction)]."""
+    split = {}
+    for p in participants:
+        b = p.blocks
+        for (lv, d, _), g in b.groupby(["levelType", "direction", "fps"]):
+            if len(g) > 1:
+                cols = [c for c in b.columns if c.startswith("cfg_") and g[c].astype(str).nunique() > 1]
+                split.setdefault((lv, d), set()).update(cols)
+    runs = {}
+    for p in participants:
+        names = []
+        for _, r in p.blocks.iterrows():
+            lv, d = r["levelType"], r["direction"]
+            extra = sorted(split.get((lv, d), ()))
+            name = f"{lv}_{d}" + "".join(f"_{c.removeprefix('cfg_')}-{_cell(r[c])}" for c in extra)
+            runs.setdefault(name, (lv, d))
+            names.append(name)
+        p.blocks = p.blocks.assign(run=names)
+        dup = p.blocks.groupby(["run", "fps"])["blockIndex"].agg(list)
+        dup = dup[dup.map(len) > 1]
+        if len(dup):
+            (name, f), idx = next(iter(dup.items()))
+            sys.exit(f"{p.pid} ({p.folder}) has {len(idx)} blocks at {f} fps in {name} that no config "
+                     f"column tells apart (blockIndex {', '.join(str(int(i)) for i in idx)}): they would be "
+                     "merged into one condition. Analyse them separately (--only / --exclude on copies).")
+    order = lambda n: (LEVEL_TYPES.index(runs[n][0]) if runs[n][0] in LEVEL_TYPES else 9,  # noqa: E731
+                       DIRECTIONS.index(runs[n][1]) if runs[n][1] in DIRECTIONS else 9, n)
+    return [(n, *runs[n]) for n in sorted(runs, key=order)]
+
+
+def run_view(p, name, level):
+    """The participant as one run sees it: that run's blocks, their rounds, the practice rounds
+    of its level, and the frame summary of exactly those blocks - or None when the participant
+    has no block in the run."""
+    b = p.blocks[p.blocks["run"] == name]
+    if b.empty:
+        return None
+    s = p.shots
+    s = s[(s["main"] & s["blockIndex"].isin(b["blockIndex"])) | (~s["main"] & s["levelType"].eq(level))]
+    q = Participant(p.pid, p.folder, p.session_id, p.run_id, b.copy(), s.copy(), p.frames_by.get(name),
+                    p.notes, p.level_note)
+    q._player_path = p._player_path
+    return q
+
+
+def attach_frames(participants):
+    """Read every PlayerLog once and summarise it per run, with that run's blocks only."""
+    for p in participants:
+        if not p._player_path.exists():
+            continue
+        log(f"  {p.pid}: reading {p._player_path.name} ({p._player_path.stat().st_size / 1e6:.0f} MB)")
+        try:
+            df = read_player_log(p._player_path)
+            for name in dict.fromkeys(p.blocks["run"]):
+                p.frames_by[name] = load_frames(df, p.blocks[p.blocks["run"] == name])
+        except Exception as exc:  # noqa: BLE001
+            log(f"  {p.pid}: PlayerLog unreadable ({exc}) - frame figures skip it")
+            p.frames_by = {}
 
 
 # ================================================================ analysis
@@ -1313,6 +1714,10 @@ def load_participants(root, only=None, exclude=None, frames=True):
 class Study:
     participants: list
     gamma_override: dict | None = None             # {"*": value} and/or {pid: value}
+    level: str = "manual"                          # every block of a run shares level and direction
+    direction: str = "down"
+    run_name: str = ""                             # '<level>_<direction>[...]' (split_runs)
+    run_count: int = 1                             # how many runs the data were split into
     fits: pd.DataFrame = None            # one row per participant x block
     traces: dict = field(default_factory=dict)     # (pid, fps) -> per-trial frame
     pooled: dict = field(default_factory=dict)     # fps -> pooled summary
@@ -1449,11 +1854,19 @@ def fit_all(study, check_stimuli=True):
     study._grids = {(r["pid"], r["fps"]): r["_grid"] for _, r in fits_df.iterrows()} if len(fits_df) else {}
 
 
-def frame_time_diff_ms(base, diff):
-    """How much longer an altered-side frame lasts than a base-side frame, in ms."""
-    alt = base - diff
+def altered_rate(base, diff, direction="down"):
+    """The altered side's frame rate: base - diff ('down') or base + diff ('up')."""
+    return base + altered_sign(direction) * diff
+
+
+def frame_time_diff_ms(base, diff, direction="down"):
+    """How much an altered-side frame differs in length from a base-side frame, in ms: longer
+    when the altered side runs slower ('down'), shorter when it runs faster ('up') - as a
+    positive length either way, |1000/altered - 1000/base| like the SessionLog's
+    jndFrameTimeDiffMs."""
+    alt = altered_rate(base, diff, direction)
     with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(alt > 0, 1000.0 / alt - 1000.0 / base, np.nan)
+        return np.where(alt > 0, np.abs(1000.0 / alt - 1000.0 / base), np.nan)
 
 
 def build_tables(study):
@@ -1500,8 +1913,15 @@ def build_tables(study):
                 "measuredAlteredErrPct": float(((s["measuredAlteredFps"] - s["alteredFps"]) / s["alteredFps"]).median() * 100)
                                          if s["measuredAlteredFps"].notna().any() else np.nan,
                 "aboveRefresh": bool(np.isfinite(b.get("displayHz", np.nan)) and f > b["displayHz"] + 0.5),
-                "screenGamma": screen_gamma(b.get("screenW"), b.get("screenH")),
-                "screenGammaInset": screen_gamma(b.get("screenW"), b.get("screenH"), inset=0.02),
+                # An 'up' block asks for altered rates above its base: rounds above the display's
+                # refresh show at most the refresh, i.e. a smaller difference than QUEST+ was told.
+                "alteredAboveRefreshShare": (float((s["alteredFps"] > b["displayHz"] + 0.5).mean())
+                                             if n_rounds and np.isfinite(b.get("displayHz", np.nan)) else np.nan),
+                # The chance rate this block's own level implies on this screen (the auto level's
+                # from its flight path); the inset variant only exists for the blind shot.
+                "screenGamma": level_gamma(b["levelType"], b.get("screenW"), b.get("screenH"), b),
+                "screenGammaInset": (screen_gamma(b.get("screenW"), b.get("screenH"), inset=0.02)
+                                     if b["levelType"] != "auto" else np.nan),
             })
             if len(fr):
                 for side in ("base", "altered"):
@@ -1534,14 +1954,16 @@ def build_tables(study):
     # hits has no finite maximum) is not identified; the sensitivity analysis treats it as missing.
     blocks["mleThetaIdentified"] = blocks["fit_mleTheta"].where(
         ~blocks["fit_mleAtBound"].fillna(True).astype(bool) & blocks["included"])
-    # The threshold in the units a reader might want. Direction 'down': the altered side runs
-    # at base - theta.
+    # The threshold in the units a reader might want. The altered side runs at base - theta
+    # (direction 'down') or base + theta ('up'); the Weber fraction is theta / base either way,
+    # and the frame-time ratio is the slower side's frame time over the faster side's (>= 1).
     base = blocks["fps"].astype(float)
-    blocks["alteredAtTheta"] = base - blocks["theta"]
+    alt = altered_rate(base, blocks["theta"], blocks["direction"])
+    blocks["alteredAtTheta"] = alt
     blocks["weber"] = blocks["theta"] / base
     blocks["weberPct"] = 100.0 * blocks["weber"]
-    blocks["frameTimeDiffMs"] = frame_time_diff_ms(base, blocks["theta"])
-    blocks["frameTimeRatio"] = base / (base - blocks["theta"])
+    blocks["frameTimeDiffMs"] = frame_time_diff_ms(base, blocks["theta"], blocks["direction"])
+    blocks["frameTimeRatio"] = np.maximum(base, alt) / np.minimum(base, alt)
     blocks["practiceAccuracy"] = blocks["practiceCorrect"] / blocks["practiceTrials"].replace(0, np.nan)
     blocks.loc[~blocks["included"], ["theta", "weber", "weberPct", "logTheta", "frameTimeDiffMs",
                                      "alteredAtTheta", "frameTimeRatio"]] = np.nan
@@ -1896,8 +2318,9 @@ def fig_main(study):
     desc = study_numbers(study)
     gam = sorted(set(round(g, 3) for g in study.fits["gamma"]))
     caption = (
-        f"Frame-rate difference thresholds at the three base rates (N = {n}). (a) The threshold "
-        "$\\theta$ in fps - how far below the base rate the altered side has to run for the "
+        f"Frame-rate difference thresholds at {the_rates()} (N = {n}). (a) The threshold "
+        f"$\\theta$ in fps - how far {'above' if DIRECTION == 'up' else 'below'} the base rate the "
+        "altered side has to run for the "
         "boundary to be located - on a log axis, since it grows with the base rate. Small markers "
         "are participants, joined by grey lines across rates; thin bars are each participant's 95% "
         "credible interval from the QUEST+ posterior; large markers are the mean across "
@@ -1909,7 +2332,7 @@ def fig_main(study):
         f"above); intervals that cross zero are compatible with no difference.{flag_text(study)} "
         f"{desc['main_sentence']} {desc['weber_sentence']}")
     alt = (f"Three-panel dot plot. Panel a shows frame-rate difference thresholds on a log scale for "
-           f"{n} participants at base rates of 60, 144 and 500 frames per second, participants joined "
+           f"{n} participants at base rates of {rates_text()} frames per second, participants joined "
            f"by lines, with a mean and confidence interval per rate: {desc['alt_means']} Panel b shows "
            "the same thresholds as a percentage of the base rate. Panel c shows each participant's "
            "paired differences in that percentage between rates, with mean differences and intervals.")
@@ -1943,10 +2366,25 @@ def psychometric_xmax(study, f):
     return float(min(hi * 1.02, max(g["diffFps"].max() * 1.15, 5)))
 
 
+def panel_axes(**kw):
+    """One panel per base rate of the run, side by side (plt.subplots): a 1-d array of axes even
+    when the run has a single rate."""
+    fig, axes = plt.subplots(1, max(1, len(FPS_LEVELS)), squeeze=False, **kw)
+    return fig, axes[0]
+
+
+def panel_grid(rows, **kw):
+    """rows x base rates of panels, always 2-d (one participant per row)."""
+    return plt.subplots(rows, max(1, len(FPS_LEVELS)), squeeze=False, **kw)
+
+
+LETTERS = "abcdefghijklmnopqrstuvwxyz"
+
+
 def fig_psychometric(study):
-    fig, axes = plt.subplots(1, 3, figsize=(TEXT_W, 2.45), sharey=True, layout="constrained")
+    fig, axes = panel_axes(figsize=(TEXT_W, 2.45), sharey=True, layout="constrained")
     notes = {}
-    for ax, f, letter in zip(axes, FPS_LEVELS, "abc"):
+    for ax, f, letter in zip(axes, FPS_LEVELS, LETTERS):
         x_max = psychometric_xmax(study, f)
         xs = np.linspace(0.2, x_max, 400)
         fits = study.fits[(study.fits["fps"] == f) & ~study.fits["abandoned"]]
@@ -2013,19 +2451,34 @@ def fig_psychometric(study):
         "gives the longest blocks to the least certain observers, so the pooled threshold can differ "
         "from the mean of the participants' thresholds.")
     pooled_txt = ", ".join(f"{f} fps {study.pooled[f]['theta']:.1f} fps" for f in FPS_LEVELS if f in study.pooled)
-    alt = (f"Three line plots of proportion hit against the frame-rate difference in frames per "
+    alt = (f"{number_word(len(FPS_LEVELS), capital=True)} line plot{'s' if len(FPS_LEVELS) != 1 else ''} "
+           f"of proportion hit against the frame-rate difference in frames per "
            f"second, one per base rate. Each shows S-shaped curves rising from the guess rate toward "
            f"1, with binned data points. Pooled thresholds: {pooled_txt}.")
     return FigureDoc("Fig02_psychometric", fig, caption, alt)
 
 
+def rel_xmax(study):
+    """Right end of every 'difference as % of the base rate' axis: 100 % for 'down' blocks (the
+    altered side cannot run below 0 fps). An 'up' block's range reaches past it - 60 + 440 fps
+    is 733 % - so the axis then runs to the top of the widest difference range tested."""
+    f = study.fits
+    if f is None or not len(f):
+        return 100.0
+    hi = float(np.nanmax(100.0 * f["gridHi"] / f["fps"]))
+    if not np.isfinite(hi) or hi <= 100.0:
+        return 100.0
+    step = 50.0 if hi <= 400 else 100.0
+    return math.ceil(hi * 1.02 / step) * step
+
+
 def fig_detection_overlay(study):
-    """All three base rates on one scale: the pooled fits with the luck floor removed, against
+    """All the base rates on one scale: the pooled fits with the luck floor removed, against
     the difference as a share of the base rate.
 
     Raw P(hit) starts at the guess rate. Adjusting for chance (Abbott's formula) keeps only the
     share actually seen: P(seen) = (P(hit) - gamma) / (1 - gamma - lambda) = 1 - exp(-(x/theta)^beta),
-    which runs 0-1 and crosses 63% exactly at theta. On a relative axis the three curves line up
+    which runs 0-1 and crosses 63% exactly at theta. On a relative axis the curves line up
     if the threshold is a fixed fraction of the base rate (Weber's law)."""
     fig = plt.figure(figsize=(COL_W, 3.0))
     gs = GridSpec(2, 1, figure=fig, height_ratios=[3.0, 1.15], hspace=0.08,
@@ -2033,7 +2486,8 @@ def fig_detection_overlay(study):
     ax = fig.add_subplot(gs[0])
     strip = fig.add_subplot(gs[1], sharex=ax)
     crit = 1 - math.exp(-1)
-    xs = np.linspace(0.1, 100, 600)
+    xmax = rel_xmax(study)
+    xs = np.linspace(0.1, xmax, 600)
     for f in FPS_LEVELS:
         pooled = study.pooled.get(f)
         if not pooled:
@@ -2066,18 +2520,20 @@ def fig_detection_overlay(study):
     strip.tick_params(axis="y", length=0)
     strip.set_ylim(-0.6, len(FPS_LEVELS) - 0.4)
     strip.grid(axis="y", visible=False)
-    strip.set_xlim(0, 100)
+    strip.set_xlim(0, xmax)
     strip.set_xlabel("Frame-rate difference (% of the base rate)")
     strip.text(0.99, 0.04, "mean of participants ± 95% CI", transform=strip.transAxes,
                ha="right", va="bottom", fontsize=FS_SMALL, color=INK_2)
     fig_legend_top(fig, [line_handle(f, lw=1.5) for f in FPS_LEVELS], ncol=3, columnspacing=1.0)
+    k = len(FPS_LEVELS)
     caption = (
-        "Detection functions for the three base rates, corrected for chance: the pooled fits of "
+        f"Detection functions for {the_rates()}, corrected for chance: the pooled fits of "
         "Figure 2 with the hits expected from guessing removed, P(seen) = (P(hit) − "
         "$\\gamma$)/(1 − $\\gamma$ − $\\lambda$) = 1 − exp(−(x/$\\theta$)$^\\beta$), "
-        "drawn against the difference as a percentage of the base rate. Corrected, all three run "
+        f"drawn against the difference as a percentage of the base rate. Corrected, "
+        f"{'both' if k == 2 else 'all ' + number_word(k)} run "
         "from 0 to 1 and cross 63% at their threshold; if the threshold were a fixed fraction of "
-        "the base rate (Weber's law) the three would coincide. Below: each participant's Weber "
+        f"the base rate (Weber's law) the {number_word(k)} would coincide. Below: each participant's Weber "
         "fraction (ticks) and the mean across participants with its 95% CI.")
     order = sorted((100 * study.pooled[f]["theta"] / f, cond_label(f)) for f in FPS_LEVELS if f in study.pooled)
     alt = ("Line chart of S-shaped detection curves rising from 0 to 1 against the frame-rate "
@@ -2234,7 +2690,8 @@ def fig_order(study):
         f"[{fmt_num(tr['ci_lo'], 2)}, {fmt_num(tr['ci_hi'], 2)}], t({tr['df']}) = {fmt_num(tr['t'], 2)}, "
         f"{apa_p(tr['p'])} (n = {tr['n']}, participants with every block). Hollow markers are unreliable "
         "blocks; abandoned blocks are left out.")
-    alt = ("Dot plot of Weber-fraction thresholds by block position one to three, participants joined by "
+    alt = (f"Dot plot of Weber-fraction thresholds by block position {number_word(int(min(pos)))} to "
+           f"{number_word(int(max(pos)))}, participants joined by "
            "lines and markers coded by base rate, with a mean per position.")
     return FigureDoc("Fig04_order_effects", fig, caption, alt)
 
@@ -2288,10 +2745,14 @@ def fig_frame_timing(study):
         g = r[(r["fps"] == f) & r["measuredAlteredFps"].notna()]
         ax_c.scatter(g["alteredFps"], g["measuredAlteredFps"], s=9, marker=FPS_MARKER[f],
                      facecolor="none", edgecolor=FPS_COLOR[f], linewidth=0.6, zorder=2 + k)
-    lim = (5, 600)
+    # Up to 600 fps holds every rate of the original design ('up' rows reach 500); only a rate
+    # that would fall off it widens the axis.
+    top = float(pd.concat([r["alteredFps"], r["measuredAlteredFps"]]).max())
+    lim = (5, 600) if not np.isfinite(top) or top <= 600 else (5, top * 1.15)
+    ticks = [t for t in (10, 20, 50, 100, 200, 500, 1000, 2000, 5000) if t <= lim[1]]
     ax_c.plot(lim, lim, color=INK_2, lw=0.7, zorder=1, gid="ref")
-    log_axis(ax_c, "x", [10, 20, 50, 100, 200, 500])
-    log_axis(ax_c, "y", [10, 20, 50, 100, 200, 500])
+    log_axis(ax_c, "x", ticks)
+    log_axis(ax_c, "y", ticks)
     ax_c.set_xlim(*lim)
     ax_c.set_ylim(*lim)
     ax_c.set_xlabel("Requested altered rate (fps)")
@@ -2349,7 +2810,7 @@ def outcome_counts(study):
 
 def fig_outcomes(study):
     n = len(study.pids)
-    h = 0.75 + 0.22 * 3 * n
+    h = 0.75 + 0.22 * len(FPS_LEVELS) * n
     fig, ax = plt.subplots(figsize=(TEXT_W * 0.62, h))
     fig.subplots_adjust(left=0.27, right=0.98, top=1 - 0.45 / h, bottom=0.36 / h)
     c = outcome_counts(study)
@@ -2474,7 +2935,7 @@ def fig_aiming(study):
             ax.plot(bb["x"], bb["y"], color=FPS_COLOR[f], ls=FPS_LS[f], lw=1.5, zorder=4,
                     marker=FPS_MARKER[f], ms=FPS_MS[f] - 0.6, mec=SURFACE, mew=0.5)
     ax.axhspan(0, radius, color=HIT_ZONE, lw=0, zorder=0, gid="ref")
-    ax.set_xlim(0, 100)
+    ax.set_xlim(0, rel_xmax(study))
     ax.set_ylim(bottom=0)
     ax.set_xlabel("Frame-rate difference (% of the base rate)")
     ax.set_ylabel("Shot–tower distance (world units)")
@@ -2513,7 +2974,7 @@ def fig_exposure(study):
             bb = bin_values(g["w"], g["exposures"], kind="mean")
             ax.plot(bb["x"], bb["y"], color=FPS_COLOR[f], lw=1.5, ls=FPS_LS[f], zorder=4,
                     marker=FPS_MARKER[f], ms=FPS_MS[f] - 0.5, mec=SURFACE, mew=0.4)
-    ax.set_xlim(0, 100)
+    ax.set_xlim(0, rel_xmax(study))
     ax.set_ylim(bottom=0)
     ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
     ax.set_xlabel("Frame-rate difference (% of the base rate)")
@@ -2540,7 +3001,7 @@ def _binned_exposure(ax, d, width=10.0):
             if len(v) < 3:
                 continue
             ci = stats.t.ppf(0.975, len(v) - 1) * v.std(ddof=1) / math.sqrt(len(v)) if len(v) > 1 else 0
-            rows.append((b0 + width / 2 + (k - 1) * 1.2, v.mean(), ci))
+            rows.append((b0 + width / 2 + (k - (len(FPS_LEVELS) - 1) / 2) * 1.2, v.mean(), ci))
         if rows:
             xs, ms_, cis = zip(*rows)
             ax.errorbar(xs, ms_, yerr=cis, color=SURFACE, lw=2.2, zorder=3, marker=FPS_MARKER[f],
@@ -2561,7 +3022,7 @@ def fig_exposure_main(study, bubbles=False):
             ax.scatter(c["b"], c["exposures"], s=5 + np.sqrt(c["n"]) * 10, marker=FPS_MARKER[f],
                        color=FPS_COLOR[f], edgecolor=SURFACE, linewidth=0.2, alpha=0.35, zorder=2)
     _binned_exposure(ax, d)
-    ax.set_xlim(0, 100)
+    ax.set_xlim(0, rel_xmax(study))
     ax.set_ylim(-0.3, max(4.0, float(d["exposures"].max()) + 0.7) if len(d) else 5)
     ax.yaxis.set_major_locator(mpl.ticker.MaxNLocator(integer=True))
     ax.set_xlabel("Frame-rate difference (% of the base rate)")
@@ -2584,11 +3045,11 @@ def fig_threshold_sd_sessions_values(study, values=True):
     own scale), the value printed upright on top of its bar."""
     fits = study.fits
     pids = study.pids
-    width = max(TEXT_W, len(pids) * 0.45 * 3)
-    fig, axes = plt.subplots(1, 3, figsize=(width, 3.1), layout="constrained")
+    width = max(TEXT_W, len(pids) * 0.45 * len(FPS_LEVELS))
+    fig, axes = panel_axes(figsize=(width, 3.1), layout="constrained")
     xs = np.arange(1, len(pids) + 1)
     upright = []
-    for ax, f, letter in zip(axes, FPS_LEVELS, "abc"):
+    for ax, f, letter in zip(axes, FPS_LEVELS, LETTERS):
         top = 0.0
         for x, pid in zip(xs, pids):
             row = fits[(fits["pid"] == pid) & (fits["fps"] == f)]
@@ -2646,7 +3107,7 @@ def fig_threshold_sd_sessions_values(study, values=True):
     fig_legend_top(fig, handles, ncol=2)
     stops = ", ".join(f"{f} fps {s:g}" for f, s in study.fits.groupby("fps")["stopSD"].agg(lambda v: sorted(set(v))[0]).items())
     caption = (
-        "Final JND threshold of each session at the three base rates"
+        f"Final JND threshold of each session at {the_rates()}"
         + (", with its value printed as posterior mean ± posterior SD (fps)" if values else "")
         + ": marker = mean, bar = SD (the quantity the stop rule targets; stop rules in fps: "
         f"{stops}). Filled markers converged (final SD at most the stop rule)"
@@ -2654,7 +3115,8 @@ def fig_threshold_sd_sessions_values(study, values=True):
         "trial limit without converging; a dotted bar marks an unreliable block (SD above "
         f"{RELIABLE_SD_FACTOR:g}× the stop rule, or the estimate pressed against the top of the "
         "difference range, ≥). Abandoned blocks are labelled, not plotted. Each panel has its own scale.")
-    alt = ("Three dot plots, one per base rate, of each participant's final threshold with a "
+    alt = (f"{number_word(len(FPS_LEVELS), capital=True)} dot plot{'s' if len(FPS_LEVELS) != 1 else ''}, "
+           "one per base rate, of each participant's final threshold with a "
            "posterior-SD error bar" + (" and its numeric value printed above the bar." if values else "."))
     return FigureDoc("Fig13b_threshold_sd_sessions_values" if values else "Fig13_threshold_sd_sessions",
                      fig, caption, alt)
@@ -2696,8 +3158,7 @@ def staircase_grid(study, value_label, draw, note, ylims):
     """Participants x base rates small multiples, each column on its own scale."""
     pids = study.pids
     n = len(pids)
-    fig, axes = plt.subplots(n, 3, figsize=(TEXT_W, 0.85 + 1.0 * n), sharex=True, squeeze=False,
-                             layout="constrained")
+    fig, axes = panel_grid(n, figsize=(TEXT_W, 0.85 + 1.0 * n), sharex=True, layout="constrained")
     notes = []
     for i, pid in enumerate(pids):
         for j, f in enumerate(FPS_LEVELS):
@@ -2748,7 +3209,7 @@ def fig_staircases(study):
         "estimate under the logged guess rates). Text gives the final estimate and flags blocks that "
         "ran to the trial limit, were abandoned, or ended pressed against the top of the difference "
         "range. Each column has its own scale.")
-    alt = (f"Grid of {n} by 3 small scatter plots, participants as rows and base rates as columns, "
+    alt = (f"Grid of {n} by {len(FPS_LEVELS)} small scatter plots, participants as rows and base rates as columns, "
            "showing the presented frame-rate difference over staircase trials with a threshold-estimate "
            "line that settles as trials accumulate.")
     return FigureDoc("FigS8_staircases", fig, caption, alt)
@@ -2781,7 +3242,7 @@ def fig_slope_staircases(study):
         "trials. Text gives the final estimate and flags blocks that ran to the trial limit or were "
         "abandoned. The slope grid runs over the logged cfg_slopeMin..cfg_slopeMax range, so estimates "
         "near its ends sit at the grid's floor or ceiling.")
-    alt = (f"Grid of {len(study.pids)} by 3 small plots, participants as rows and base rates as columns, "
+    alt = (f"Grid of {len(study.pids)} by {len(FPS_LEVELS)} small plots, participants as rows and base rates as columns, "
            "showing posterior Weibull slope estimates over staircase trials.")
     return FigureDoc("Fig14_slope_staircases", fig, caption, alt)
 
@@ -2794,8 +3255,7 @@ def response_grid(study, outcome):
     ally = np.concatenate([d["y"].to_numpy() for d in data.values()] or [np.array([1.0])])
     radius = radius_of(study)
     ymax = max(float(np.nanmax(ally)) * 1.08 if len(ally) else 1.0, radius * 1.15 if outcome == "hit" else 0)
-    fig, axes = plt.subplots(n, 3, figsize=(TEXT_W, 0.75 + 0.9 * n), sharey=True, squeeze=False,
-                             layout="constrained")
+    fig, axes = panel_grid(n, figsize=(TEXT_W, 0.75 + 0.9 * n), sharey=True, layout="constrained")
     notes = []
     for i, p in enumerate(study.participants):
         for j, f in enumerate(FPS_LEVELS):
@@ -2839,7 +3299,8 @@ def fig_laser_distance_from_tower(study, outcome="hit"):
         "round presented. Lines are least-squares fits with $R^2$ and n (drawn only with at least 5 "
         f"points); the shaded band is the hit zone (≤ {radius:g} world units). Rounds that ended "
         "without a shot, and abandoned blocks, are left out.")
-    alt = (f"Grid of {n} participant rows and three base-rate columns of scatter plots of shot-to-tower "
+    alt = (f"Grid of {n} participant rows and {number_word(len(FPS_LEVELS))} base-rate column"
+           f"{'s' if len(FPS_LEVELS) != 1 else ''} of scatter plots of shot-to-tower "
            f"distance for {'hits' if is_hit else 'misses'} against the frame-rate difference.")
     return FigureDoc("Fig16_laser_distance_from_tower" if is_hit else "Fig18_laser_misses", fig, caption, alt)
 
@@ -2849,12 +3310,12 @@ def _aggregate_figure(study, merged, converged_only=False):
     radius = radius_of(study)
     if merged:
         fig, ax = plt.subplots(figsize=(COL_W, 2.7), layout="constrained")
-        axes = [ax] * 3
+        axes = [ax] * len(FPS_LEVELS)
     else:
-        fig, axes = plt.subplots(1, 3, figsize=(TEXT_W, 2.6), sharey=True, layout="constrained")
+        fig, axes = panel_axes(figsize=(TEXT_W, 2.6), sharey=True, layout="constrained")
     handles = []
     xcol = "w" if merged else "x"
-    for ax, f, letter in zip(axes, FPS_LEVELS, "abc"):
+    for ax, f, letter in zip(axes, FPS_LEVELS, LETTERS):
         g = d[d["fps"] == f]
         note = trend_panel(ax, g, f, hollow=False, xcol=xcol, s=4) if len(g) else None
         handles.append(Line2D([], [], marker=FPS_MARKER[f], ls=FPS_LS[f], ms=4, color=FPS_COLOR[f], mec=SURFACE,
@@ -2866,7 +3327,7 @@ def _aggregate_figure(study, merged, converged_only=False):
             ax.set_xlim(0, study.pooled.get(f, {}).get("gridHi", f))
             ax.set_xlabel("Frame-rate difference (fps)")
     if merged:
-        axes[0].set_xlim(0, 100)
+        axes[0].set_xlim(0, rel_xmax(study))
         axes[0].set_xlabel("Frame-rate difference (% of the base rate)")
     axes[0].set_ylabel("Shot–tower distance (world units)")
     for ax in set(axes):
@@ -2875,12 +3336,12 @@ def _aggregate_figure(study, merged, converged_only=False):
     handles.append(Patch(facecolor=HIT_ZONE, label=f"Hit zone (≤ {radius:g})"))
     fig_legend_top(fig, handles, ncol=2 if merged else 4)
     caption = ("All participants' hits - the distance from the shot to the boundary tower - against the "
-               "frame-rate difference, " + ("the three base rates on one axis as a percentage of the base "
+               "frame-rate difference, " + (f"{the_rates()} on one axis as a percentage of the base "
                "rate (colour, marker and line style)" if merged else "one panel per base rate")
                + "; lines are least-squares fits with $R^2$ and n."
                + (" Only converged blocks." if converged_only else ""))
     alt = (f"{'Merged scatter' if merged else 'Side-by-side scatters'} of hit distance from the tower against "
-           "the frame-rate difference for 60, 144 and 500 fps base rates, with trend lines.")
+           f"the frame-rate difference for {rates_text()} fps base rates, with trend lines.")
     return FigureDoc("Fig22_aggregate_laser_hits_merged" if merged else "Fig20_aggregate_laser_hits", fig, caption, alt)
 
 
@@ -2900,8 +3361,8 @@ def _aggregate_binned_figure(study, converged_only=False):
     panel per base rate: bin means +- SEM, a least-squares line through the bin means."""
     d = shots_of(study, "hit", converged_only=converged_only)
     radius = radius_of(study)
-    fig, axes = plt.subplots(1, 3, figsize=(TEXT_W, 2.6), sharex=True, sharey=True, layout="constrained")
-    for ax, f, letter in zip(axes, FPS_LEVELS, "abc"):
+    fig, axes = panel_axes(figsize=(TEXT_W, 2.6), sharex=True, sharey=True, layout="constrained")
+    for ax, f, letter in zip(axes, FPS_LEVELS, LETTERS):
         g = d[d["fps"] == f]
         col = FPS_COLOR[f]
         note = None
@@ -2928,7 +3389,7 @@ def _aggregate_binned_figure(study, converged_only=False):
         ax.set_xlabel("Difference (% of base)")
         ax.axhspan(0, radius, color=HIT_ZONE, lw=0, zorder=0, gid="ref")
     axes[0].set_ylabel("Mean shot–tower distance\n(world units)")
-    axes[0].set_xlim(0, 100)
+    axes[0].set_xlim(0, rel_xmax(study))
     axes[0].set_ylim(0, radius * 1.15)
     handles = [line_handle(f, lw=1.0) for f in FPS_LEVELS] + [
         Line2D([], [], color=INK_2, lw=0.9, marker="_", ms=6, label="±1 SEM"),
@@ -2940,7 +3401,8 @@ def _aggregate_binned_figure(study, converged_only=False):
                "hits in it, with ±1 SEM; empty bins are not drawn. Lines are least-squares fits "
                "through the bin means (unweighted), with their $R^2$; n is the number of hits."
                + (" Only converged blocks (final posterior SD at most the stop rule)." if converged_only else ""))
-    alt = ("Three plots of binned hit distance against the frame-rate difference, one per base rate, bin "
+    alt = (f"{number_word(len(FPS_LEVELS), capital=True)} plot{'s' if len(FPS_LEVELS) != 1 else ''} of "
+           "binned hit distance against the frame-rate difference, one per base rate, bin "
            "means with standard-error bars and trend lines.")
     return FigureDoc("Fig29_aggregate_laser_hits_binned_converged" if converged_only
                      else "Fig27_aggregate_laser_hits_binned", fig, caption, alt)
@@ -3062,7 +3524,7 @@ def _threshold_summary(study, which=None):
                Line2D([], [], marker="s", ls="", ms=4.3, color=INK_2, mfc=SURFACE, mec=INK_2, mew=1.0,
                       label="Mean ± 95% CI")]
     fig_legend_top(fig, handles, ncol=1)
-    caption = (f"Across-participant mean JND threshold at the three base rates{WHICH_TEXT[which]} (log "
+    caption = (f"Across-participant mean JND threshold at {the_rates()}{WHICH_TEXT[which]} (log "
                "axis). The filled marker is the mean threshold across the included blocks and its bar "
                "±1 average posterior SD across them; the square is the same mean with a 95% t-based "
                "confidence interval across thresholds. Labels beside each bar give mean ± error in fps.")
@@ -3119,8 +3581,8 @@ def fig_threshold_summary_converged_tertiles(study):
         ax.set_title(f"{name} (n = {len(pids)})", fontsize=FS_SMALL)
         ax.set_ylabel("Weber fraction (%)")
         ax.grid(False)
-    axes[-1].set_xticks([1, 2, 3], [cond_label(f) for f in FPS_LEVELS])
-    axes[-1].set_xlim(0.5, 3.5)
+    axes[-1].set_xticks(np.arange(1, len(FPS_LEVELS) + 1), [cond_label(f) for f in FPS_LEVELS])
+    axes[-1].set_xlim(0.5, len(FPS_LEVELS) + 0.5)
     axes[0].set_ylim(bottom=0)
     fig_legend_top(fig, [Line2D([], [], marker="o", ls="", ms=4.3, color=INK_2, mec=INK, label="Mean ± 95% CI")], ncol=1)
     return FigureDoc("Fig25b_threshold_summary_converged_tertiles", fig,
@@ -3192,7 +3654,7 @@ def _parameter_summary(study, col, label, unit, stem, which=None, log=False, fmt
     fig_legend_top(fig, [Line2D([], [], marker="s", ls="", ms=4.3, color=INK_2, mfc=SURFACE, mec=INK_2, mew=1.0,
                                 label="Mean ± 95% CI"),
                          Line2D([], [], marker="o", ls="", ms=3.5, color=MUTED, mec=SURFACE, label="Block")], ncol=1)
-    caption = (f"Across-participant mean {re.sub(r'[$]', '', label)} at the three base rates{WHICH_TEXT[which]}: "
+    caption = (f"Across-participant mean {re.sub(r'[$]', '', label)} at {the_rates()}{WHICH_TEXT[which]}: "
                "squares are means with 95% t-intervals, small markers the blocks.")
     alt = f"Dot plots of {re.sub(r'[$]', '', label)} per base rate with means and confidence intervals."
     return FigureDoc(stem, fig, caption, alt)
@@ -3242,8 +3704,8 @@ def fig_slope_summary_converged_tertiles(study):
         ax.set_title(f"{name} (n = {len(pids)})", fontsize=FS_SMALL)
         ax.set_ylabel("Slope $\\beta$")
         ax.grid(False)
-    axes[-1].set_xticks([1, 2, 3], [cond_label(f) for f in FPS_LEVELS])
-    axes[-1].set_xlim(0.5, 3.5)
+    axes[-1].set_xticks(np.arange(1, len(FPS_LEVELS) + 1), [cond_label(f) for f in FPS_LEVELS])
+    axes[-1].set_xlim(0.5, len(FPS_LEVELS) + 0.5)
     return FigureDoc("Fig37b_slope_summary_converged_tertiles", fig,
                      "Converged slope summary split into participant thirds by mean Weber fraction.",
                      "Three dot plots of mean slope by base rate, one per third of participants.")
@@ -3253,10 +3715,10 @@ def fig_score(study):
     """Points per round, per participant and base rate (the game's own scoring)."""
     r = study.responses[~study.responses["abandoned"].fillna(False)]
     pids = study.pids
-    fig, axes = plt.subplots(1, 3, figsize=(max(TEXT_W * 0.8, len(pids) * 0.35 * 3), 2.8), sharey=True,
-                             layout="constrained")
+    fig, axes = panel_axes(figsize=(max(TEXT_W * 0.8, len(pids) * 0.35 * len(FPS_LEVELS)), 2.8), sharey=True,
+                           layout="constrained")
     xs = np.arange(1, len(pids) + 1)
-    for ax, f, letter in zip(axes, FPS_LEVELS, "abc"):
+    for ax, f, letter in zip(axes, FPS_LEVELS, LETTERS):
         for x, pid in zip(xs, pids):
             v = r[(r["pid"] == pid) & (r["fps"] == f)]["points"].to_numpy(float)
             if not len(v):
@@ -4527,6 +4989,12 @@ def main():
     ap.add_argument("--figs", nargs="+", metavar="PATTERN",
                     help="Only build figures whose name matches one of these shell patterns, e.g. Fig01* "
                          "'FigS*' 'Fig_curves*' (tables and report are always written)")
+    ap.add_argument("--level", choices=LEVEL_TYPES,
+                    help="Only blocks of this level type (and the practice rounds of that level)")
+    ap.add_argument("--direction", choices=DIRECTIONS, help="Only blocks of this direction")
+    ap.add_argument("--legacy-level", choices=LEVEL_TYPES,
+                    help="The level of logs written before levelType existed, instead of inferring it "
+                         "from how far the UFO travelled")
     args = ap.parse_args()
 
     if not args.data.is_dir():
@@ -4536,12 +5004,37 @@ def main():
     log(f"Data:  {args.data}\nOut:   {out}\nFont:  {family}")
 
     log("Loading ...")
-    participants = load_participants(args.data, args.only, args.exclude, frames=not args.no_frames)
+    participants = load_participants(args.data, args.only, args.exclude, args.level, args.direction,
+                                     args.legacy_level)
     if not participants:
         sys.exit("No usable participant folders found.")
-    study = Study(participants, parse_gamma(args.gamma))
     log(f"  {len(participants)} participant(s): " + ", ".join(f"{p.pid}={p.folder}" for p in participants))
 
+    # One analysis per (levelType, direction): the figures and statistics key conditions by base rate, so
+    # 60 down and 60 up, or a manual and an auto block at 60, must never be pooled. Styles are assigned over
+    # every rate first, so a rate looks the same in every run's folder.
+    assign_styles({int(f) for p in participants for f in p.blocks["fps"].dropna()})
+    runs = split_runs(participants)
+    if not args.no_frames:
+        attach_frames(participants)
+    if len(runs) > 1:
+        log(f"  {len(runs)} kinds of block (level type x direction): {', '.join(n for n, _, _ in runs)} - "
+            f"one analysis each, into {out}/<kind>/")
+    for name, level, direction in runs:
+        view = [q for q in (run_view(p, name, level) for p in participants) if q is not None]
+        if not view:
+            continue
+        set_conditions({int(f) for q in view for f in q.blocks["fps"].dropna()}, direction, level)
+        if len(runs) > 1:
+            log(f"\n=== {name}: {len(view)} participant(s), base rates {rates_text()} ===")
+        analyse(view, args, out / name if len(runs) > 1 else out, level, direction, name, len(runs))
+
+
+def analyse(participants, args, out, level, direction, run_name, run_count):
+    """The whole analysis - fits, tables, figures, report - of one run: blocks of one level type and
+    direction (split_runs), into `out`."""
+    study = Study(participants, parse_gamma(args.gamma), level=level, direction=direction,
+                  run_name=run_name, run_count=run_count)
     log("Fitting ...")
     fit_all(study, check_stimuli=not args.no_stimulus_check)
     build_tables(study)

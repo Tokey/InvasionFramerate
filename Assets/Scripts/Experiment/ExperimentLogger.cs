@@ -23,8 +23,8 @@ namespace JndUfo
     /// in a study of frame rates a long frame in the middle of a round is a confound.
     ///
     /// Every row of every file carries the identity columns — session, block, its order in the
-    /// session, and the block's base / direction / limiter — so any one file states the condition
-    /// it was recorded under without a join. The session and shot logs also echo every
+    /// session, and the block's base / direction / limiter / level type — so any one file states the
+    /// condition it was recorded under without a join. The session and shot logs also echo every
     /// ExperimentConfig.csv setting as cfg_* columns; the frame log does not, because at hundreds of
     /// rows a second that echo is most of the file and says nothing a join on blockIndex cannot.
     /// </summary>
@@ -33,6 +33,7 @@ namespace JndUfo
         public const string SessionPrefix = "SessionLog";
         public const string ShotPrefix    = "ShotLog";
         public const string PlayerPrefix  = "PlayerLog";
+        public const string InfoPrefix    = "SessionInfo";
 
         /// <summary>This session's folder — Data/Logs/&lt;sessionId&gt;_&lt;runId&gt;.</summary>
         public string Directory { get; }
@@ -65,9 +66,10 @@ namespace JndUfo
         string      _baseFpsCell      = "";
         string      _directionCell    = "";
         string      _limiterCell      = "";
+        string      _levelCell        = "";
         string      _closeRadiusCell  = "";
 
-        readonly string _sessionPath, _shotPath, _playerPath;
+        readonly string _sessionPath, _shotPath, _playerPath, _infoPath;
 
         // Sized for a whole phase up front. A List doubles when it fills, and doubling this one means
         // allocating and copying a multi-megabyte array on the main thread at an unpredictable moment
@@ -100,8 +102,10 @@ namespace JndUfo
                 _sessionPath = ExperimentPaths.LogFile(Directory, SessionPrefix, sessionId, runId, dedup);
                 _shotPath    = ExperimentPaths.LogFile(Directory, ShotPrefix,    sessionId, runId, dedup);
                 _playerPath  = ExperimentPaths.LogFile(Directory, PlayerPrefix,  sessionId, runId, dedup);
+                _infoPath    = ExperimentPaths.LogFile(Directory, InfoPrefix,    sessionId, runId, dedup);
 
-                if (!File.Exists(_sessionPath) && !File.Exists(_shotPath) && !File.Exists(_playerPath))
+                if (!File.Exists(_sessionPath) && !File.Exists(_shotPath) && !File.Exists(_playerPath) &&
+                    !File.Exists(_infoPath))
                     break;
                 dedup++;
             }
@@ -117,10 +121,12 @@ namespace JndUfo
 
         // ── Headers ──────────────────────────────────────────────────────────
 
+        // levelType last, after the columns logs written before it existed already had, so those
+        // keep their places.
         static readonly string[] IdentityColumns =
         {
             "sessionId", "runId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder",
-            "baseFps", "direction", "frameLimiter",
+            "baseFps", "direction", "frameLimiter", "levelType",
         };
 
         // All three headers are written here, once. The session row is appended per block; writing
@@ -156,6 +162,11 @@ namespace JndUfo
                 "baseSideFrames", "baseSideMeasuredFps", "baseFrameTimeSdMs",
                 "alteredSideFrames", "alteredFrameTimeErrPct", "alteredFrameTimeSdMs",
                 "slowFrames", "maxLiveFrameTimeMs",
+                // the screen, and how the boundary was met: world X to screen fractions, the chance
+                // rate this screen implies for the level, and the UFO's motion at crossings and shots
+                "viewWidthWorld", "guessRateScreen",
+                "avgFirstCrossingSec", "avgCrossingSpeed", "avgShotUfoSpeed",
+                "medianSinceLastCrossingSec", "avgMissAlongTravelX",
             }, cfg)), append: false);
 
             WriteLine(_shotPath, CsvTable.Join(Concat(IdentityColumns, new[]
@@ -171,8 +182,11 @@ namespace JndUfo
                 "outcome", "playerFired", "isHit", "countedByStaircase", "totalScore",
                 "trialStartSec", "firedAtSec", "roundDurationSec",
                 "hitX", "missDistX", "towerX", "ufoY", "side",
-                // QUEST+ posterior after this response
+                // QUEST+ posterior after this response (blank in practice)
                 "threshDiffFps", "sd", "slopeEstimate", "lapseEstimate",
+                // where on screen, and how the UFO was moving
+                "camX", "ufoViewportX", "towerViewportX", "ufoVelX", "ufoXAtStart",
+                "firstCrossingAtSec", "meanCrossingSpeed", "lastCrossingSpeed",
             }, cfg)), append: false);
 
             WriteLine(_playerPath, CsvTable.Join(Concat(IdentityColumns, new[]
@@ -184,6 +198,7 @@ namespace JndUfo
                 "ufoX", "ufoY", "towerX",
                 "leftButtonDown", "leftButtonPressed", "fireKeyDown",
                 "shotFired", "shotHitX",
+                "camX",
             })), append: false);
         }
 
@@ -198,10 +213,12 @@ namespace JndUfo
         /// <param name="latinRow">Which row of Data/LatinSquare.csv the session is on.</param>
         /// <param name="latinOrder">That row as "2;3;1" — the whole session's order.</param>
         /// <summary>
-        /// Switches to the session's practice phase. It is not a row of ExperimentConfig.csv, so its
-        /// rows go out as blockIndex 0 / blockOrdinal 0 with the cfg_* echo left blank, under the
-        /// limiter and hit radius of <paramref name="context"/> (the first main block, whose setup
-        /// practice runs in). baseFps is written per row — each practice pair has its own.
+        /// Switches to a practice phase. It is not a row of ExperimentConfig.csv, so its rows go out
+        /// as blockIndex 0 / blockOrdinal 0 with the cfg_* echo left blank, under the limiter, hit
+        /// radius and level type of <paramref name="context"/> (the main block whose setup practice
+        /// runs in — the first block of its level type). baseFps is written per row — each practice
+        /// pair has its own. A session can have one practice phase per level type; levelType and
+        /// phaseStartIso tell them apart.
         /// </summary>
         public void BeginPractice(StudyConfig context, int latinRow, string latinOrder)
         {
@@ -225,6 +242,7 @@ namespace JndUfo
             _baseFpsCell      = block != null ? CsvTable.I(block.baseFps) : "";
             _directionCell    = block != null ? block.DirectionCell : "";
             _limiterCell      = block != null ? block.LimiterCell   : "";
+            _levelCell        = block != null ? block.LevelCell     : "";
             _closeRadiusCell  = block != null ? CsvTable.F(block.closeRadius, 3) : "";
         }
 
@@ -245,8 +263,11 @@ namespace JndUfo
         /// Flushes the buffered round and frame rows, then APPENDS one summary row for the block that
         /// just ended, with that block's QUEST+ threshold as the headline.
         /// </summary>
+        /// <param name="viewWidthWorld">The view's width at the play plane, world units.</param>
+        /// <param name="guessRateScreen">The chance rate the running screen implies for the block's level.</param>
         public void WriteSessionLog(DateTime startedAt, DateTime endedAt, SessionStats stats,
-                                     string endReason, PerturbationController perturbation)
+                                     string endReason, PerturbationController perturbation,
+                                     float viewWidthWorld = float.NaN, float guessRateScreen = float.NaN)
         {
             FlushShots();
             FlushTicks();
@@ -307,6 +328,11 @@ namespace JndUfo
                 CsvTable.I(stats.AlteredFrames),
                 CsvTable.F(stats.AlteredFrameTimeErrPct, 3), CsvTable.F(stats.AlteredFrameTimeSdMs, 4),
                 CsvTable.I(stats.SlowFrames), CsvTable.F(stats.MaxLiveFrameTimeMs, 3),
+
+                CsvTable.F(viewWidthWorld, 4), CsvTable.F(guessRateScreen, 4),
+                CsvTable.F(stats.AvgFirstCrossingSec, 4), CsvTable.F(stats.AvgCrossingSpeed, 3),
+                CsvTable.F(stats.AvgShotUfoSpeed, 3), CsvTable.F(stats.MedianSinceLastCrossingSec, 4),
+                CsvTable.F(stats.AvgMissAlongTravelX, 4),
             });
             fields.AddRange(_settingValues);
 
@@ -324,13 +350,15 @@ namespace JndUfo
             fields.Add(_baseFpsCell);
             fields.Add(_directionCell);
             fields.Add(_limiterCell);
+            fields.Add(_levelCell);
         }
 
         // baseFps comes from the row, not the block: in practice every round has its own.
         CsvRowWriter Identity(CsvRowWriter w, string sessionId, int baseFps) =>
             w.Cell(sessionId).Cell(_runId).Cell(_blockIndexCell)
              .Cell(_blockOrdinalCell).Cell(_latinRowCell).Cell(_latinOrderCell)
-             .Cell(baseFps > 0 ? CsvTable.I(baseFps) : _baseFpsCell).Cell(_directionCell).Cell(_limiterCell);
+             .Cell(baseFps > 0 ? CsvTable.I(baseFps) : _baseFpsCell).Cell(_directionCell).Cell(_limiterCell)
+             .Cell(_levelCell);
 
         // ── Buffer flushing ──────────────────────────────────────────────────
 
@@ -360,6 +388,9 @@ namespace JndUfo
                          .Cell(s.side)
                          .Cell(s.threshDiffFps, 3).Cell(s.sd, 3)
                          .Cell(s.slopeEstimate, 3).Cell(s.lapseEstimate, 4)
+                         .Cell(s.camX, 4).Cell(s.ufoViewportX, 4).Cell(s.towerViewportX, 4)
+                         .Cell(s.ufoVelX, 3).Cell(s.ufoXAtStart, 4).Cell(s.firstCrossingAtSec, 4)
+                         .Cell(s.meanCrossingSpeed, 3).Cell(s.lastCrossingSpeed, 3)
                          .Cells(_settingValues);
                         w.EndRow();
                     }
@@ -393,7 +424,8 @@ namespace JndUfo
                          .Cell(t.mouseDelta.x, 3).Cell(t.mouseDelta.y, 3)
                          .Cell(t.ufoX, 4).Cell(t.ufoY, 4).Cell(t.towerX, 4)
                          .Cell(t.leftDown).Cell(t.leftPressedThisFrame).Cell(t.fireKeyDown)
-                         .Cell(t.shotFired).Cell(t.shotHitX, 4);
+                         .Cell(t.shotFired).Cell(t.shotHitX, 4)
+                         .Cell(t.camX, 4);
                         w.EndRow();
                     }
                 }
@@ -401,6 +433,23 @@ namespace JndUfo
             catch (Exception e) { Debug.LogError($"[ExperimentLogger] Player flush failed ({_playerPath}): {e.Message}"); }
 
             _ticks.Clear();
+        }
+
+        // ── Session info ─────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Writes SessionInfo_&lt;id&gt;.csv: what the session ran on and with, one key and value a row (see
+        /// <see cref="SessionInfo"/>). Once, under the first prompt, before anything is measured.
+        /// </summary>
+        public void WriteSessionInfo(List<KeyValuePair<string, string>> entries)
+        {
+            if (entries == null) return;
+            var sb = new StringBuilder(entries.Count * 48);
+            sb.Append("key,value\n");
+            foreach (KeyValuePair<string, string> kv in entries)
+                sb.Append(CsvTable.Escape(kv.Key)).Append(',').Append(CsvTable.Escape(kv.Value ?? "")).Append('\n');
+            try { File.WriteAllText(_infoPath, sb.ToString(), new UTF8Encoding(false)); }
+            catch (Exception e) { Debug.LogError($"[ExperimentLogger] Session info write failed ({_infoPath}): {e.Message}"); }
         }
 
         // ── Raw file helpers ─────────────────────────────────────────────────

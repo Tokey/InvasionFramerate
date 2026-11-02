@@ -79,6 +79,16 @@ namespace JndUfo
         /// </summary>
         public bool FreezeMovement { get; set; }
 
+        /// <summary>
+        /// Whether the pointer flies the ship. Off in an auto level, where <see cref="UfoAutopilot"/> flies it: the
+        /// pointer is still tracked, as under <see cref="FreezeMovement"/>, so handing it back later resumes from
+        /// where the mouse is rather than replaying everything it did meanwhile as one jump.
+        /// </summary>
+        public bool PointerControl { get; set; } = true;
+
+        /// <summary>The ship's autopilot, added in Awake; it flies only while an auto level has it engaged.</summary>
+        public UfoAutopilot Autopilot { get; private set; }
+
         /// <summary>True once Awake has applied <see cref="size"/> to this transform's scale.</summary>
         public bool SizeApplied { get; private set; }
 
@@ -134,6 +144,10 @@ namespace JndUfo
             // Here rather than in Start: UfoFlair moves the hull into its rig in its own Awake, and
             // the livery (Start, below) has to find the hull where it now draws.
             if (GetComponent<UfoFlair>() == null) gameObject.AddComponent<UfoFlair>();
+
+            // Disengaged until an auto level engages it; built now, not mid-session, like everything else.
+            Autopilot = GetComponent<UfoAutopilot>();
+            if (Autopilot == null) Autopilot = gameObject.AddComponent<UfoAutopilot>();
         }
 
         // Start, not Awake: the tint cache walks the ship's renderers, and the muzzle's own children
@@ -151,6 +165,9 @@ namespace JndUfo
             {
                 _prevDelayedPos = delayedPos;
                 _initialized    = true;
+
+                // The autopilot has the ship: it is already where its path puts it.
+                if (!PointerControl) return;
 
                 // Scrolling the world, the ship starts where it stays: the middle of the screen.
                 if (rig != null && rig.ScrollFollowing)
@@ -181,8 +198,8 @@ namespace JndUfo
             _prevDelayedPos     = delayedPos;
 
             // Tracked above, applied below — so a freeze holds position without banking up a
-            // delta that would fire as one jump on release.
-            if (FreezeMovement) return;
+            // delta that would fire as one jump on release. The same while the autopilot flies.
+            if (FreezeMovement || !PointerControl) return;
 
             if (screenDelta.sqrMagnitude < 1e-8f) return;
 
@@ -207,16 +224,41 @@ namespace JndUfo
         /// </summary>
         public float VirtualViewportX { get; private set; } = 0.5f;
 
+        /// <summary>
+        /// Takes <see cref="VirtualViewportX"/> from where the ship is across the view at rest now. Called as the
+        /// world scroll comes on between blocks, while the camera still holds still: from then on the pointer's
+        /// travel moves it, and each round's boundary is dealt against it.
+        /// </summary>
+        public void SyncVirtualViewport()
+        {
+            Camera cam = rig != null ? rig.ActiveCamera : Camera.main;
+            if (cam == null) return;
+            float l = ViewPoint(cam, 0f, 0.5f).x, r = ViewPoint(cam, 1f, 0.5f).x;
+            if (Mathf.Abs(r - l) > 1e-4f) VirtualViewportX = Mathf.Clamp01((transform.position.x - l) / (r - l));
+        }
+
+        /// <summary>
+        /// The flight envelope the ship is held in, for the camera at rest: X between <paramref name="minX"/> and
+        /// <paramref name="maxX"/>, Y between <paramref name="floorY"/> and <paramref name="ceilY"/>. The autopilot
+        /// lays its sweep inside it.
+        /// </summary>
+        public void FlightEnvelope(out float minX, out float maxX, out float floorY, out float ceilY)
+        {
+            Camera cam = rig != null ? rig.ActiveCamera : Camera.main;
+            FlightEnvelope(cam, out minX, out maxX, out floorY, out ceilY);
+        }
+
         // The flight envelope: X from the viewport's edges, Y between the floor and either the
         // configured ceiling or just under the top of the view. The ship's centre reaches either edge,
         // so at the side of the screen half the ship is out of view, as a craft flying past would be.
         // GuessRateCalculator assumes this band: change one, change the other.
-        Vector3 Clamped(Camera cam, Vector3 pos)
+        void FlightEnvelope(Camera cam, out float minX, out float maxX, out float floorY, out float ceilY)
         {
             // Measured on the view at rest (CameraRig.RestViewportPointAtZ): the shake after a shot moves
             // the camera up to about a unit, and an envelope that moved with it would leave the ship that
             // far past the edge once the camera settled. Only the pan between rounds moves it.
-            float minX = -20f, maxX = 20f, topY = 20f, bottomY = -20f;
+            minX = -20f; maxX = 20f;
+            float topY = 20f, bottomY = -20f;
             if (rig != null || cam != null)
             {
                 Vector3 l = ViewPoint(cam, 0f, 0.5f), r = ViewPoint(cam, 1f, 0.5f);
@@ -239,10 +281,15 @@ namespace JndUfo
 
             // A set ceiling still never lets the centre above the top of the view, so at worst half the
             // ship is cut off there, as at the sides; 0 keeps it just under the top.
-            float ceilY = maxY > 0f ? Mathf.Min(maxY, topY) : topY - (topY - bottomY) * 0.025f;
+            floorY = minY;
+            ceilY  = Mathf.Max(minY, maxY > 0f ? Mathf.Min(maxY, topY) : topY - (topY - bottomY) * 0.025f);
+        }
 
+        Vector3 Clamped(Camera cam, Vector3 pos)
+        {
+            FlightEnvelope(cam, out float minX, out float maxX, out float floorY, out float ceilY);
             pos.x = Mathf.Clamp(pos.x, minX, maxX);
-            pos.y = Mathf.Clamp(pos.y, minY, Mathf.Max(minY, ceilY));
+            pos.y = Mathf.Clamp(pos.y, floorY, ceilY);
             pos.z = fixedZ;
             return pos;
         }

@@ -107,3 +107,6 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# level_analysis.py default output
+Analysis/results/

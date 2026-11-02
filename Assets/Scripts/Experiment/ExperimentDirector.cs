@@ -75,6 +75,35 @@ namespace JndUfo
         [Tooltip("Floor on how long the alert stays readable after the round ENDS on it.")]
         [Min(0.1f)] public float practiceHintSec = 1.1f;
 
+        [Header("Level Types")]
+        [Tooltip("Play the practice rounds before the first block of EACH level type in the session's order " +
+                 "(manual, scroll, auto: up to three practice phases), so nobody meets a new kind of level in a " +
+                 "block that counts. Off: one practice phase only, before MAIN 1, in its level.")]
+        public bool practiceEachLevelType = true;
+
+        [Tooltip("What the participant is told to do in a manual level (the mouse flies the UFO). Says nothing " +
+                 "about the frame rates themselves: those are what is measured.")]
+        [TextArea(2, 5)]
+        public string manualInstruction =
+            "The hidden tower splits the city in two.\n" +
+            "One side has a different frame rate than the other.\n" +
+            "Fly back and forth, find where the framerate changes, and shoot the hidden tower.";
+
+        [Tooltip("The same for a scroll level (the mouse flies the UFO; the city scrolls past under it).")]
+        [TextArea(2, 5)]
+        public string scrollInstruction =
+            "The hidden tower splits the city in two.\n" +
+            "One side has a different frame rate than the other.\n" +
+            "Fly back and forth as the city scrolls by, find where the framerate changes, and shoot the hidden tower.";
+
+        [Tooltip("The same for an auto level (the UFO flies itself; the participant only fires).")]
+        [TextArea(2, 5)]
+        public string autoInstruction =
+            "The hidden tower splits the city in two.\n" +
+            "One side has a different frame rate than the other.\n" +
+            "The UFO flies back and forth by itself. Watch it, and click to shoot\n" +
+            "when it is right over the spot where the framerate changes.";
+
         [Header("References  (auto-found; drag-override if needed)")]
         public GameManager            gameManager;
         public LaserFirer             laser;
@@ -141,6 +170,10 @@ namespace JndUfo
 
         DateTime _startedAt;
         float    _startRealtime;
+        // The same instant in double: the frame log's phase clock is taken from it, because
+        // Time.unscaledTime counts from the app's start in float, which an hour in resolves only
+        // about 0.24 ms — an eighth of a frame at 500 fps.
+        double   _startRealtimeD;
         // The origin Time.realtimeSinceStartup stamps (crossings, shots) are rebased against so they
         // sit on the frame log's axis. Normally _startRealtime itself — the two clocks share an
         // origin — and BeginPhase checks that each phase.
@@ -171,6 +204,29 @@ namespace JndUfo
         // in between, the row is written on the way out with endReason "abandoned".
         bool     _blockSummaryPending;
 
+        // The block's screen, for its session row: the view's width at the play plane, and the chance
+        // rate the screen implies for the block's level. Measured as the block is set up.
+        float    _blockViewWidth  = float.NaN;
+        float    _blockGuessRate  = float.NaN;
+
+        // The UFO's recent X, one sample per logged frame, for its velocity at a response or a
+        // crossing: over the last VelocityWindowSec rather than one frame, so it reads alike at 1 fps
+        // and at 500 (one frame at a low rate is a long step; one at a high rate, between two mouse
+        // reports, can be no step at all). A ring, allocated once.
+        const int   TrailLength       = 1024;
+        const float VelocityWindowSec = 0.1f;
+        readonly float[] _trailT = new float[TrailLength];
+        readonly float[] _trailX = new float[TrailLength];
+        int _trailHead, _trailCount;
+
+        // The round in progress, from its arming (firing handed back) to its response: the UFO's X
+        // then, and its speed at each crossing.
+        bool  _roundArmed;
+        float _roundUfoXAtStart = float.NaN;
+        float _roundCrossSpeedSum;
+        int   _roundCrossSpeedN;
+        float _roundLastCrossSpeed = float.NaN;
+
         // ── Lifecycle ────────────────────────────────────────────────────────
 
         void Awake()
@@ -188,7 +244,9 @@ namespace JndUfo
                 return;
             }
 
-            _blocks = StudyConfig.LoadAll();
+            // A config written before levelType existed plays as the scene's world-scroll box says.
+            _blocks = StudyConfig.LoadAll(gameManager != null && gameManager.worldScroll ? LevelType.Scroll
+                                                                                          : LevelType.Manual);
             if (_blocks.Count == 0)
             {
                 Debug.LogError("[ExperimentDirector] No study config — the session cannot run.");
@@ -209,6 +267,14 @@ namespace JndUfo
 
             Config  = _blocks[BlockIndexAt(0)];
             _logger = new ExperimentLogger(SessionId, RunId, Config);
+
+            // Settled here, in Awake, because the scenery is built in TowerManager's Start, once: endless if any
+            // block scrolls, and the first block's scroll on from the first frame (CameraRig.Start).
+            if (gameManager != null)
+            {
+                gameManager.EndlessWorldRequested = _blocks.Exists(b => b.Scrolls);
+                gameManager.worldScroll           = Config.Scrolls;
+            }
 
             Debug.Log($"[ExperimentDirector] Session {SessionId} (run {RunId}) — {_blocks.Count} block(s), " +
                       $"square row {SquareRow}/{Square.RowCount}, order {LatinSquare.OrderText(BlockOrder)} " +
@@ -255,7 +321,27 @@ namespace JndUfo
             }
             LogChanceHitRate();
             LogDisplayCheck();
+            StartCoroutine(WriteSessionInfo());
             if (autoStart) StartSession();
+        }
+
+        /// <summary>
+        /// SessionInfo_&lt;id&gt;.csv — the build, the machine, the display, the config files' hashes and every
+        /// Inspector setting of the game's components (<see cref="SessionInfo"/>) — two frames in, once every
+        /// Start has run and the scenery it builds exists. The first prompt is up by then; nothing is measured yet.
+        /// </summary>
+        IEnumerator WriteSessionInfo()
+        {
+            yield return null;
+            yield return null;
+            if (_logger == null) yield break;
+            try { _logger.WriteSessionInfo(SessionInfo.Gather(SessionId, RunId)); }
+            catch (Exception e) { Debug.LogError($"[ExperimentDirector] Session info not written: {e.Message}"); }
+
+            if (gameManager != null && gameManager.uiManager != null && gameManager.uiManager.showDebug)
+                Debug.LogWarning("[ExperimentDirector] The debug readout is ON (UI → UIManager → Show Debug). It " +
+                                  "spells out the frame-rate difference being measured: switch it off before running " +
+                                  "a participant. SessionInfo records it as UIManager.showDebug.");
         }
 
         /// <summary>
@@ -302,29 +388,87 @@ namespace JndUfo
         {
             if (_blocks == null || _blocks.Count == 0) return;
 
-            Camera cam           = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
-            float  fixedZ        = ufo != null ? ufo.fixedZ : 0f;
-            float  spawnFraction = towerManager != null ? towerManager.spawnWidthFraction : 1f;
-
-            if (!GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, _blocks[0].closeRadius,
-                                                 out float gamma, out string report))
-            {
-                Debug.LogWarning("[GuessRate] Could not compute a chance rate — no camera.");
-                return;
-            }
-
-            Debug.Log(report);
+            // The manual and scroll levels share one γ (a scroll round's boundary is dealt as far from the ship,
+            // in mouse travel, as without the scroll), reported once; each auto row has its own, from its path.
+            var reported = new HashSet<string>();
             foreach (StudyConfig block in _blocks)
             {
+                float gamma = ScreenGuessRate(block, out string report, out string key);
+                if (float.IsNaN(gamma))
+                {
+                    Debug.LogWarning("[GuessRate] Could not compute a chance rate — no camera.");
+                    return;
+                }
+                if (reported.Add(key)) Debug.Log(report);
+
                 // Tight: a stale value is typically off by under 0.01 (moving the UFO's edge clamp
                 // from 2% to 0% moved γ by 0.008), and on a 16:9 screen the CSV's three decimals
                 // match the computed γ to well within this.
                 if (Mathf.Abs(block.guessRate - gamma) > 0.005f)
-                    Debug.LogWarning($"[GuessRate] ExperimentConfig.csv row {block.blockIndex} has " +
-                                      $"guessRate={block.guessRate:0.000} but this screen implies {gamma:0.000}. " +
-                                      "A γ far from chance biases the threshold — update the CSV unless " +
-                                      "this is deliberate.");
+                    Debug.LogWarning($"[GuessRate] ExperimentConfig.csv row {block.blockIndex} ({block.LevelCell} " +
+                                      $"level) has guessRate={block.guessRate:0.000} but this screen implies " +
+                                      $"{gamma:0.000}. A γ far from chance biases the threshold — update the CSV " +
+                                      "unless this is deliberate.");
+
+                if (block.AutoFlight) CheckAutopilot(block);
             }
+        }
+
+        /// <summary>
+        /// The chance rate this screen implies for <paramref name="block"/>'s level — the manual and scroll levels'
+        /// blind shot, or an auto level's blind click on its path (GuessRateCalculator) — NaN without a camera.
+        /// <paramref name="key"/> is the same for every block that shares the figure.
+        /// </summary>
+        float ScreenGuessRate(StudyConfig block, out string report, out string key)
+        {
+            report = "";
+            key    = "";
+            Camera cam           = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+            float  fixedZ        = ufo != null ? ufo.fixedZ : 0f;
+            float  spawnFraction = towerManager != null ? towerManager.spawnWidthFraction : 1f;
+
+            float gamma;
+            bool  ok;
+            if (block.AutoFlight)
+            {
+                key = $"auto {block.autoPath} {block.autoSpeed} {block.autoSweep} {block.autoTurnSec}";
+                ok  = GuessRateCalculator.TryComputeAuto(cam, fixedZ, spawnFraction, block.closeRadius, block,
+                                                         out gamma, out report);
+            }
+            else
+            {
+                key = "manual";
+                ok  = GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, block.closeRadius,
+                                                     out gamma, out report);
+            }
+            return ok ? gamma : float.NaN;
+        }
+
+        /// <summary>
+        /// Warnings for an auto level whose flight cannot do its job: a sweep that does not reach every place the
+        /// tower can be dealt (a boundary beyond it is never crossed), or a round too short for the ship to get
+        /// across the screen and back (a boundary on the far side may never be met).
+        /// </summary>
+        void CheckAutopilot(StudyConfig block)
+        {
+            float spawn = towerManager != null ? towerManager.spawnWidthFraction : 0.8f;
+            if (!GuessRateCalculator.AutoSweepCoversSpawn(block.autoSweep, spawn))
+                Debug.LogWarning($"[ExperimentDirector] Row {block.blockIndex} (auto): autoSweep={block.autoSweep:0.##} " +
+                                  $"does not reach every place the tower can be dealt (the middle {spawn:0.##} of the " +
+                                  "width), so some boundaries are never crossed. Use an autoSweep of at least " +
+                                  $"{spawn:0.##}.");
+
+            Camera cam = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+            if (cam == null || block.roundTimeoutSec <= 0f) return;
+            float z      = ufo != null ? ufo.fixedZ : 0f;
+            float width  = Mathf.Abs(CameraRig.ViewportPointAtZ(cam, 1f, 0.5f, z).x -
+                                     CameraRig.ViewportPointAtZ(cam, 0f, 0.5f, z).x) * block.autoSweep;
+            float period = block.AutoPath.Period(width);
+            if (block.roundTimeoutSec < period)
+                Debug.LogWarning($"[ExperimentDirector] Row {block.blockIndex} (auto): roundTimeoutSec=" +
+                                  $"{block.roundTimeoutSec:0.#} is shorter than one sweep there and back " +
+                                  $"({period:0.0} s at autoSpeed {block.autoSpeed:0.##}), so a round can end before " +
+                                  "the ship has reached the boundary. Lengthen the round or speed the ship up.");
         }
 
         void OnDestroy()
@@ -348,7 +492,8 @@ namespace JndUfo
             if (_blockSummaryPending && _stats != null)
             {
                 _blockSummaryPending = false;
-                _logger.WriteSessionLog(_startedAt, DateTime.Now, _stats, "abandoned", perturbation);
+                _logger.WriteSessionLog(_startedAt, DateTime.Now, _stats, "abandoned", perturbation,
+                                        _blockViewWidth, _blockGuessRate);
             }
             _logger.Dispose();
         }
@@ -375,14 +520,18 @@ namespace JndUfo
             // One block per row of ExperimentConfig.csv, in this session's row of the Latin square
             // rather than file order, so neither position nor the block played before it is
             // confounded with the threshold a block produces.
+            var practised = new HashSet<LevelType>();
             for (int i = 0; i < BlockOrder.Length; i++)
             {
                 BlockOrdinal = i + 1;
                 Config       = _blocks[BlockIndexAt(i)];
 
-                // The session's single practice phase runs once, ahead of the first main block, in
-                // that block's setup (its limiter, round limits and scoring).
-                yield return RunBlock(withPractice: i == 0 && _practice.Count > 0);
+                // Practice runs ahead of the first block of each level type the order brings (or, with
+                // practiceEachLevelType off, once ahead of the first block), in that block's setup: its
+                // level, limiter, round limits and scoring.
+                bool practise = _practice.Count > 0 &&
+                                (practiceEachLevelType ? practised.Add(Config.levelType) : i == 0);
+                yield return RunBlock(withPractice: practise);
             }
 
             SessionState.Advance(SessionId);
@@ -400,13 +549,16 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// What the participant is asked to do. Deliberately says nothing about the frame rates, the
-        /// size of the difference, or which side is altered — those are what is being measured.
+        /// What the participant is asked to do in the current block's level. Deliberately says nothing
+        /// about the frame rates, the size of the difference, or which side is altered — those are
+        /// what is being measured.
         /// </summary>
-        static string TaskInstruction() =>
-            "The hidden tower splits the city in two.\n" +
-            "One side has a different frame rate than the other.\n" +
-            "Fly back and forth, find where the framerate changes, and shoot the hidden tower.";
+        string TaskInstruction() => Config == null ? manualInstruction : Config.levelType switch
+        {
+            LevelType.Scroll => scrollInstruction,
+            LevelType.Auto   => autoInstruction,
+            _                => manualInstruction,
+        };
 
         string StartPrompt() =>
             $"{TaskInstruction()}\n\nPress {startKey.ToString().ToUpperInvariant()} to start";
@@ -435,11 +587,16 @@ namespace JndUfo
             {
                 gameManager.hitDisplayDuration = Config.revealHoldSec;
                 gameManager.readyBeatDuration  = Config.readyBeatSec;
+                // The block's level: the scroll on or off, the autopilot or the pointer flying the ship. First,
+                // so the boundary below is dealt in the view the block plays in.
+                gameManager.ApplyLevel(Config);
             }
+            MeasureBlockScreen();
+
             // Scrolling the world, the phase's start prompt deals it instead, about the ship (GameManager.
             // HoldForPhaseStart) — in this same frame, and two deals in one frame would cut the row on screen off
             // rather than let it fade.
-            if (towerManager != null && (gameManager == null || !gameManager.worldScroll))
+            if (towerManager != null && (!Config.Scrolls || gameManager == null))
             {
                 towerManager.MoveTowerToRandomPosition();
                 towerManager.ApplyVisibility();
@@ -461,9 +618,12 @@ namespace JndUfo
                 }
 
                 yield return WaitForStartKey(PracticeLabel, StartPrompt());
-                yield return PhaseStartingGun();
 
+                // The phase's clock and frame log start with its first GO!, as every later round's GO! is
+                // logged: the split is open through it, so its frames belong to the round's measured rates.
                 BeginPhase(isPractice: true);
+                yield return PhaseStartingGun();
+                ArmPhase();
 
                 // One pair per round, walked in order. The frame rates are never shown before the
                 // round — only in the reveal after it.
@@ -499,11 +659,12 @@ namespace JndUfo
             if (perturbation != null) perturbation.DebugLabel = MainLabel;
 
             yield return WaitForStartKey(MainLabel, StartPrompt());
-            yield return PhaseStartingGun();
 
             _startedAt = DateTime.Now;
             BeginPhase(isPractice: false);
             _blockSummaryPending = true;
+            yield return PhaseStartingGun();
+            ArmPhase();
 
             // The staircase can only finish on a response, so RecordShot evaluates IsFinished once
             // per round and parks the reason here.
@@ -514,10 +675,24 @@ namespace JndUfo
             yield return EndPhase(isPractice: false);
 
             _blockSummaryPending = false;
-            _logger.WriteSessionLog(_startedAt, DateTime.Now, _stats, _endReason, perturbation);
+            _logger.WriteSessionLog(_startedAt, DateTime.Now, _stats, _endReason, perturbation,
+                                    _blockViewWidth, _blockGuessRate);
             _logger.FlushBuffers();
 
             LogBlockSummary();
+        }
+
+        // The block's screen, for its session row: the view's width at the play plane, and the chance rate the
+        // screen implies for the block's level. After ApplyLevel, so a scroll block's camera is already back
+        // over its origin or on its way to the ship — the width is the same either way.
+        void MeasureBlockScreen()
+        {
+            _blockGuessRate = ScreenGuessRate(Config, out _, out _);
+            CameraRig rig = CameraRig.Instance;
+            float z = ufo != null ? ufo.fixedZ : 0f;
+            _blockViewWidth = rig != null
+                ? Mathf.Abs(rig.RestViewportPointAtZ(1f, 0.5f, z).x - rig.RestViewportPointAtZ(0f, 0.5f, z).x)
+                : float.NaN;
         }
 
         /// <summary>
@@ -592,16 +767,30 @@ namespace JndUfo
         /// <summary>
         /// GO! before a phase's first round, so it starts the way every later round does — and opens
         /// that round's frame-rate split, exactly as GameManager's GO! does between rounds. Runs
-        /// before BeginPhase, so the beat is outside the phase clock and its frame log.
+        /// after BeginPhase and before ArmPhase, so the beat is on the phase clock and in its frame
+        /// log, like every later GO!, and firing is handed back only once it is over.
         /// </summary>
         IEnumerator PhaseStartingGun()
         {
+            // An auto level's flight takes up its starting point, before the split opens on the side it starts
+            // on — as at every later round's GO!.
+            UfoAutopilot pilot = gameManager != null ? gameManager.Autopilot : null;
+            if (pilot != null && pilot.Engaged) pilot.BeginRound();
+
+            // The ship holds still through GO!, as it does at every later round's GO! (GameManager.StartingGun):
+            // the split is already open, so a crossing here would count in the round before firing is handed
+            // back and before the phase's frame log starts. A scroll level holds it already (HoldForPhaseStart).
+            bool hold = ufo != null && !ufo.FreezeMovement;
+            if (hold) ufo.FreezeMovement = true;
+
             if (perturbation != null)
             {
                 perturbation.ResetSideTracking();
                 perturbation.BeginTrial();
             }
             if (overlay != null) yield return overlay.GoBeat(Config.readyBeatSec);
+
+            if (hold && ufo != null) ufo.FreezeMovement = false;
             if (gameManager != null) gameManager.ReleasePhaseStart();
         }
 
@@ -615,6 +804,10 @@ namespace JndUfo
             _shotFiredThisFrame = false;   // nothing from a previous phase may stamp frame 0
             _hasPrevUfoPos      = false;
             _startRealtime      = Time.unscaledTime;
+            _startRealtimeD     = Time.unscaledTimeAsDouble;
+            _trailCount         = 0;       // a velocity never spans two phases
+            _roundArmed         = false;
+            ResetRoundMotion();
 
             // Within a frame the two clocks can only differ by the time elapsed since it started, so
             // anything more is a genuine origin mismatch.
@@ -635,10 +828,17 @@ namespace JndUfo
 
             if (_logger != null) _logger.PhaseStartedAt = DateTime.Now;
 
+            // Live for logging from here, but firing stays off until the phase's GO! is over (ArmPhase).
             SessionActive = true;
-            if (laser != null) laser.SetFiringEnabled(true);
+            if (laser != null) laser.SetFiringEnabled(false);
 
             RefreshProgressBar();
+        }
+
+        // Hands firing back once the phase's first GO! is over: its first round arms.
+        void ArmPhase()
+        {
+            if (laser != null) laser.SetFiringEnabled(true);
         }
 
         void RefreshProgressBar()
@@ -743,7 +943,7 @@ namespace JndUfo
             {
                 roundNumber       = _frameRound,
                 frameIndex        = _frameIndex++,
-                timeSinceStartSec = Time.unscaledTime - _startRealtime,
+                timeSinceStartSec = (float)(Time.unscaledTimeAsDouble - _startRealtimeD),
                 unscaledDeltaMs   = Time.unscaledDeltaTime * 1000f,
                 alteredSide       = "",
                 side              = "",
@@ -769,7 +969,21 @@ namespace JndUfo
                 if (_hasPrevUfoPos) _stats.AddUfoDisplacement(Vector3.Distance(p, _prevUfoPos));
                 _prevUfoPos    = p;
                 _hasPrevUfoPos = true;
+                PushTrail(t.timeSinceStartSec, p.x);
             }
+
+            CameraRig rig = CameraRig.Instance;
+            t.camX = rig != null ? rig.RestX : float.NaN;
+
+            // A round arms when firing is handed back after its GO!: where the UFO starts it from, and its
+            // crossings from then on.
+            bool armed = laser != null && laser.FiringEnabled;
+            if (armed && !_roundArmed)
+            {
+                ResetRoundMotion();
+                _roundUfoXAtStart = t.ufoX;
+            }
+            _roundArmed = armed;
 
             // The endless world repeats the boundary once a period, the frame rates swapping sides at every copy.
             // Each row is written as if the copy nearest the UFO were the only boundary: towerX is that copy, and
@@ -793,6 +1007,19 @@ namespace JndUfo
                 }
             }
 
+            // How fast the boundary was crossed: the UFO's speed over the last ~0.1 s, this frame included.
+            if (t.crossed)
+            {
+                float speed = Mathf.Abs(TrailVelocity());
+                if (!float.IsNaN(speed))
+                {
+                    _roundCrossSpeedSum += speed;
+                    _roundCrossSpeedN++;
+                    _roundLastCrossSpeed = speed;
+                    _stats.AddCrossingSpeed(speed);
+                }
+            }
+
             t.shotFired = _shotFiredThisFrame;
             t.shotHitX  = _shotFiredThisFrame ? _shotHitXThisFrame : 0f;
             _shotFiredThisFrame = false;
@@ -805,6 +1032,42 @@ namespace JndUfo
             _frameRound = _roundNumber + 1;
 
             DrivePracticeHint(t.crossed);
+        }
+
+        void PushTrail(float t, float x)
+        {
+            _trailHead = (_trailHead + 1) % TrailLength;
+            _trailT[_trailHead] = t;
+            _trailX[_trailHead] = x;
+            if (_trailCount < TrailLength) _trailCount++;
+        }
+
+        /// <summary>The UFO's velocity along X (world units a second, + = right) over the last
+        /// <see cref="VelocityWindowSec"/> of logged frames, or as far back as the trail goes; NaN with fewer
+        /// than two frames.</summary>
+        float TrailVelocity()
+        {
+            if (_trailCount < 2) return float.NaN;
+            float t1 = _trailT[_trailHead], x1 = _trailX[_trailHead];
+            int   i  = _trailHead;
+            float t0 = t1, x0 = x1;
+            for (int n = 1; n < _trailCount; n++)
+            {
+                i  = (i - 1 + TrailLength) % TrailLength;
+                t0 = _trailT[i];
+                x0 = _trailX[i];
+                if (t1 - t0 >= VelocityWindowSec) break;
+            }
+            float dt = t1 - t0;
+            return dt > 1e-5f ? (x1 - x0) / dt : float.NaN;
+        }
+
+        void ResetRoundMotion()
+        {
+            _roundUfoXAtStart    = float.NaN;
+            _roundCrossSpeedSum  = 0f;
+            _roundCrossSpeedN    = 0;
+            _roundLastCrossSpeed = float.NaN;
         }
 
         /// <summary>
@@ -850,14 +1113,36 @@ namespace JndUfo
             if (!SessionActive || _logger == null || _stats == null) return;
 
             bool  playerFired = outcome == TrialOutcome.Shot;
-            float now         = Time.unscaledTime - _startRealtime;
+            float now         = (float)(Time.unscaledTimeAsDouble - _startRealtimeD);
             float firedAt     = ToPhaseClock(timing.firedAt);
-            float lastCross   = trial.valid ? ToPhaseClock(trial.lastCrossingRealtime) : float.NaN;
+            float lastCross   = trial.valid ? ToPhaseClock(trial.lastCrossingRealtime)  : float.NaN;
+            float firstCross  = trial.valid ? ToPhaseClock(trial.firstCrossingRealtime) : float.NaN;
             float sinceCross  = playerFired && !float.IsNaN(firedAt) && !float.IsNaN(lastCross)
                 ? firedAt - lastCross : float.NaN;
 
             Vector3 ufoPos = ufo != null ? ufo.transform.position : hitPoint;
             QuestPlusStaircase sc = perturbation != null ? perturbation.ActiveStaircase : null;
+
+            // Practice never reaches QUEST+, so a practice row has no posterior to report — its staircase
+            // columns are left blank rather than repeating the main block's untouched prior.
+            bool practiceRow = trial.practice || _logger.CurrentPhase == "practice";
+
+            // Where on screen, on the view at rest: in a scroll level the camera follows the ship, so world X
+            // alone does not say where on the screen the shot was.
+            CameraRig rig = CameraRig.Instance;
+            float camX = float.NaN, ufoVx = float.NaN, towerVx = float.NaN;
+            if (rig != null)
+            {
+                float z = ufo != null ? ufo.fixedZ : 0f;
+                float l = rig.RestViewportPointAtZ(0f, 0.5f, z).x;
+                float w = rig.RestViewportPointAtZ(1f, 0.5f, z).x - l;
+                camX = rig.RestX;
+                if (Mathf.Abs(w) > 1e-4f)
+                {
+                    ufoVx   = ((playerFired ? hitPoint.x : ufoPos.x) - l) / w;
+                    towerVx = (towerBase.x - l) / w;
+                }
+            }
 
             // Picked up by this frame's LateUpdate row.
             _shotFiredThisFrame = true;
@@ -901,10 +1186,19 @@ namespace JndUfo
                 ufoY      = ufoPos.y,
                 side      = perturbation != null ? SideCell(perturbation.SideOf(playerFired ? hitPoint : ufoPos)) : "",
 
-                threshDiffFps = perturbation != null ? perturbation.ThresholdEstimate  : float.NaN,
-                sd            = perturbation != null ? perturbation.PosteriorSD        : float.NaN,
-                slopeEstimate = perturbation != null ? perturbation.SlopeEstimateValue : float.NaN,
-                lapseEstimate = perturbation != null ? perturbation.LapseEstimateValue : float.NaN,
+                threshDiffFps = perturbation != null && !practiceRow ? perturbation.ThresholdEstimate  : float.NaN,
+                sd            = perturbation != null && !practiceRow ? perturbation.PosteriorSD        : float.NaN,
+                slopeEstimate = perturbation != null && !practiceRow ? perturbation.SlopeEstimateValue : float.NaN,
+                lapseEstimate = perturbation != null && !practiceRow ? perturbation.LapseEstimateValue : float.NaN,
+
+                camX               = camX,
+                ufoViewportX       = ufoVx,
+                towerViewportX     = towerVx,
+                ufoVelX            = TrailVelocity(),
+                ufoXAtStart        = _roundUfoXAtStart,
+                firstCrossingAtSec = firstCross,
+                meanCrossingSpeed  = _roundCrossSpeedN > 0 ? _roundCrossSpeedSum / _roundCrossSpeedN : float.NaN,
+                lastCrossingSpeed  = _roundLastCrossSpeed,
             };
 
             _roundNumber++;

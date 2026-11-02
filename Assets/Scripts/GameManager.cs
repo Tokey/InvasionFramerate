@@ -54,9 +54,12 @@ namespace JndUfo
 
         [Header("World Scroll")]
         [Tooltip("Move the world instead of the UFO: the camera follows the ship across, so it holds the " +
-                 "middle of the screen and the city slides past under it, without end. The city, the towers, " +
-                 "the grass and the sky are built endless at start — one stretch of them repeating seamlessly — " +
-                 "so set this before pressing Play. The mouse flies the ship exactly as before, and everything " +
+                 "middle of the screen and the city slides past under it, without end. In a session this is set " +
+                 "for every block from ExperimentConfig.csv's levelType (scroll levels on, manual and auto off); " +
+                 "this box only decides for a config without that column, and for free play. The city, the " +
+                 "towers, the grass and the sky are built endless at start — one stretch of them repeating " +
+                 "seamlessly — whenever any block scrolls (or this is ticked before Play). The mouse flies the " +
+                 "ship exactly as before, and everything " +
                  "stays in world space: the ship's X never jumps, and the logs read as they do without the " +
                  "scroll. The boundary repeats too, once every worldScrollPeriod, and the frame rate swaps " +
                  "sides at each one (base | altered | base | altered ...), so wherever the ship goes it meets " +
@@ -98,9 +101,27 @@ namespace JndUfo
                  "units a second, about 8 px of drift). 0: none. The handheld wander (CameraRig) is on top of it.")]
         [Range(0f, 2f)] public float followShake = 1f;
 
+        /// <summary>
+        /// Set by ExperimentDirector in Awake when any block of the session scrolls, so the scenery is built
+        /// endless at start (TowerManager reads <see cref="WantsEndlessWorld"/>) even though the first block may
+        /// not scroll: the scenery is built once, and a block that scrolls later needs the endless world.
+        /// </summary>
+        public bool EndlessWorldRequested { get; set; }
+
+        /// <summary>Whether the scenery is to be built endless: the scroll is on now, or a later block will turn
+        /// it on.</summary>
+        public bool WantsEndlessWorld => worldScroll || EndlessWorldRequested;
+
         /// <summary>How far either side of the rig's origin the scenery is built to reach (world units) when it is
         /// not endless: every pan between rounds.</summary>
         public float SceneryRange => cameraPanRange;
+
+        /// <summary>The ship's autopilot (auto levels), or null without a ship.</summary>
+        public UfoAutopilot Autopilot => ufo != null ? ufo.Autopilot : null;
+
+        // The Inspector's hand-held follow, kept so a block whose scrollFollow is blank goes back to it after a block
+        // that set its own.
+        bool _inspectorHandheldFollow;
 
         /// <summary>How far either side of the rig's origin the camera may scroll: without end over the endless
         /// city (<see cref="worldScroll"/> on at start), else no farther than the city that was built, so switching
@@ -143,6 +164,71 @@ namespace JndUfo
 
             if (fpsReveal == null) fpsReveal = FindAnyObjectByType<FpsRevealOverlay>();
             if (fpsReveal == null) fpsReveal = gameObject.AddComponent<FpsRevealOverlay>();
+
+            _inspectorHandheldFollow = worldScrollHandheldFollow;
+        }
+
+        /// <summary>
+        /// Puts the scene into a block's level (<see cref="StudyConfig.levelType"/>): the world scroll on for a
+        /// scroll level and off for the others, with the row's camera follow if it sets one; the autopilot engaged
+        /// for an auto level, the pointer flying the ship for the others. Called by ExperimentDirector at the start
+        /// of every block, before its prompt goes up and before its first boundary is dealt.
+        ///
+        /// Leaving a scroll level, the camera may be anywhere in the endless world: it goes straight back over its
+        /// origin, the ship with it, keeping its place on screen — every level without the scroll plays about the
+        /// origin, which the pans between rounds are drawn around. Joining one, the camera eases over onto the ship
+        /// under the prompt (CameraRig), and the ship's place across the view is taken as the start of the pointer
+        /// travel each round's boundary is dealt against.
+        /// </summary>
+        public void ApplyLevel(StudyConfig config)
+        {
+            if (config == null) return;
+
+            bool scroll  = config.Scrolls;
+            bool leaving = worldScroll && !scroll;
+            bool joining = !worldScroll && scroll;
+
+            if (scroll && towerManager != null && towerManager.SceneryBuilt && !towerManager.EndlessScenery)
+                Debug.LogWarning($"[GameManager] Block {config.blockIndex} is a scroll level, but the scenery was built " +
+                                  "without the endless world, so the scroll stops at the edge of the city that was " +
+                                  "built. This happens only outside a session (ExperimentDirector requests the " +
+                                  "endless world whenever any block scrolls).");
+
+            worldScroll = scroll;
+            worldScrollHandheldFollow = config.scrollFollow == ScrollFollowMode.Inherit
+                ? _inspectorHandheldFollow
+                : config.scrollFollow == ScrollFollowMode.Handheld;
+
+            if (leaving) Recentre();
+            if (joining && ufo != null) ufo.SyncVirtualViewport();
+
+            UfoAutopilot pilot = Autopilot;
+            if (config.AutoFlight)
+            {
+                if (pilot != null) pilot.Engage(config);
+                else Debug.LogError($"[GameManager] Block {config.blockIndex} is an auto level, but there is no UFO to fly.");
+            }
+            else if (pilot != null) pilot.Disengage();
+            if (ufo != null) ufo.PointerControl = !config.AutoFlight || pilot == null;
+        }
+
+        // Back over the rig's origin from wherever the scroll left the camera, at once — it happens under a block's
+        // prompt — the ship keeping its place on screen.
+        void Recentre()
+        {
+            StopRevealGlide();
+            CameraRig rig = PanRig;
+            if (rig == null) return;
+
+            float offset = ufo != null ? ufo.transform.position.x - rig.RestX : 0f;
+            rig.StopScrollNow();
+            if (ufo != null)
+            {
+                Vector3 p = ufo.transform.position;
+                p.x = rig.RestX + offset;
+                ufo.transform.position = p;
+            }
+            if (perturbation != null) perturbation.ResetSideTracking();
         }
 
         void OnApplicationFocus(bool focused)
@@ -294,6 +380,11 @@ namespace JndUfo
         /// </summary>
         IEnumerator StartingGun()
         {
+            // An auto level's flight takes up its starting point first, the ship still hidden, so the split opens on
+            // the side the ship starts from.
+            UfoAutopilot pilot = Autopilot;
+            if (pilot != null && pilot.Engaged) pilot.BeginRound();
+
             if (perturbation != null)
             {
                 perturbation.ResetSideTracking();

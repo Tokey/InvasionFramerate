@@ -81,10 +81,31 @@ namespace JndUfo
         public string side;
 
         // ── QUEST+ posterior after this response ─────────────────────────────
+        // Blank (NaN) on practice rows: practice never reaches QUEST+.
         public float threshDiffFps;        // θ̂, fps difference
         public float sd;                   // SD of the θ marginal (fps)
         public float slopeEstimate;        // β̂
         public float lapseEstimate;        // λ̂ — the curve's ceiling is 1 − λ
+
+        // ── Where on screen, and how the UFO was moving ──────────────────────
+        /// <summary>The camera's rest X at the response (no shake or swing). World X less this is screen
+        /// position: it matters in a scroll level, where the camera follows the ship.</summary>
+        public float camX;
+        /// <summary>The UFO and the tower across the view at rest at the response: 0 = left edge, 1 = right.</summary>
+        public float ufoViewportX;
+        public float towerViewportX;
+        /// <summary>The UFO's velocity along X at the response, world units a second (+ = moving right), over the
+        /// last ~0.1 s of frames. With missDistX it says whether the shot came before the boundary or after it in
+        /// the direction of travel — the auto level's reaction-time signature.</summary>
+        public float ufoVelX;
+        /// <summary>The UFO's X when the round armed (firing handed back after GO!).</summary>
+        public float ufoXAtStart;
+        /// <summary>Phase clock of this round's first crossing; NaN if there was none.</summary>
+        public float firstCrossingAtSec;
+        /// <summary>The UFO's mean, and last, horizontal speed at this round's crossings (world units a second);
+        /// NaN with no crossing. In an auto level it is the autopilot's speed; flying by hand, the participant's.</summary>
+        public float meanCrossingSpeed;
+        public float lastCrossingSpeed;
     }
 
     /// <summary>
@@ -128,5 +149,9 @@ namespace JndUfo
         /// same as leftPressedThisFrame: presses during the cooldown or between rounds are dropped.</summary>
         public bool  shotFired;
         public float shotHitX;             // where it landed on X (0 when shotFired is false)
+
+        /// <summary>The camera's rest X this frame. The UFO's place on screen is 0.5 + (ufoX − camX) /
+        /// viewWidthWorld (SessionLog) in every level.</summary>
+        public float camX;
     }
 }

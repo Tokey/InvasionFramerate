@@ -30,6 +30,37 @@ namespace JndUfo
     public enum FrameLimiterMode { Precise, Unity }
 
     /// <summary>
+    /// The kind of level a block is played in. The split, the shot, the scoring and QUEST+ are the same in all
+    /// three; what changes is who flies the UFO and whether the world moves.
+    ///
+    ///   Manual  the participant flies the UFO with the mouse, the camera holding still (it pans a little between
+    ///           rounds). The original level.
+    ///   Scroll  the participant flies the UFO and the camera follows it, so the endless world scrolls past under
+    ///           it (<see cref="GameManager.worldScroll"/>). The boundary repeats once a period there, the frame
+    ///           rates swapping sides at every copy.
+    ///   Auto    the UFO flies itself back and forth across the screen (<see cref="UfoAutopilot"/>), the camera
+    ///           holding still as in Manual. The participant only fires: when the UFO is over the place where the
+    ///           frame rate changes. The mouse does not move it.
+    /// </summary>
+    public enum LevelType { Manual, Scroll, Auto }
+
+    /// <summary>
+    /// How the autopilot sweeps from one end of its band to the other. Linear: at one constant speed, with a
+    /// smooth turn at each end, so the ship crosses the boundary at the same speed wherever the boundary is.
+    /// Sine: its X follows a sine, fastest mid-screen and slowing into each end — so a boundary near the middle
+    /// is crossed faster than one near an edge.
+    /// </summary>
+    public enum AutoPathMode { Linear, Sine }
+
+    /// <summary>Where the autopilot's flight starts each round: at a random point of its sweep, heading either
+    /// way, or where the last round left it.</summary>
+    public enum AutoStartMode { Random, Continue }
+
+    /// <summary>The scroll's camera for a block: as GameManager's Inspector has it, locked on the ship, or
+    /// following it as a hand-held camera would (<see cref="GameManager.worldScrollHandheldFollow"/>).</summary>
+    public enum ScrollFollowMode { Inherit, Locked, Handheld }
+
+    /// <summary>
     /// The whole study's configuration: <c>Data/ExperimentConfig.csv</c>, a header row plus one
     /// value row per block.
     ///
@@ -42,9 +73,12 @@ namespace JndUfo
     ///
     /// Columns, grouped:
     ///
+    ///   level      levelType (manual / scroll / auto), scrollFollow
     ///   stimulus   baseFps, direction, maxDiffFps, minDiffFps, diffStepFps, alteredSide, frameLimiter
     ///   round      maxCrossingsPerRound, roundTimeoutSec, hitPoints, missPoints
     ///   QUEST+     threshCount, slope/lapse grids, guessRate, maxTrials, minTrials, stopSD
+    ///   autopilot  autoSpeed, autoPath, autoSweep, autoTurnSec, autoHeight, autoBobAmp, autoBobHz, autoStart
+    ///              (auto levels only)
     ///
     /// Everything that defines the task itself rather than the study — the hit radius, the fire
     /// cooldown, the reveal timing — is pinned below rather than read from the file, so it stays
@@ -63,6 +97,28 @@ namespace JndUfo
 
         /// <summary>1-based position of this row in ExperimentConfig.csv — the block number.</summary>
         public int blockIndex;
+
+        // ── Level ────────────────────────────────────────────────────────────
+
+        /// <summary>The kind of level this block is played in. See <see cref="LevelType"/>.</summary>
+        public LevelType levelType = LevelType.Manual;
+
+        /// <summary>False when the row left levelType out or blank, and the scene's GameManager.worldScroll box
+        /// decided it instead (a config written before the column existed).</summary>
+        public bool levelTypeFromFile;
+
+        /// <summary>Scroll levels: the camera locked on the ship or following it by hand; Inherit leaves the
+        /// Inspector's choice.</summary>
+        public ScrollFollowMode scrollFollow = ScrollFollowMode.Inherit;
+
+        public bool Scrolls    => levelType == LevelType.Scroll;
+        public bool AutoFlight => levelType == LevelType.Auto;
+
+        /// <summary>"manual" / "scroll" / "auto" — the levelType column of every log.</summary>
+        public string LevelCell => LevelCellOf(levelType);
+
+        public static string LevelCellOf(LevelType t) =>
+            t == LevelType.Scroll ? "scroll" : t == LevelType.Auto ? "auto" : "manual";
 
         // ── Stimulus ─────────────────────────────────────────────────────────
 
@@ -96,8 +152,9 @@ namespace JndUfo
         public int AlteredFpsFor(int diffFps) =>
             Mathf.Max(1, direction == FpsDirection.Up ? baseFps + diffFps : baseFps - diffFps);
 
-        /// <summary>"60↓" / "120↑" — for console lines.</summary>
-        public string ShortLabel => $"{baseFps}{(direction == FpsDirection.Up ? "↑" : "↓")}";
+        /// <summary>"60↓" / "120↑ auto" — for console lines. The level is named unless it is manual.</summary>
+        public string ShortLabel =>
+            $"{baseFps}{(direction == FpsDirection.Up ? "↑" : "↓")}{(levelType == LevelType.Manual ? "" : " " + LevelCell)}";
 
         public string DirectionCell => direction == FpsDirection.Up ? "up" : "down";
         public string LimiterCell   => frameLimiter == FrameLimiterMode.Unity ? "unity" : "precise";
@@ -136,6 +193,43 @@ namespace JndUfo
         /// minTrials. 0 = run to maxTrials.</summary>
         public float stopSD    = 2f;
 
+        // ── Autopilot (auto levels) ──────────────────────────────────────────
+        // How the UFO flies itself in an auto level. Ignored by the other levels. The path is a function of
+        // flight time alone (AutoFlightPath), so it is the same at every frame rate. Its motion is the stimulus
+        // the participant watches, so keep it the same across a study's auto blocks unless it is what is varied.
+
+        /// <summary>Horizontal speed, world units a second (the mean speed for a sine path). The view is about
+        /// 47 units wide at the play plane and the hit window 11, so at 8 the ship crosses the window in about
+        /// 1.4 s and runs about 4 units past the boundary in a 0.5 s reaction time.</summary>
+        public float autoSpeed = 8f;
+
+        public AutoPathMode autoPath = AutoPathMode.Linear;
+
+        /// <summary>Share of the view's width the sweep spans, centred: 0.9 runs the ship's centre from 5% to 95%
+        /// of the width. Must reach past every place the tower can be dealt (the middle 80%), or a boundary near
+        /// an edge could never be crossed.</summary>
+        public float autoSweep = 0.9f;
+
+        /// <summary>Linear path: seconds a turn at either end takes. The turn is a half sine at the same speed,
+        /// so the ship never jerks; 0 turns on the spot.</summary>
+        public float autoTurnSec = 0.6f;
+
+        /// <summary>Flight height within the UFO's flight band: 0 = as low as it may go, 1 = as high.</summary>
+        public float autoHeight = 0.4f;
+
+        /// <summary>The vertical sine wave the ship bobs on as it flies: amplitude in world units (0.5 is about
+        /// 20 px of a 1080p screen) and frequency in Hz. 0 flies level.</summary>
+        public float autoBobAmp = 0.5f;
+        public float autoBobHz  = 0.4f;
+
+        public AutoStartMode autoStart = AutoStartMode.Random;
+
+        /// <summary>The autopilot's path for this block, without its band (which depends on the view).</summary>
+        public AutoFlightPath AutoPath => new AutoFlightPath
+        {
+            mode = autoPath, speed = autoSpeed, turnSec = autoTurnSec, bobAmp = autoBobAmp, bobHz = autoBobHz,
+        };
+
         // ── Fixed task settings ──────────────────────────────────────────────
         // Deliberately not CSV columns: they define the task rather than the study, so they are
         // pinned here and stay identical for every participant. They are still pushed onto the
@@ -168,7 +262,10 @@ namespace JndUfo
         /// SETTINGS' identity (<see cref="blockIndex"/>), not the running order, which comes from
         /// <see cref="LatinSquare"/>.
         /// </summary>
-        public static List<StudyConfig> LoadAll()
+        /// <param name="unsetLevel">The level of a row that leaves levelType out or blank — a config written before
+        /// the column existed. The director passes Scroll when the scene's GameManager.worldScroll box is ticked,
+        /// which is how such a config was played.</param>
+        public static List<StudyConfig> LoadAll(LevelType unsetLevel = LevelType.Manual)
         {
             string path = ExperimentPaths.Config;
             if (!File.Exists(path))
@@ -195,25 +292,45 @@ namespace JndUfo
 
             for (int i = 0; i < rows.Count; i++)
             {
-                var c = FromRow(rows[i], i + 1);
+                var c = FromRow(rows[i], i + 1, unsetLevel);
                 c.Columns = columns;
+                c.FillAutopilotEcho();
                 blocks.Add(c);
             }
 
             Debug.Log($"[StudyConfig] Loaded {blocks.Count} block(s) from {path} — " +
                       string.Join(", ", blocks.ConvertAll(b => b.Describe())));
+
+            List<StudyConfig> unset = blocks.FindAll(b => !b.levelTypeFromFile);
+            if (unset.Count > 0)
+                Debug.LogWarning($"[StudyConfig] {unset.Count} row(s) of {path} give no levelType, so they play as " +
+                                  $"{LevelCellOf(unsetLevel)} levels (the scene's GameManager.worldScroll box). Add a " +
+                                  "levelType column (manual / scroll / auto) to say so in the file.");
             return blocks;
         }
 
-        /// <summary>"60 fps down by 1–50 in steps of 1 (precise limiter)".</summary>
-        public string Describe() =>
-            $"{baseFps} fps {DirectionCell} by {minDiffFps}–{maxDiffFps} in steps of {diffStepFps} " +
-            $"({LimiterCell} limiter)";
+        /// <summary>"scroll level, 60 fps down by 1–50 in steps of 1 (precise limiter)"; an auto level adds its
+        /// flight.</summary>
+        public string Describe()
+        {
+            string d = $"{LevelCell} level, {baseFps} fps {DirectionCell} by {minDiffFps}–{maxDiffFps} in steps of " +
+                       $"{diffStepFps} ({LimiterCell} limiter)";
+            if (AutoFlight)
+                d += $", autopilot {(autoPath == AutoPathMode.Sine ? "sine" : "linear")} at {autoSpeed:0.##} u/s over " +
+                     $"{autoSweep:0.##} of the width, bob {autoBobAmp:0.##} u at {autoBobHz:0.##} Hz";
+            return d;
+        }
 
-        public static StudyConfig FromRow(Dictionary<string, string> row, int blockIndex)
+        public static StudyConfig FromRow(Dictionary<string, string> row, int blockIndex,
+                                          LevelType unsetLevel = LevelType.Manual)
         {
             var c = new StudyConfig { Row = row, blockIndex = blockIndex };
             string tag = $"[StudyConfig] Block {blockIndex}";
+
+            string level = CsvTable.GetString(row, "levelType", "");
+            c.levelTypeFromFile = level.Length > 0;
+            c.levelType    = c.levelTypeFromFile ? ParseLevel(level, tag) : unsetLevel;
+            c.scrollFollow = ParseFollow(CsvTable.GetString(row, "scrollFollow", ""), tag);
 
             c.baseFps      = CsvTable.GetInt(row, "baseFps", 60);
             c.direction    = ParseDirection(CsvTable.GetString(row, "direction", "down"), tag);
@@ -240,6 +357,15 @@ namespace JndUfo
             c.maxTrials   = Mathf.Max(1, CsvTable.GetInt(row, "maxTrials", 50));
             c.minTrials   = Mathf.Max(0, CsvTable.GetInt(row, "minTrials", 8));
             c.stopSD      = Mathf.Max(0f, CsvTable.GetFloat(row, "stopSD", 2f));
+
+            c.autoSpeed   = CsvTable.GetFloat(row, "autoSpeed", 8f);
+            c.autoPath    = ParsePath(CsvTable.GetString(row, "autoPath", "linear"), tag);
+            c.autoSweep   = CsvTable.GetFloat(row, "autoSweep", 0.9f);
+            c.autoTurnSec = CsvTable.GetFloat(row, "autoTurnSec", 0.6f);
+            c.autoHeight  = CsvTable.GetFloat(row, "autoHeight", 0.4f);
+            c.autoBobAmp  = CsvTable.GetFloat(row, "autoBobAmp", 0.5f);
+            c.autoBobHz   = CsvTable.GetFloat(row, "autoBobHz", 0.4f);
+            c.autoStart   = ParseStart(CsvTable.GetString(row, "autoStart", "random"), tag);
 
             c.Validate(tag);
             return c;
@@ -297,6 +423,28 @@ namespace JndUfo
             if (maxCrossingsPerRound <= 0 && roundTimeoutSec <= 0f)
                 Debug.LogError($"{tag}: maxCrossingsPerRound=0 and roundTimeoutSec=0 — a round with no " +
                                 "shot would never end. Set one of them in Data/ExperimentConfig.csv.");
+
+            ValidateAutopilot(tag);
+        }
+
+        // The autopilot's settings are clamped on every row, so a stray value in a manual row's cell cannot
+        // fail later; only an auto level is warned about, since only there do they fly anything.
+        void ValidateAutopilot(string tag)
+        {
+            bool warn = AutoFlight;
+            if (!(autoSpeed > 0f))
+            {
+                if (warn) Debug.LogError($"{tag}: autoSpeed={autoSpeed} — the autopilot needs a speed above 0. Using 8.");
+                autoSpeed = 8f;
+            }
+            float sweep = Mathf.Clamp(autoSweep, 0.2f, 1f);
+            if (warn && !Mathf.Approximately(sweep, autoSweep))
+                Debug.LogWarning($"{tag}: autoSweep={autoSweep} is outside 0.2–1 — using {sweep}.");
+            autoSweep   = sweep;
+            autoTurnSec = Mathf.Max(0f, autoTurnSec);
+            autoHeight  = Mathf.Clamp01(autoHeight);
+            autoBobAmp  = Mathf.Max(0f, autoBobAmp);
+            autoBobHz   = Mathf.Max(0f, autoBobHz);
         }
 
 
@@ -344,6 +492,45 @@ namespace JndUfo
             return FrameLimiterMode.Unity;
         }
 
+        static LevelType ParseLevel(string cell, string tag)
+        {
+            string s = (cell ?? "").Trim();
+            if (s.Equals("manual", System.StringComparison.OrdinalIgnoreCase)) return LevelType.Manual;
+            if (s.Equals("scroll", System.StringComparison.OrdinalIgnoreCase)) return LevelType.Scroll;
+            if (s.Equals("auto",   System.StringComparison.OrdinalIgnoreCase)) return LevelType.Auto;
+            Debug.LogError($"{tag}: levelType='{cell}' is not manual/scroll/auto — using manual.");
+            return LevelType.Manual;
+        }
+
+        static ScrollFollowMode ParseFollow(string cell, string tag)
+        {
+            string s = (cell ?? "").Trim();
+            if (s.Length == 0) return ScrollFollowMode.Inherit;
+            if (s.Equals("locked",   System.StringComparison.OrdinalIgnoreCase)) return ScrollFollowMode.Locked;
+            if (s.Equals("handheld", System.StringComparison.OrdinalIgnoreCase)) return ScrollFollowMode.Handheld;
+            Debug.LogError($"{tag}: scrollFollow='{cell}' is not locked/handheld (or blank) — leaving the " +
+                            "Inspector's setting.");
+            return ScrollFollowMode.Inherit;
+        }
+
+        static AutoPathMode ParsePath(string cell, string tag)
+        {
+            string s = (cell ?? "").Trim();
+            if (s.Equals("linear", System.StringComparison.OrdinalIgnoreCase)) return AutoPathMode.Linear;
+            if (s.Equals("sine",   System.StringComparison.OrdinalIgnoreCase)) return AutoPathMode.Sine;
+            Debug.LogError($"{tag}: autoPath='{cell}' is not linear/sine — using linear.");
+            return AutoPathMode.Linear;
+        }
+
+        static AutoStartMode ParseStart(string cell, string tag)
+        {
+            string s = (cell ?? "").Trim();
+            if (s.Equals("random",   System.StringComparison.OrdinalIgnoreCase)) return AutoStartMode.Random;
+            if (s.Equals("continue", System.StringComparison.OrdinalIgnoreCase)) return AutoStartMode.Continue;
+            Debug.LogError($"{tag}: autoStart='{cell}' is not random/continue — using random.");
+            return AutoStartMode.Random;
+        }
+
 
         // ── Log echo ─────────────────────────────────────────────────────────
 
@@ -368,25 +555,51 @@ namespace JndUfo
             return names;
         }
 
-        // The seed file, written only when Data/ExperimentConfig.csv is missing.
+        /// <summary>
+        /// An auto level's autopilot settings as the block actually flies them, written into the row's cells that
+        /// the file has a column for but left blank — so the cfg_* echo in the logs never shows a blank for a
+        /// setting that flew. Only for auto levels: the other levels ignore these settings, and their blanks say so.
+        /// </summary>
+        void FillAutopilotEcho()
+        {
+            if (!AutoFlight || Row == null) return;
+            void Fill(string key, string value)
+            {
+                if (System.Array.Exists(Columns, c => c.Trim().Equals(key, System.StringComparison.OrdinalIgnoreCase)) &&
+                    (!Row.TryGetValue(key, out string v) || string.IsNullOrWhiteSpace(v)))
+                    Row[key] = value;
+            }
+            Fill("autoSpeed",   CsvTable.F(autoSpeed, 3));
+            Fill("autoPath",    autoPath == AutoPathMode.Sine ? "sine" : "linear");
+            Fill("autoSweep",   CsvTable.F(autoSweep, 3));
+            Fill("autoTurnSec", CsvTable.F(autoTurnSec, 3));
+            Fill("autoHeight",  CsvTable.F(autoHeight, 3));
+            Fill("autoBobAmp",  CsvTable.F(autoBobAmp, 3));
+            Fill("autoBobHz",   CsvTable.F(autoBobHz, 3));
+            Fill("autoStart",   autoStart == AutoStartMode.Continue ? "continue" : "random");
+        }
+
+        // The seed file, written only when Data/ExperimentConfig.csv is missing. The same five rows the repository
+        // ships: the two most common refresh rates and 500, each searched down, and 60 and 144 searched up to
+        // 500, all as scroll levels. guessRate is the laser's geometric chance level on 16:9 (see
+        // GuessRateCalculator). The autopilot columns are blank: they only apply to auto rows.
         static string DefaultCsv()
         {
             var sb = new StringBuilder();
-            sb.AppendLine("baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter," +
+            sb.AppendLine("levelType,baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter," +
                           "maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints," +
                           "threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount," +
-                          "guessRate,maxTrials,minTrials,stopSD");
+                          "guessRate,maxTrials,minTrials,stopSD," +
+                          "scrollFollow,autoSpeed,autoPath,autoSweep,autoTurnSec,autoHeight,autoBobAmp,autoBobHz,autoStart");
 
-            // The two most common refresh rates and 500 — roughly even steps in frame time
-            // (16.7, 6.9, 2 ms). Every block searches down to about a sixth of its base, in even
-            // whole-fps steps that scale with the base, so all three ask the same relative question.
-            // stopSD is ~4% of the searched range on every row. guessRate is the laser's geometric
-            // chance level on 16:9 (see GuessRateCalculator).
-            const string tail = "0,15,100,-10";
+            const string tail = "15,15,100,-10";
             const string grid = "50,1,7,10,0,0.06,4,0.235,50,8";
-            sb.AppendLine($"60,down,50,1,1,random,unity,{tail},{grid},2");
-            sb.AppendLine($"144,down,120,2,2,random,unity,{tail},{grid},5");
-            sb.AppendLine($"500,down,415,5,5,random,unity,{tail},{grid},17");
+            const string auto = "locked,,,,,,,,";
+            sb.AppendLine($"scroll,60,down,59,1,1,random,unity,{tail},{grid},5,{auto}");
+            sb.AppendLine($"scroll,144,down,143,2,2,random,unity,{tail},{grid},10,{auto}");
+            sb.AppendLine($"scroll,500,down,499,5,5,random,unity,{tail},{grid},20,{auto}");
+            sb.AppendLine($"scroll,60,up,440,5,5,random,unity,{tail},{grid},20,{auto}");
+            sb.AppendLine($"scroll,144,up,356,4,4,random,unity,{tail},{grid},15,{auto}");
             return sb.ToString();
         }
     }

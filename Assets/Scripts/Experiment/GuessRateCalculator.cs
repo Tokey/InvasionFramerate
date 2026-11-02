@@ -97,6 +97,86 @@ namespace JndUfo
             return true;
         }
 
+        /// <summary>
+        /// γ for an auto level, where the autopilot flies and the participant only picks the moment to fire, so a
+        /// blind response is a click at a moment that knows nothing of the boundary: the shot lands wherever the
+        /// path has the ship then. With the tower uniform over its spawn band and the click uniform over one sweep
+        /// there and back,
+        ///
+        ///     γ = mean over the sweep of |[x − r, x + r] ∩ spawn band| / spawn band's width
+        ///
+        /// — the share of tower positions the ship is over at each moment, averaged over the moments. A ship
+        /// sweeping the whole width at an even speed gives about the manual level's γ; a narrower sweep raises it
+        /// (the ship spends more of its time over the towers' band), and a sine path lowers it (it lingers at the
+        /// ends). Also reports whether the sweep reaches every place the tower can be dealt.
+        /// </summary>
+        public static bool TryComputeAuto(Camera cam, float fixedZ, float spawnWidthFraction, float closeRadius,
+                                          StudyConfig block, out float guessRate, out string report)
+        {
+            guessRate = 0f;
+            report    = "";
+            if (cam == null || block == null) return false;
+
+            float vMin = CameraRig.ViewportPointAtZ(cam, 0f, 0.5f, fixedZ).x;
+            float vMax = CameraRig.ViewportPointAtZ(cam, 1f, 0.5f, fixedZ).x;
+            Order(ref vMin, ref vMax);
+            if (vMax - vMin <= 1e-4f) return false;
+
+            // The sweep's band, as UfoAutopilot lays it on the view.
+            float half  = 0.5f * Mathf.Clamp(block.autoSweep, 0.2f, 1f);
+            float xa    = Mathf.Lerp(vMin, vMax, 0.5f - half);
+            float width = Mathf.Lerp(vMin, vMax, 0.5f + half) - xa;
+
+            float margin = (1f - Mathf.Clamp01(spawnWidthFraction)) * 0.5f;
+            float tMin = CameraRig.ViewportPointAtZ(cam, margin,      0.5f, fixedZ).x;
+            float tMax = CameraRig.ViewportPointAtZ(cam, 1f - margin, 0.5f, fixedZ).x;
+            Order(ref tMin, ref tMax);
+            float band = Mathf.Max(1e-4f, tMax - tMin);
+
+            AutoFlightPath path = block.AutoPath;
+            float period = path.Period(width);
+            float r      = Mathf.Max(0f, closeRadius);
+
+            const int steps = 20000;
+            double sum = 0.0;
+            for (int i = 0; i < steps; i++)
+            {
+                path.Sample((i + 0.5f) / steps * period, width, out float dx, out _);
+                float x  = xa + dx;
+                float lo = Mathf.Max(tMin, x - r);
+                float hi = Mathf.Min(tMax, x + r);
+                sum += Mathf.Max(0f, hi - lo) / band;
+            }
+            guessRate = Mathf.Clamp01((float)(sum / steps));
+
+            float turn = path.mode == AutoPathMode.Linear ? path.TurnRadius(width) : 0f;
+            var sb = new StringBuilder();
+            sb.AppendLine($"[GuessRate] Auto level (row {block.blockIndex}): chance-level hit rate of a blind click:");
+            sb.AppendLine($"    Sweep            : {xa:0.000} .. {xa + width:0.000}   ({block.autoSweep:0.##} of the width, " +
+                          $"{(path.mode == AutoPathMode.Sine ? "sine" : "linear")}, {path.speed:0.##} u/s, " +
+                          $"{period:0.00} s there and back)");
+            sb.AppendLine($"    Tower spawn band : {tMin:0.000} .. {tMax:0.000}");
+            sb.AppendLine($"    Hit window (2r)  : {2f * r:0.000}   (closeRadius {r:0.000})");
+            sb.AppendLine($"    >>> guessRate    : {guessRate:0.0000}   <-- put this in row {block.blockIndex} of ExperimentConfig.csv");
+            if (tMin < xa - 1e-3f || tMax > xa + width + 1e-3f)
+                sb.AppendLine("    !!! The sweep does not reach every place the tower can be dealt: a boundary there " +
+                              "is never crossed. Widen autoSweep.");
+            else if (path.mode == AutoPathMode.Linear && (tMin < xa + turn || tMax > xa + width - turn))
+                sb.AppendLine("    (the tower can stand where the ship turns, where it is slower than autoSpeed)");
+            else if (path.mode == AutoPathMode.Sine)
+                sb.AppendLine("    (sine path: the ship crosses a boundary near the middle faster than one near an edge)");
+
+            report = sb.ToString();
+            return true;
+        }
+
+        /// <summary>
+        /// Whether an auto level's sweep reaches every place the tower can be dealt — a boundary beyond its ends is
+        /// never crossed, and its rounds can only be missed.
+        /// </summary>
+        public static bool AutoSweepCoversSpawn(float autoSweep, float spawnWidthFraction) =>
+            0.5f * Mathf.Clamp(autoSweep, 0.2f, 1f) + 1e-4f >= 0.5f * Mathf.Clamp01(spawnWidthFraction);
+
         static void Order(ref float a, ref float b)
         {
             if (a > b) { float tmp = a; a = b; b = tmp; }

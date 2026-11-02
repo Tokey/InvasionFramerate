@@ -43,6 +43,34 @@ namespace JndUfo
         public int   ShotsWithoutCrossing { get; private set; }
         /// <summary>Mean seconds from the last crossing to the shot.</summary>
         public float AvgSinceLastCrossingSec => Mean(_sinceCrossing);
+        /// <summary>Median of the same — the latency is skewed by shots that waited for a later pass.</summary>
+        public float MedianSinceLastCrossingSec => Median(_sinceCrossing);
+
+        readonly List<float> _firstCrossing = new List<float>(128);
+        /// <summary>Mean seconds from a round arming to its first crossing, over rounds with one.</summary>
+        public float AvgFirstCrossingSec => Mean(_firstCrossing);
+
+        double _crossSpeedSum;
+        int    _crossSpeedN;
+        /// <summary>Mean horizontal speed of the UFO at the block's crossings (world units a second): how fast the
+        /// boundary was crossed. The autopilot's speed in an auto level; the participant's own otherwise.</summary>
+        public float AvgCrossingSpeed => _crossSpeedN > 0 ? (float)(_crossSpeedSum / _crossSpeedN) : float.NaN;
+
+        readonly List<float> _shotSpeed  = new List<float>(128);
+        readonly List<float> _missAlong  = new List<float>(128);
+        /// <summary>Mean abs(ufoVelX) at the shots.</summary>
+        public float AvgShotUfoSpeed => Mean(_shotSpeed);
+        /// <summary>Mean of missDistX × sign(ufoVelX) over shots fired on the move: positive = the shot landed
+        /// past the tower in the direction of travel (late), negative = before reaching it (early).</summary>
+        public float AvgMissAlongTravelX => Mean(_missAlong);
+
+        /// <summary>The UFO's horizontal speed at one crossing — fed by the director on the crossing's frame.</summary>
+        public void AddCrossingSpeed(float speed)
+        {
+            if (float.IsNaN(speed) || float.IsInfinity(speed)) return;
+            _crossSpeedSum += speed;
+            _crossSpeedN++;
+        }
 
         // ── Shot geometry (world units on X) ─────────────────────────────────
         readonly List<float> _missAbs = new List<float>(128);
@@ -149,6 +177,16 @@ namespace JndUfo
             _crossings.Add(Mathf.Max(0, s.crossings));
             if (s.playerFired && s.crossings == 0) ShotsWithoutCrossing++;
             if (!float.IsNaN(s.sinceLastCrossingSec)) _sinceCrossing.Add(s.sinceLastCrossingSec);
+            if (!float.IsNaN(s.firstCrossingAtSec) && !float.IsNaN(s.trialStartSec))
+                _firstCrossing.Add(s.firstCrossingAtSec - s.trialStartSec);
+
+            if (s.playerFired && !float.IsNaN(s.ufoVelX))
+            {
+                _shotSpeed.Add(Mathf.Abs(s.ufoVelX));
+                // Below half a unit a second the ship is as good as still, and the sign says nothing.
+                if (Mathf.Abs(s.ufoVelX) > 0.5f && !float.IsNaN(s.missDistX))
+                    _missAlong.Add(s.missDistX * Mathf.Sign(s.ufoVelX));
+            }
 
             // A round that ran out has no landing point; folding it in as zero would read as a
             // perfectly centred shot and drag every miss average toward the tower.

@@ -8,14 +8,20 @@ STANDARD LIBRARY ONLY. This runs on the machine that runs the study, which has n
 reason to have pandas installed, so it must work on a bare Python.
 
 Schema
-    block         one row per (session, block, phase). Everything that is constant
-                  across a row group lives here: the cfg_* settings, the FPS cap,
-                  testMode, closeRadius, phaseStartIso.
+    block         one row per (session, run, block, phase, level type). Everything that is
+                  constant across a row group lives here: the cfg_* settings, the FPS cap,
+                  testMode, closeRadius, phaseStartIso, levelType. A session has one practice
+                  phase per level type it plays, all under blockIndex 0, so the level type is
+                  part of the key; so is the run, because an abandoned run and the run that
+                  replaces it share a sessionId.
     session_log   one row per block - the summary metrics
     shot          one row per trial
     frame         one row per rendered frame
     stutter       one row per delivered stutter, exploded out of shot.stuttersMs
                   (stutter-study logs only - the frame-rate study has no stutters)
+    session_info  one row per (session, run, key): SessionInfo_<id>.csv - the build, the
+                  machine, the display, the config files' hashes and every Inspector setting
+                  of the game's components (UIManager.showDebug, CameraRig.parallax, ...)
 
 Hoisting the constants matters more than it looks. On a 500 FPS block the frame log
 repeats the same identity columns and the same 33-character phaseStartIso across
@@ -35,6 +41,7 @@ Usage
     python build_db.py --force                # rebuild even if up to date
     python build_db.py --query "SELECT ..."   # run SQL against every DB found
     python build_db.py --schema               # print the schema and some example queries
+    python build_db.py --verify               # also check the views give back the CSVs exactly
 """
 
 from __future__ import annotations
@@ -70,7 +77,12 @@ LOGS = {
 BLOCK_KEY = ("sessionId", "blockIndex", "phase")
 BLOCK_ATTRS = ("baseFps", "direction", "frameLimiter",
                "unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso",
-               "blockOrdinal", "latinRow", "latinOrder", "weaponRun")
+               "blockOrdinal", "latinRow", "latinOrder", "weaponRun", "runId", "levelType")
+
+# Stored in `block` (from the group's first row, for convenience) AND kept on every fact row,
+# because they are not constant within a group: each practice round has its own baseFps (the
+# pair's higher rate). The views take the fact row's value.
+PER_ROW_ATTRS = {"baseFps"}
 
 # Written by CsvTable.F for a float.NaN. SQL wants a NULL, not the string "NaN" -
 # otherwise the column infers as TEXT and every numeric comparison silently fails.
@@ -164,10 +176,12 @@ def create_block_table(con, cfg_columns):
             latinRow            INTEGER,
             latinOrder          TEXT,
             weaponRun           INTEGER,
+            runId               TEXT,
+            levelType           TEXT,
+            blockKey            TEXT    NOT NULL UNIQUE,
             sourceFolder        TEXT,
-            columnCount         INTEGER,
-            {cols + ',' if cols else ''}
-            UNIQUE (sessionId, blockIndex, phase)
+            columnCount         INTEGER{',' if cols else ''}
+            {cols}
         )""")
 
     # Widen for anything the CREATE above did not name. Two things drift: a column added
@@ -208,13 +222,20 @@ def fill_block_gaps(con, bid, row, cfg_columns):
                     params + [bid])
 
 
-def block_id(con, cache, filled, row, cfg_columns, folder, ncols):
-    """Find or create the block row this fact row belongs to."""
+def block_key(row):
+    """The block a fact row belongs to: session, run, block, phase and level type. Logs from before
+    levelType (or runId) existed key on what they have."""
     session = row.get("sessionId") or "0"
     index = row.get("blockIndex") or "1"
     # SessionLog carries no phase column - it is only ever written for the main phase.
     phase = row.get("phase") or "main"
-    key = (session, index, phase)
+    return (session, row.get("runId") or "", index, phase, row.get("levelType") or "")
+
+
+def block_id(con, cache, filled, row, cfg_columns, folder, ncols):
+    """Find or create the block row this fact row belongs to."""
+    key = block_key(row)
+    session, _, index, phase, _ = key
 
     if key in cache:
         # Once per file, not once per row: the columns are constant across the group, so
@@ -224,8 +245,8 @@ def block_id(con, cache, filled, row, cfg_columns, folder, ncols):
             fill_block_gaps(con, cache[key], row, cfg_columns)
         return cache[key]
 
-    names = ["sessionId", "blockIndex", "phase", "sourceFolder", "columnCount"]
-    values = [convert(session, "INTEGER"), convert(index, "INTEGER"), phase,
+    names = ["sessionId", "blockIndex", "phase", "blockKey", "sourceFolder", "columnCount"]
+    values = [convert(session, "INTEGER"), convert(index, "INTEGER"), phase, "|".join(key),
               folder, ncols]
 
     for attr in BLOCK_ATTRS:
@@ -246,9 +267,7 @@ def block_id(con, cache, filled, row, cfg_columns, folder, ncols):
     if cur.lastrowid and cur.rowcount:
         cache[key] = cur.lastrowid
     else:   # already there from an earlier file
-        cache[key] = con.execute(
-            "SELECT block_id FROM block WHERE sessionId=? AND blockIndex=? AND phase=?",
-            (convert(session, "INTEGER"), convert(index, "INTEGER"), phase)).fetchone()[0]
+        cache[key] = con.execute("SELECT block_id FROM block WHERE blockKey=?", ("|".join(key),)).fetchone()[0]
     return cache[key]
 
 
@@ -261,7 +280,7 @@ def import_table(con, table, path, cache, counts):
     cfg_columns = [c for c in header if c.startswith("cfg_")]
     create_block_table(con, cfg_columns)
 
-    hoisted = set(BLOCK_KEY) | set(BLOCK_ATTRS) | set(cfg_columns)
+    hoisted = (set(BLOCK_KEY) | set(BLOCK_ATTRS) | set(cfg_columns)) - PER_ROW_ATTRS
     fact_columns = [c for c in header if c not in hoisted]
 
     dicts = [dict(zip(header, (clean(v) for v in row))) for row in rows]
@@ -402,14 +421,15 @@ def build_views(con):
     tables = {r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     block_cols = [r[1] for r in con.execute("PRAGMA table_info(block)")
-                  if r[1] not in ("block_id", "sourceFolder", "columnCount")]
+                  if r[1] not in ("block_id", "sourceFolder", "columnCount", "blockKey")]
 
     for table, view in (("session_log", "v_session"), ("shot", "v_shot"), ("frame", "v_frame")):
         if table not in tables:
             continue
         fact_cols = [r[1] for r in con.execute(f"PRAGMA table_info({table})")
                      if r[1] != "block_id"]
-        select = ", ".join([f"b.{quote(c)}" for c in block_cols]
+        # A column the fact table keeps per row (practice baseFps) wins over the block's copy.
+        select = ", ".join([f"b.{quote(c)}" for c in block_cols if c not in fact_cols]
                            + [f"t.{quote(c)}" for c in fact_cols])
         con.execute(f"DROP VIEW IF EXISTS {view}")
         con.execute(f"CREATE VIEW {view} AS SELECT {select} "
@@ -433,7 +453,37 @@ def csvs_in(folder):
         matches = sorted(folder.glob(f"{prefix}_*.csv"))
         if matches:
             found[table] = matches
+    info = sorted(folder.glob("SessionInfo_*.csv"))
+    if info:
+        found["session_info"] = info
     return found
+
+
+def import_session_info(con, path, counts):
+    """SessionInfo_<id>.csv - key, value rows - into session_info, under the session and run it names
+    (its own session.sessionId / session.runId keys, else the file name)."""
+    header, rows = read_csv(path)
+    if not header or not rows:
+        return 0
+    pairs = [(r[0], r[1] if len(r) > 1 else "") for r in rows if r and r[0].strip()]
+    named = dict(pairs)
+    m = re.match(r"SessionInfo_(\d+)_([^_.]+)", path.name)
+    session = named.get("session.sessionId") or (m.group(1) if m else None)
+    run = named.get("session.runId") or (m.group(2) if m else None)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS session_info (
+            session_info_id INTEGER PRIMARY KEY,
+            sessionId       INTEGER,
+            runId           TEXT,
+            key             TEXT NOT NULL,
+            value           TEXT,
+            sourceFolder    TEXT
+        )""")
+    con.executemany("INSERT INTO session_info (sessionId, runId, key, value, sourceFolder) VALUES (?, ?, ?, ?, ?)",
+                    [(convert(session, "INTEGER"), run, k, v, str(path.parent)) for k, v in pairs])
+    con.execute("CREATE INDEX IF NOT EXISTS ix_session_info_key ON session_info (key, sessionId, runId)")
+    counts["session_info"] = counts.get("session_info", 0) + len(pairs)
+    return len(pairs)
 
 
 def is_current(db_path, sources):
@@ -465,6 +515,8 @@ def build(db_path, sources, label):
             for table in ("session_log", "shot", "frame"):
                 for path in sources.get(table, []):
                     import_table(con, table, path, cache, counts)
+            for path in sources.get("session_info", []):
+                import_session_info(con, path, counts)
 
             counts["stutter"] = explode_stutters(con)
             build_indexes(con)
@@ -489,6 +541,63 @@ def build(db_path, sources, label):
     print(f"  {label}  ->  {db_path.name}  ({size_mb:.1f} MB, {elapsed:.2f}s)")
     print(f"      {detail}")
     return counts
+
+
+def verify(db_path, sources, label):
+    """Checks that the views give the CSVs back: v_session / v_shot / v_frame hold the same rows in the
+    same order as their files, every cell the same (numbers compared as numbers, NaN/blank as NULL). A
+    hoisting mistake - a column that is not constant within its block group - shows up here as a cell
+    that changed. Returns the number of problems."""
+    con = sqlite3.connect(db_path)
+    problems = 0
+    try:
+        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'view')")}
+        for table, view in (("session_log", "v_session"), ("shot", "v_shot"), ("frame", "v_frame")):
+            paths = sources.get(table, [])
+            want = []
+            for path in paths:
+                header, rows = read_csv(path)
+                if header:
+                    want.extend(dict(zip(header, r)) for r in rows)
+            if not want:
+                continue
+            if view not in tables:
+                print(f"  {label}: {view} missing, {len(want)} CSV rows")
+                problems += 1
+                continue
+            cur = con.execute(f"SELECT * FROM {view} ORDER BY {quote(table + '_id')}")
+            cols = [d[0] for d in cur.description]
+            got = [dict(zip(cols, r)) for r in cur.fetchall()]
+            if len(got) != len(want):
+                print(f"  {label}: {view} has {len(got)} rows, the CSVs {len(want)}")
+                problems += 1
+                continue
+            bad, example = 0, None
+            for i, (a, b) in enumerate(zip(want, got)):
+                for c, raw in a.items():
+                    x = clean(raw)
+                    y = b.get(c, "<missing>")
+                    if x is None and y is None:
+                        continue
+                    same = False
+                    if x is not None and y not in (None, "<missing>"):
+                        try:
+                            fx, fy = float(x), float(y)
+                            same = abs(fx - fy) <= 1e-9 * max(1.0, abs(fx))
+                        except (TypeError, ValueError):
+                            same = str(x) == str(y)
+                    if not same:
+                        bad += 1
+                        if example is None:
+                            example = f"row {i + 2} {c}: CSV {raw!r}, view {y!r}"
+            if bad:
+                print(f"  {label}: {view} differs from the CSVs in {bad} cell(s) - first: {example}")
+                problems += 1
+            else:
+                print(f"  {label}: {view} = the CSVs ({len(want):,} rows x {len(want[0])} columns)")
+    finally:
+        con.close()
+    return problems
 
 
 def run_query(db_path, sql):
@@ -520,16 +629,20 @@ def run_query(db_path, sql):
 
 SCHEMA_HELP = """
 Tables
-  block        one row per (sessionId, blockIndex, phase). Holds everything constant
-               across a row group: cfg_* settings, baseFps, direction, frameLimiter,
-               closeRadius, phaseStartIso, and the counterbalancing - blockOrdinal,
-               latinRow, latinOrder. blockIndex is WHICH setting (its row in
-               ExperimentConfig.csv); blockOrdinal is WHEN in the session it ran.
-               (Stutter-study logs fill unityApplicationFps / testMode / weapon /
-               weaponRun instead.)
+  block        one row per (sessionId, runId, blockIndex, phase, levelType). Holds everything
+               constant across a row group: cfg_* settings, direction, frameLimiter,
+               closeRadius, phaseStartIso, levelType (manual / scroll / auto), runId, and
+               the counterbalancing - blockOrdinal, latinRow, latinOrder. blockIndex is
+               WHICH setting (its row in ExperimentConfig.csv); blockOrdinal is WHEN in the
+               session it ran. A session has one practice phase (blockIndex 0) per level
+               type. baseFps is kept on every fact row too (each practice round has its
+               own); the views use the row's. (Stutter-study logs fill unityApplicationFps /
+               testMode / weapon / weaponRun instead.)
   session_log  one row per block - the summary metrics
   shot         one row per round
   frame        one row per rendered frame
+  session_info one row per SessionInfo key: the build, machine, display, config hashes
+               and every Inspector setting of the game's components
   stutter      stutter-study logs only: one row per delivered stutter
 
 Views - the flat CSV shape, cfg_* and all
@@ -563,6 +676,22 @@ Examples (frame-rate study)
   -- every boundary crossing (uses the partial index)
   SELECT roundNumber, timeSinceStartSec, side, diffFps, alteredSide
   FROM v_frame WHERE crossed = 1 ORDER BY timeSinceStartSec;
+
+  -- threshold per level type, base rate and direction (the conditions of a mixed config)
+  SELECT b.levelType, b.direction, s.baseFps, COUNT(*) AS blocks,
+         ROUND(AVG(s.jndDiffFps), 1) AS meanJndDiffFps, ROUND(AVG(s.sd), 2) AS meanSd
+  FROM session_log s JOIN block b ON b.block_id = s.block_id
+  WHERE s.endReason != 'abandoned'
+  GROUP BY b.levelType, b.direction, s.baseFps ORDER BY b.levelType, b.direction, s.baseFps;
+
+  -- auto level: when the click came after the crossing, and where the shot landed along the
+  -- direction of travel (+ = late, past the tower)
+  SELECT s.baseFps, s.diffFps, s.isHit, ROUND(s.sinceLastCrossingSec, 3) AS latencySec,
+         ROUND(s.missDistX * (CASE WHEN s.ufoVelX < 0 THEN -1 ELSE 1 END), 2) AS alongTravelX
+  FROM v_shot s WHERE s.levelType = 'auto' AND s.phase = 'main' AND s.playerFired = 1;
+
+  -- sessions run with the debug readout on (it shows the difference being measured)
+  SELECT sessionId, runId, value FROM session_info WHERE key = 'UIManager.showDebug';
 
 Examples (stutter study)
 
@@ -626,6 +755,8 @@ def main():
                     help="Print the schema and example queries, then stop.")
     ap.add_argument("--quiet", action="store_true",
                     help="Only report failures. For the automatic post-session run.")
+    ap.add_argument("--verify", action="store_true",
+                    help="After building, check that the views reproduce the CSVs cell for cell.")
     args = ap.parse_args()
 
     if args.schema:
@@ -669,6 +800,8 @@ def main():
         try:
             build(db_path, sources, folder.name)
             built += 1
+            if args.verify and db_path.exists() and verify(db_path, sources, folder.name):
+                failed += 1
         except Exception as exc:
             failed += 1
             print(f"  {folder.name}: FAILED - {exc}", file=sys.stderr)
@@ -677,6 +810,8 @@ def main():
         target = args.combined if args.combined.is_absolute() else args.data / args.combined
         try:
             build(target, all_sources, "combined")
+            if args.verify and target.exists() and verify(target, all_sources, "combined"):
+                failed += 1
         except Exception as exc:
             failed += 1
             print(f"  combined: FAILED - {exc}", file=sys.stderr)

@@ -56,6 +56,7 @@ namespace JndUfo
 
             // Time.realtimeSinceStartup; NaN = never happened.
             public float startedRealtime;
+            public float firstCrossingRealtime;
             public float lastCrossingRealtime;
 
             public int LeftFps  => alteredSide == Side.Left  ? alteredFps : baseFps;
@@ -318,6 +319,7 @@ namespace JndUfo
             CrossedThisFrame            = true;
             _trial.crossings++;
             _trial.lastCrossingRealtime = Time.realtimeSinceStartup;
+            if (_trial.crossings == 1) _trial.firstCrossingRealtime = _trial.lastCrossingRealtime;
         }
 
         void ApplyCap()
@@ -404,12 +406,20 @@ namespace JndUfo
         {
             _practiceMode = on && pair.highFps > 0;
             _practicePair = pair;
+            // The director moves on to the next pair the moment a round's response lands, but the round that just
+            // ended keeps its own base until the next one opens: its reveal plays at the rate it was played at, and
+            // the frame log labels its response frame with that round's base, as the shot log does.
+            if (!_practiceRoundEnded) _practiceIdleFps = pair.highFps;
             RefreshDebugText();
         }
 
-        // The cap between rounds, when no split is open.
-        int NeutralFps => _practiceMode ? _practicePair.highFps
+        // The cap between rounds, when no split is open: in practice the base of the round that just ended, until
+        // the next opens (or the first pair's, before any round); otherwise the block's.
+        int NeutralFps => _practiceMode ? _practiceIdleFps
                         : _config != null ? _config.baseFps : 0;
+
+        int  _practiceIdleFps;
+        bool _practiceRoundEnded;
 
         void ApplyTaskParams()
         {
@@ -464,14 +474,17 @@ namespace JndUfo
                 baseFps              = _practiceMode ? _practicePair.highFps : _config.baseFps,
                 alteredFps           = _practiceMode ? _practicePair.lowFps  : _config.AlteredFpsFor(diff),
                 alteredSide          = altered,
-                startedRealtime      = Time.realtimeSinceStartup,
-                lastCrossingRealtime = float.NaN,
+                startedRealtime       = Time.realtimeSinceStartup,
+                firstCrossingRealtime = float.NaN,
+                lastCrossingRealtime  = float.NaN,
             };
 
             // The frame that is running now was paced by the base cap; crediting it to either side
             // would put a base-rate frame into the altered side's measurement.
             _appliedPace = Pace.None;
             SplitActive  = true;
+            _practiceRoundEnded = false;
+            if (_practiceMode) _practiceIdleFps = _trial.baseFps;
             FrameLimiter.ResetOverruns();
             ApplyCap();
             RefreshDebugText();
@@ -490,6 +503,7 @@ namespace JndUfo
                 ? FrameLimiter.Overruns : 0;
             LastTrial   = _trial;
             SplitActive = false;
+            _practiceRoundEnded = _trial.practice;
             ApplyCap();
             RefreshDebugText();
             return LastTrial;
@@ -498,6 +512,7 @@ namespace JndUfo
         /// <summary>Drops a round's split without recording it — the phase or block ended under it.</summary>
         public void CancelTrial()
         {
+            _practiceRoundEnded = false;
             if (!SplitActive) return;
             SplitActive = false;
             ApplyCap();
@@ -543,6 +558,7 @@ namespace JndUfo
             TrialRecord t = SplitActive ? _trial : LastTrial;
 
             sb.Append("FPS JND | ").Append(string.IsNullOrEmpty(DebugLabel) ? "block " + _config.blockIndex : DebugLabel)
+              .Append(" | ").Append(_config.LevelCell)
               .Append(" | base ").Append(_config.baseFps).Append(' ').Append(_config.DirectionCell)
               .Append(" | diff ").Append(_config.minDiffFps).Append('-').Append(_config.maxDiffFps)
               .Append(" step ").Append(_config.diffStepFps)

@@ -455,18 +455,29 @@ namespace JndUfo
 
         // ── Endless world ────────────────────────────────────────────────────
 
-        /// <summary>True when the scenery was built endless for the world scroll (GameManager.worldScroll on at
-        /// start): the city, the towers, the grass and the sky repeat without end, and so does the boundary.</summary>
+        /// <summary>True when the scenery was built endless for the world scroll (GameManager.WantsEndlessWorld at
+        /// start: the scroll on, or a later block of the session scrolling): the city, the towers, the grass and the
+        /// sky repeat without end, and so does the boundary.</summary>
         public bool EndlessScenery { get; private set; }
 
         /// <summary>
-        /// World units from one copy of the boundary to the next in the endless world; 0 without it. The tower
-        /// field repeats with this period, so a boundary tower stands at <see cref="BoundaryX"/> + k × period for
-        /// every whole k, and the frame rates swap sides at every copy: across an even copy (k = 0 is the boundary
-        /// as dealt) they run as dealt, across an odd one the other way round. So the world reads base | altered |
-        /// base | altered ... without end, and crossing any copy changes the frame rate.
+        /// World units from one copy of the boundary to the next in the endless world while the world scrolls; 0
+        /// without it. The tower field repeats with this period, so a boundary tower stands at
+        /// <see cref="BoundaryX"/> + k × period for every whole k, and the frame rates swap sides at every copy:
+        /// across an even copy (k = 0 is the boundary as dealt) they run as dealt, across an odd one the other way
+        /// round. So the world reads base | altered | base | altered ... without end, and crossing any copy changes
+        /// the frame rate.
+        ///
+        /// 0 again while a block without the scroll plays over the endless world (a session mixing levels): its
+        /// camera holds still about the origin and the round has the one boundary it dealt, as in a world that was
+        /// never endless. The tower field still repeats, but its copies of the boundary tower stand a period off:
+        /// off screen for any period above about 42 units (half the view's width plus half the spawn band; the
+        /// default is 96).
         /// </summary>
-        public float BoundaryPeriod { get; private set; }
+        public float BoundaryPeriod =>
+            _boundaryPeriod > 0f && (GameManager.Instance == null || GameManager.Instance.worldScroll) ? _boundaryPeriod : 0f;
+
+        float _boundaryPeriod;
 
         /// <summary>Where this round's boundary was dealt (world X). <see cref="TowerBase"/> is the same, until the
         /// round ends in the endless world and <see cref="FocusBoundaryNear"/> moves it onto a copy.</summary>
@@ -947,7 +958,7 @@ namespace JndUfo
             // rounded to a whole number of the tower field's lattice, so the field repeats exactly with it; the city
             // picks a whole number of these, wide enough that no building shows twice on screen.
             GameManager gm = GameManager.Instance;
-            EndlessScenery = gm != null && gm.worldScroll;
+            EndlessScenery = gm != null && gm.WantsEndlessWorld;
             float period   = 0f;
             if (EndlessScenery)
             {
@@ -955,7 +966,7 @@ namespace JndUfo
                 float spacing = Mathf.Max(1f, towerField.spacing);
                 period = spacing * Mathf.Max(1, Mathf.RoundToInt(gm.worldScrollPeriod / spacing));
             }
-            BoundaryPeriod = period;
+            _boundaryPeriod = period;
 
             if (_silhouetteMat == null)
             {
