@@ -427,20 +427,9 @@ namespace JndUfo
             float  fixedZ        = ufo != null ? ufo.fixedZ : 0f;
             float  spawnFraction = towerManager != null ? towerManager.spawnWidthFraction : 1f;
 
-            float gamma;
-            bool  ok;
-            if (block.AutoFlight)
-            {
-                key = $"auto {block.autoPath} {block.autoSpeed} {block.autoSweep} {block.autoTurnSec}";
-                ok  = GuessRateCalculator.TryComputeAuto(cam, fixedZ, spawnFraction, block.closeRadius, block,
-                                                         out gamma, out report);
-            }
-            else
-            {
-                key = "manual";
-                ok  = GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, block.closeRadius,
-                                                     out gamma, out report);
-            }
+            key = "scene";
+            bool ok = GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, block.closeRadius,
+                                                     out float gamma, out report);
             return ok ? gamma : float.NaN;
         }
 

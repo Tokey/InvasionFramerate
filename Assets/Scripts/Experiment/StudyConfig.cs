@@ -239,9 +239,9 @@ namespace JndUfo
         /// Half-width of the hit window, world units, calibrated on a 16:9 display. Feeds the
         /// chance-level hit rate directly (γ = 2r / shot-reachable width), so changing it REQUIRES
         /// changing guessRate in ExperimentConfig.csv — GuessRateCalculator prints the right value
-        /// at startup and warns when the CSV disagrees. r = 5.5 gives γ = 0.235 on 16:9.
+        /// at startup and warns when the CSV disagrees. r = 6.0 gives γ = 0.255 on 16:9.
         /// </summary>
-        public readonly float closeRadius      = 5.5f;
+        public readonly float closeRadius      = 6.0f;
         public readonly bool  showHitZone      = true;
         /// <summary>Half-width (world units) of the dead zone around the tower. The UFO keeps its
         /// side until it is this far past the boundary, so hovering on the line cannot flicker the

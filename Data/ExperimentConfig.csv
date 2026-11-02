@@ -12,24 +12,17 @@
 #   auto*         auto rows only (blank elsewhere): autoSpeed (world units/s), autoPath linear | sine,
 #                 autoSweep (share of the screen width), autoTurnSec, autoHeight (0-1 of the flight band),
 #                 autoBobAmp (world units) and autoBobHz (the slight sine wave), autoStart random | continue
-# Bases: the two most common refresh rates (60, 144) and 500, for a 500 Hz display. Rows 1-3
-# search down from their base (to 1-59, 2-142 and 5-495 fps). Rows 4-5 search UP from 60 and 144
-# all the way to 500 fps (65-500 and 148-500), in steps of 5 and 4 so their grids are about as
-# long as the 500 row's (88 and 89 values vs 99): QUEST+ picks the next value on the shot frame.
-# Rows 1-5 are AUTO levels: the UFO flies itself and the participant clicks where the frame
-# rate changes. Their guessRate is the autopilot's chance rate on 16:9 (the game prints it at
-# startup); rounds run 20 s: one sweep there and back takes about 7.5 s at 12 units/s.
+# 6 conditions (3 level types x 2 directions): run participants in groups of 6 for balance.
+#   Row 1 = manual, 500 fps DOWN (10-490 fps diff, step 10)
+#   Row 2 = manual, 60 fps UP (10-440 fps diff, step 10)
+#   Row 3 = scroll, 500 fps DOWN
+#   Row 4 = scroll, 60 fps UP
+#   Row 5 = auto, 500 fps DOWN
+#   Row 6 = auto, 60 fps UP
 levelType,baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD,scrollFollow,autoSpeed,autoPath,autoSweep,autoTurnSec,autoHeight,autoBobAmp,autoBobHz,autoStart
-auto,60,down,59,1,1,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.245,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-auto,144,down,143,2,2,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.245,50,8,10,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-auto,500,down,499,5,5,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.245,50,8,20,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-auto,60,up,440,5,5,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.245,50,8,20,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-auto,144,up,356,4,4,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.245,50,8,15,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-# The same five rows as scroll levels (the camera locked on the UFO). To play them instead, remove
-# the '# ' from these and put a '# ' in front of the auto rows above (or keep both and delete
-# LatinSquare.csv so a balanced square is written for ten rows).
-# scroll,60,down,59,1,1,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,5,locked,,,,,,,,
-# scroll,144,down,143,2,2,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,10,locked,,,,,,,,
-# scroll,500,down,499,5,5,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,20,locked,,,,,,,,
-# scroll,60,up,440,5,5,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,20,locked,,,,,,,,
-# scroll,144,up,356,4,4,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,15,locked,,,,,,,,
+manual,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,,,,,,,
+manual,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,,,,,,,
+scroll,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,locked,,,,,,,,
+scroll,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,locked,,,,,,,,
+auto,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
+auto,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
