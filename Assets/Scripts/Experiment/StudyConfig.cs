@@ -353,7 +353,7 @@ namespace JndUfo
             c.lapseMin    = CsvTable.GetFloat(row, "lapseMin", 0f);
             c.lapseMax    = CsvTable.GetFloat(row, "lapseMax", 0.06f);
             c.lapseCount  = Mathf.Max(1, CsvTable.GetInt(row, "lapseCount", 4));
-            c.guessRate   = Mathf.Clamp01(CsvTable.GetFloat(row, "guessRate", 0.235f));
+            c.guessRate   = Mathf.Clamp01(CsvTable.GetFloat(row, "guessRate", 0.255f));
             c.maxTrials   = Mathf.Max(1, CsvTable.GetInt(row, "maxTrials", 50));
             c.minTrials   = Mathf.Max(0, CsvTable.GetInt(row, "minTrials", 8));
             c.stopSD      = Mathf.Max(0f, CsvTable.GetFloat(row, "stopSD", 2f));
@@ -579,10 +579,9 @@ namespace JndUfo
             Fill("autoStart",   autoStart == AutoStartMode.Continue ? "continue" : "random");
         }
 
-        // The seed file, written only when Data/ExperimentConfig.csv is missing. The same five rows the repository
-        // ships: the two most common refresh rates and 500, each searched down, and 60 and 144 searched up to
-        // 500, all as scroll levels. guessRate is the laser's geometric chance level on 16:9 (see
-        // GuessRateCalculator). The autopilot columns are blank: they only apply to auto rows.
+        // The seed file, written only when Data/ExperimentConfig.csv is missing. The 6 conditions
+        // (3 level types x 2 directions) the repository ships: manual, scroll, auto at 500 down and 60 up.
+        // guessRate is the laser's geometric chance level on 16:9 for closeRadius=6.0 (see GuessRateCalculator).
         static string DefaultCsv()
         {
             var sb = new StringBuilder();
@@ -592,14 +591,16 @@ namespace JndUfo
                           "guessRate,maxTrials,minTrials,stopSD," +
                           "scrollFollow,autoSpeed,autoPath,autoSweep,autoTurnSec,autoHeight,autoBobAmp,autoBobHz,autoStart");
 
-            const string tail = "15,15,100,-10";
-            const string grid = "50,1,7,10,0,0.06,4,0.235,50,8";
-            const string auto = "locked,,,,,,,,";
-            sb.AppendLine($"scroll,60,down,59,1,1,random,unity,{tail},{grid},5,{auto}");
-            sb.AppendLine($"scroll,144,down,143,2,2,random,unity,{tail},{grid},10,{auto}");
-            sb.AppendLine($"scroll,500,down,499,5,5,random,unity,{tail},{grid},20,{auto}");
-            sb.AppendLine($"scroll,60,up,440,5,5,random,unity,{tail},{grid},20,{auto}");
-            sb.AppendLine($"scroll,144,up,356,4,4,random,unity,{tail},{grid},15,{auto}");
+            const string tail = "15,20,100,-10";
+            const string grid = "50,1,7,10,0,0.06,4,0.255,50,8,5";
+            const string scroll = "locked,,,,,,,,";
+            const string auto = ",12,linear,0.9,0.6,0.4,0.5,0.4,random";
+            sb.AppendLine($"manual,500,down,490,10,10,random,unity,{tail},{grid},,,,,,,,");
+            sb.AppendLine($"manual,60,up,440,10,10,random,unity,{tail},{grid},,,,,,,,");
+            sb.AppendLine($"scroll,500,down,490,10,10,random,unity,{tail},{grid},{scroll}");
+            sb.AppendLine($"scroll,60,up,440,10,10,random,unity,{tail},{grid},{scroll}");
+            sb.AppendLine($"auto,500,down,490,10,10,random,unity,{tail},{grid}{auto}");
+            sb.AppendLine($"auto,60,up,440,10,10,random,unity,{tail},{grid}{auto}");
             return sb.ToString();
         }
     }

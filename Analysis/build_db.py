@@ -298,6 +298,12 @@ def import_table(con, table, path, cache, counts):
             {col_defs}
         )""")
 
+    existing_cols = {r[1] for r in con.execute(f"PRAGMA table_info({quote(table)})")}
+    for c in fact_columns:
+        if c not in existing_cols:
+            con.execute(f"ALTER TABLE {quote(table)} ADD COLUMN {quote(c)} {types[c]}")
+            existing_cols.add(c)
+
     # Per file: each one gets a single chance to fill gaps left by whichever file
     # created the block row before it.
     filled = set()

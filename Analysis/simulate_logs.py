@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from jnd_analysis import Grid, Posterior, effective_config  # noqa: E402 - the exact QUEST+ port
 
 VIEW_W = 2 * 100 * math.tan(math.radians(7.5)) * 16 / 9      # play-plane width on 16:9: 46.81
-CLOSE_R, DEAD_ZONE, PAN, PERIOD, SPAWN = 5.5, 0.25, 6.0, 96.0, 0.8
+CLOSE_R, DEAD_ZONE, PAN, PERIOD, SPAWN = 6.0, 0.25, 6.0, 96.0, 0.8
 GO_SEC, GAP_SEC = 0.5, 3.3
 FLOOR_Y, CEIL_Y = 2.4, 15.9
 COUNTS_PER_UNIT = 25.0                                         # mouse counts per world unit flown

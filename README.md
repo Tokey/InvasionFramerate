@@ -138,35 +138,31 @@ The row number is the setting's ID. The first row under the header is setting **
 
 **The row order is not the play order.** The play order comes from `LatinSquare.csv`.
 
-### The 5 rows
+### The 6 conditions (rows)
 
 | Row | levelType | baseFps | direction | Δ range (step) | Altered side runs at | stopSD |
 |---|---|---|---|---|---|---|
-| 1 | scroll | 60 | down | 1–59 (1) | 1–59 fps | 5 |
-| 2 | scroll | 144 | down | 2–142 (2) | 2–142 fps | 10 |
-| 3 | scroll | 500 | down | 5–495 (5) | 5–495 fps | 20 |
-| 4 | scroll | 60 | up | 5–440 (5) | 65–500 fps | 20 |
-| 5 | scroll | 144 | up | 4–356 (4) | 148–500 fps | 15 |
+| 1 | manual | 500 | down | 10–490 (10) | 10–490 fps | 5 |
+| 2 | manual | 60 | up | 10–440 (10) | 70–500 fps | 5 |
+| 3 | scroll | 500 | down | 10–490 (10) | 10–490 fps | 5 |
+| 4 | scroll | 60 | up | 10–440 (10) | 70–500 fps | 5 |
+| 5 | auto | 500 | down | 10–490 (10) | 10–490 fps | 5 |
+| 6 | auto | 60 | up | 10–440 (10) | 70–500 fps | 5 |
 
-All five are scroll levels with the camera locked on the UFO (`scrollFollow = locked`), which is how the scene played them before `levelType` existed. Below them the file holds the same five rows as **auto** levels, commented out (`# auto,60,down,…`). To use any of them, remove its `# `, then delete `LatinSquare.csv` so the game writes a balanced square for the new number of rows (or edit the square by hand). To make a row the original, non-scrolling level, change its first cell to `manual`.
+These 6 conditions compare 3 level types (`manual`, `scroll`, `auto`) across 2 directions (`500 down` and `60 up`). Run participants in groups of 6 for balanced counterbalancing.
 
-Each row searches almost its whole range, in steps that grow with the base (≈ 1% of it). `maxDiffFps` is set to base − 1 (59 / 143 / 499). On rows 2 and 3 that isn't on the step grid, so the game pulls it down to 142 and 495 and says so in the Console. `stopSD` is 5 / 10 / 20 fps: about 9% / 7% / 4% of each row's Δ range, so the 60 fps block stops at a coarser relative precision than the 500 fps one. The round limits and the rest of the QUEST+ setup are identical.
-
-Rows 4 and 5 go the other way: the altered side runs **faster** than the base, all the way up to 500 fps (60 + 440, 144 + 356). Their steps (5 and 4) are coarser than their `down` twins' so the grids stay about as long as row 3's (88 and 89 values against 99). QUEST+ weighs every value on the grid when it picks the next Δ, on the frame the shot lands, so a grid several times longer would make that frame several times longer. The catch is that the smallest Δ they can show is 5 and 4 fps (60 vs 65, 144 vs 148). `stopSD` is 20 / 15 fps, about 4–5% of their ranges, like row 3. They haven't been simulated.
-
-In simulation (a Python port of the same QUEST+ against simulated observers) on the previous ranges (Δ up to 50 / 120 / 415, `stopSD` 2 / 5 / 17) the estimates came out unbiased on all three rows. Low thresholds converged in ~16–18 rounds; thresholds in the middle of the range often ran the full 50, ending with an error close to `stopSD` either way. This hasn't been re-run for the current ranges.
-
-### The default config
+### The current config
 
 This is what `Data/ExperimentConfig.csv` holds in this repo (comment lines left out):
 
 ```
 levelType,baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD,scrollFollow,autoSpeed,autoPath,autoSweep,autoTurnSec,autoHeight,autoBobAmp,autoBobHz,autoStart
-scroll,60,down,59,1,1,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,5,locked,,,,,,,,
-scroll,144,down,143,2,2,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,10,locked,,,,,,,,
-scroll,500,down,499,5,5,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,20,locked,,,,,,,,
-scroll,60,up,440,5,5,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,20,locked,,,,,,,,
-scroll,144,up,356,4,4,random,unity,15,15,100,-10,50,1,7,10,0,0.06,4,0.235,50,8,15,locked,,,,,,,,
+manual,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,,,,,,,
+manual,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,,,,,,,
+scroll,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,locked,,,,,,,,
+scroll,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,locked,,,,,,,,
+auto,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
+auto,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
 ```
 
 and, commented out, the auto versions:
@@ -297,7 +293,7 @@ These define the task itself, so they live in `Assets/Scripts/Experiment/StudyCo
 
 | Setting | Value |
 |---|---|
-| Hit radius (`closeRadius`) | 5.5 world units on each side of the tower. Changing it changes γ. |
+| Hit radius (`closeRadius`) | 6.0 world units on each side of the tower (giving γ = 0.255 on 16:9). Changing it changes γ. |
 | Dead zone around the tower | 0.25 world units. The UFO keeps its side until it's this far past the boundary, so hovering on the line can't flicker the frame rate. |
 | Fire cooldown | 0.25 s |
 | Reveal after a shot | 2 s |

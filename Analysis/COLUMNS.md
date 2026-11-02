@@ -13,11 +13,10 @@ are in the git history and `Analysis/build_db.py` still reads them.
 
 ---
 
-## `Data/ExperimentConfig.csv` — one row per setting (5 rows, all scroll levels)
+## `Data/ExperimentConfig.csv` — one row per setting (6 rows: 3 level types x 2 directions)
 
 Row order here is the settings' **identity**, not the order anyone plays them in. Row
-number = `blockIndex` in the logs. The file also carries the same five rows as auto levels,
-commented out.
+number = `blockIndex` in the logs.
 
 | Group | Columns |
 |---|---|
@@ -25,10 +24,10 @@ commented out.
 | Stimulus | `baseFps`; `direction` (`down` = altered side at base − Δ, `up` = base + Δ); `minDiffFps`, `maxDiffFps`, `diffStepFps` (the Δ grid QUEST+ searches: min, min + step, … max); `alteredSide` (`random` per round / `left` / `right`); `frameLimiter` (`precise` busy-wait / `unity` targetFrameRate) |
 | Round bounds | `maxCrossingsPerRound` (0 = no cap), `roundTimeoutSec` |
 | Scoring | `hitPoints`, `missPoints` (`hitPoints` also defines `isHit`) |
-| QUEST+ | `threshCount` (θ grid over `minDiffFps`–`maxDiffFps`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ: 0.235 for manual and scroll on 16:9, 0.248 for auto at the default autopilot), `maxTrials`, `minTrials`, `stopSD` (fps) |
-| Autopilot (auto rows) | `autoSpeed` (world units/s, 8), `autoPath` (`linear` constant speed with smooth turns / `sine`), `autoSweep` (share of the screen width, 0.9), `autoTurnSec` (0.6), `autoHeight` (0–1 of the flight band, 0.4), `autoBobAmp` (0.5 units) and `autoBobHz` (0.4): the slight sine wave, `autoStart` (`random` / `continue`). Blank on other rows. |
+| QUEST+ | `threshCount` (θ grid over `minDiffFps`–`maxDiffFps`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ: 0.255 on 16:9 for closeRadius=6.0), `maxTrials`, `minTrials`, `stopSD` (fps) |
+| Autopilot (auto rows) | `autoSpeed` (world units/s, 12), `autoPath` (`linear` constant speed with smooth turns / `sine`), `autoSweep` (share of the screen width, 0.9), `autoTurnSec` (0.6), `autoHeight` (0–1 of the flight band, 0.4), `autoBobAmp` (0.5 units) and `autoBobHz` (0.4): the slight sine wave, `autoStart` (`random` / `continue`). Blank on other rows. |
 
-Not in the file, pinned in `StudyConfig`: `closeRadius` = 5.5, `crossingDeadZone` = 0.25,
+Not in the file, pinned in `StudyConfig`: `closeRadius` = 6.0, `crossingDeadZone` = 0.25,
 `fireCooldown` = 0.25 s, `revealHoldSec` = 2 s, `readyBeatSec` = 0.5 s.
 
 ## `Data/PracticeRounds.csv` — the practice phases
@@ -43,10 +42,9 @@ is altered is random. A round's reveal plays at its own base.
 `row, pos1 … posN`. Each cell is a 1-based row number in `ExperimentConfig.csv`; the row a
 session uses is `((sessionId − 1) mod rowCount) + 1`. Comment lines (`#`) are ignored.
 
-With 5 settings the shipped design is a **Williams** design of 10 rows (the 5×5 square plus
-its mirror): every setting takes every position equally often *and* every ordered pair of
-settings occurs equally often. Validated at load. Delete the file after adding rows and the game
-writes a balanced one for the new count.
+With 6 settings the shipped design is a **Williams** design of 6 rows (pos1 to pos6):
+every setting takes every position equally often *and* every ordered pair of settings
+occurs exactly once. Run participants in groups of 6 for full balance. Validated at load.
 
 ---
 

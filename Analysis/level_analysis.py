@@ -67,8 +67,14 @@ LEVEL_COLOR = {"manual": "#6250d6", "scroll": "#e87ba4", "auto": "#008300"}
 LEVEL_MARKER = {"manual": "o", "scroll": "s", "auto": "^"}
 LEVEL_LABEL = {"manual": "Manual", "scroll": "Scroll", "auto": "Auto"}
 ARROW = {"down": "↓", "up": "↑"}
-CLOSE_R = 5.5
+CLOSE_R = 6.0
 VIEW_W_16_9 = 2 * J.CAM_DIST * math.tan(math.radians(J.CAM_FOV_DEG / 2)) * 16 / 9
+
+
+def close_radius(st):
+    if hasattr(st, "shots") and "closeRadius" in st.shots and st.shots["closeRadius"].notna().any():
+        return float(st.shots["closeRadius"].dropna().iloc[0])
+    return CLOSE_R
 
 FIGURES = []          # (stem, group, needs_frames, function, description)
 
@@ -711,6 +717,7 @@ def fig_miss_cdf(st):
     s = st.shots[st.shots["main"] & st.shots["playerFired"].eq(1)]
     if s.empty:
         return None
+    cr = close_radius(st)
     fig, ax = plt.subplots(figsize=(J.COL_W, 2.3), layout="constrained")
     for lv in LEVELS:
         v = np.sort(s.loc[s["levelType"] == lv, "missDistX"].abs().dropna().to_numpy())
@@ -718,8 +725,8 @@ def fig_miss_cdf(st):
             continue
         ax.step(v, np.arange(1, len(v) + 1) / len(v), where="post", color=LEVEL_COLOR[lv], lw=1.4,
                 label=LEVEL_LABEL[lv])
-    ax.axvline(CLOSE_R, color=J.INK_2, lw=0.8, ls=(0, (3, 2)))
-    ax.text(CLOSE_R, 0.02, " hit radius", color=J.INK_2, fontsize=J.FS_SMALL, va="bottom")
+    ax.axvline(cr, color=J.INK_2, lw=0.8, ls=(0, (3, 2)))
+    ax.text(cr, 0.02, " hit radius", color=J.INK_2, fontsize=J.FS_SMALL, va="bottom")
     ax.set_xlabel("|shot X - tower X| (world units)")
     ax.set_ylabel("Share of shots")
     ax.set_ylim(0, 1.02)
@@ -744,9 +751,10 @@ def fig_auto_leadlag(st):
     if s.empty or "missAlongTravelX" not in s or s["missAlongTravelX"].isna().all():
         return None
     s = s[s["missAlongTravelX"].notna()]
+    cr = close_radius(st)
     fig, axes = plt.subplots(1, 2, figsize=(J.TEXT_W, 2.4), layout="constrained")
     ax = axes[0]
-    ax.axvspan(-CLOSE_R, CLOSE_R, color=J.OUTCOME_COLOR["hit"], alpha=0.12, lw=0)
+    ax.axvspan(-cr, cr, color=J.OUTCOME_COLOR["hit"], alpha=0.12, lw=0)
     for hit, col, lab in ((1, J.OUTCOME_COLOR["hit"], "hits"), (0, J.INK_2, "misses")):
         v = s.loc[s["isHit"] == hit, "missAlongTravelX"]
         if len(v):
@@ -882,8 +890,9 @@ def fig_relative(st):
     f = _live_frames(st)
     if f.empty:
         return None
+    cr = close_radius(st)
     fig, ax = plt.subplots(figsize=(J.COL_W, 2.3), layout="constrained")
-    ax.axvspan(-CLOSE_R, CLOSE_R, color=J.GRID, alpha=0.7, lw=0)
+    ax.axvspan(-cr, cr, color=J.GRID, alpha=0.7, lw=0)
     for lv in LEVELS:
         g = f[f["levelType"] == lv]
         if g.empty:
