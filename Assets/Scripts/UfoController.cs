@@ -25,8 +25,8 @@ namespace JndUfo
 
         [Header("Y Clamp")]
         [Tooltip("Lowest the UFO may descend (world Y). High enough that the ship's lowest point, its " +
-                 "belly turret, clears the tallest tower and its beacon: at size 1.3 that is 2.4.")]
-        public float minY = 2.4f;
+                 "belly turret, clears the tallest tower and its beacon: at size 1.8 that is 2.85.")]
+        public float minY = 2.85f;
         [Tooltip("Highest the UFO may ascend (world Y). 0 = just under the top of the view. A set value " +
                  "never takes the ship's centre above the top of the view.")]
         public float maxY = 0f;
@@ -39,7 +39,7 @@ namespace JndUfo
         [Tooltip("The ship's size, as a multiple of its scale in the scene, applied once at start. The hull, " +
                  "its turret and its trails all grow with it; the sight stays a hairline. Only the look " +
                  "changes: the flight envelope, the shot and the score all go by the ship's centre.")]
-        [Range(0.5f, 2f)] public float size = 1.3f;
+        [Range(0.5f, 2f)] public float size = 1.8f;
 
         [Header("Livery")]
         [Tooltip("Recolour the UFO in the laser's teal, so the ship, its sight and its shot read as " +
@@ -91,6 +91,9 @@ namespace JndUfo
 
         /// <summary>True once Awake has applied <see cref="size"/> to this transform's scale.</summary>
         public bool SizeApplied { get; private set; }
+
+        /// <summary>True from the ship's first frame: it has been on screen, so moving it now would be seen.</summary>
+        public bool TrackingPointer => _initialized;
 
         /// <summary>
         /// True while the UFO is withdrawn from view — between rounds, under the reset veil.
@@ -385,7 +388,10 @@ namespace JndUfo
                 if (tintHull && _hasBaseColor[i])
                 {
                     Color b = _baseColorOriginals[i];
-                    Color t = Color.Lerp(b, tint, tintStrength);
+                    float strength = (tint.b > tint.g * 1.5f && tint.b > 0.5f)
+                        ? Mathf.Max(tintStrength, 0.82f)
+                        : tintStrength;
+                    Color t = Color.Lerp(b, tint, strength);
                     t.a = b.a;
                     _tintBlock.SetColor(BaseColorId, t);
                     _tintBlock.SetColor(ColorId, t);   // built-in / legacy shaders
@@ -419,6 +425,20 @@ namespace JndUfo
 
                 r.SetPropertyBlock(_tintBlock);
             }
+        }
+
+        public void SetLivery(Color color)
+        {
+            liveryTint = color;
+            _liveryApplied = false;
+            ApplyLivery();
+
+            var flair = GetComponent<UfoFlair>();
+            if (flair != null) flair.SyncLivery(color);
+            var sight = GetComponentInChildren<WeaponSight>(includeInactive: true);
+            if (sight != null) sight.SyncLivery(color);
+            var fx = GetComponentInChildren<ShotFx>(includeInactive: true);
+            if (fx != null) fx.SyncLivery(color);
         }
 
         // The model's own colours, read once from the shared materials so every later tint is a

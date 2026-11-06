@@ -7,8 +7,8 @@ namespace JndUfo
     /// <summary>
     /// Implements input latency. Every frame the raw mouse position is pushed into a
     /// time-stamped queue; reads return the sample as it was CurrentLatencySeconds ago
-    /// (i.e. inputs are "dequeued slowly"). Uses unscaled/real time so a frame-time
-    /// spike or timeScale change does not distort the latency.
+    /// (i.e. inputs are "dequeued slowly"). Uses unscaled/real time so a long
+    /// frame or timeScale change does not distort the latency.
     /// Attach to the UFO (required by UfoController).
     /// </summary>
     [DefaultExecutionOrder(-10)]
@@ -55,6 +55,8 @@ namespace JndUfo
                 _fallbackPos += Mouse.current?.delta.ReadValue() ?? Vector2.zero;
 
             Vector2 pos = accelBuffer != null ? accelBuffer.VirtualPosition : _fallbackPos;
+            // No latency, no history: reads want the newest sample, and 2 s of frames at 500 fps is 1000 to walk.
+            if (CurrentLatencySeconds <= 0f) _buffer.Clear();
             _buffer.Enqueue(new Sample { time = now, mousePos = pos });
 
             while (_buffer.Count > 0 && now - _buffer.Peek().time > maxHistorySeconds)

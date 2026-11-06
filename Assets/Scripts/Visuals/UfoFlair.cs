@@ -4,7 +4,7 @@ using UnityEngine.Rendering;
 namespace JndUfo
 {
     /// <summary>
-    /// The UFO's life: a slow spin, a bank into the motion, a jelly squash-and-stretch and light
+    /// The UFO's life: a spin, a bank into the motion, a jelly squash-and-stretch and light
     /// trails, so the ship reads as a solid craft flying through the scene rather than a cut-out
     /// sliding across it.
     ///
@@ -64,13 +64,13 @@ namespace JndUfo
     public class UfoFlair : MonoBehaviour
     {
         [Header("Spin")]
-        [Tooltip("Turn the hull slowly about its own vertical axis, side pods and all, so the saucer " +
+        [Tooltip("Turn the hull about its own vertical axis, side pods and all, so the saucer " +
                  "reads as a solid craft rather than a flat cut-out. The belly turret does not turn: " +
                  "the shot leaves from it.")]
         public bool spin = true;
 
         [Tooltip("Degrees per second. Negative turns it the other way.")]
-        public float spinDegreesPerSec = 70f;
+        public float spinDegreesPerSec = 180f;
 
         [Tooltip("How much faster it turns flat out, as a fraction of the rate above: 0.4 is 40% " +
                  "faster at full speed. It follows the ship's smoothed speed, so the spin eases up " +
@@ -229,6 +229,14 @@ namespace JndUfo
             ApplyTrailLook();
         }
 
+        /// <summary>Updates the trails' colour when <see cref="UfoController.SetLivery"/> changes the ship's livery.</summary>
+        public void SyncLivery(Color color)
+        {
+            if (!matchLivery) return;
+            trailColor = color;
+            if (_coreTrail != null) ApplyTrailLook();
+        }
+
         // Whatever the ship did while this was off is not motion: start measuring afresh, and have
         // the trails cleared before they emit again.
         void OnEnable()
@@ -302,6 +310,9 @@ namespace JndUfo
             Pose(dt);
             UpdateTrails(free && trails, jumped);
         }
+
+        /// <summary>A jolt to the jelly: the hull squashes and rings back, as under the recoil of a shot.</summary>
+        public void Kick(float amount) => _aspectRate -= amount;
 
         /// <summary>
         /// Advances the smoothed velocity and the jelly spring over one frame in equal sub-steps of
@@ -385,7 +396,9 @@ namespace JndUfo
                 stretch      = limit > 1e-5f ? limit * Tanh(raw / limit) : 0f;
             }
             float s = Mathf.Exp(stretch);
-            _tilt.localScale = new Vector3(s, 1f / s, 1f);
+            // The autopilot's lanes read as depth: a little bigger on the near pass (UfoAutopilot.HullScale).
+            float k = _ufo != null && _ufo.Autopilot != null ? _ufo.Autopilot.HullScale : 1f;
+            _tilt.localScale = new Vector3(s * k, k / s, k);
         }
 
         /// <summary>

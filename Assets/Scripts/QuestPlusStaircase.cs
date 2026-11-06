@@ -1,40 +1,39 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace JndUfo
 {
     /// <summary>
-    /// Grid + priors for the QUEST+ frame-rate-difference staircase, built from one block of
+    /// Grid + priors for the QUEST+ frame-time-difference staircase, built from one block of
     /// Data/ExperimentConfig.csv (see StudyConfig).
     ///
-    /// The stimulus is Δ, the frame-rate difference between the two sides of the tower, in whole
-    /// frames per second. The stimulus grid is minDiffFps, minDiffFps + diffStepFps, … up to
-    /// maxDiffFps — exactly even, and whole numbers because a frame-rate cap is an integer and
-    /// QUEST+ must reason about the stimulus that was actually shown. The threshold grid spans the
-    /// same range unrounded: θ is a parameter of the curve, not something presented.
+    /// The stimulus is Δ, the frame-time difference between the two sides of the tower, in ms. The
+    /// stimulus grid steps from minDiffMs to maxDiffMs by diffStepMs, each value moved to the difference
+    /// its whole-number frame-rate cap really produces (StudyConfig.DiffGridMs), because QUEST+ must
+    /// reason about the stimulus that was actually shown. The threshold grid spans the same range
+    /// unrounded: θ is a parameter of the curve, not something presented.
     ///
     /// The slope/lapse grids follow the values used by Fu et al. (2023, PMC10700427), one of the
     /// few papers that reports concrete QUEST+ grid choices for JND estimation.
     /// </summary>
     public class QuestPlusConfig
     {
-        public float[] stimGrid;   // candidate Δ values the staircase can present (fps, whole numbers)
-        public float[] threshGrid; // candidate threshold (θ) values in the posterior (fps)
+        public float[] stimGrid;   // candidate Δ values the staircase can present (ms)
+        public float[] threshGrid; // candidate threshold (θ) values in the posterior (ms)
         public float[] slopeGrid;  // candidate Weibull slope (β) values
         public float[] lapseGrid;  // candidate lapse-rate (λ) values
 
         public float guessRate;    // fixed γ: the odds of a hit with no perception at all
         public int   maxTrials;
         public int   minTrials;        // floor before early-stop-by-precision is allowed
-        public float stopPosteriorSD;  // early-stop once posterior SD of θ ≤ this (fps); 0 = disabled
+        public float stopPosteriorSD;  // early-stop once posterior SD of θ ≤ this (ms); 0 = disabled
 
-        public static QuestPlusConfig ForFpsDiff(StudyConfig c)
+        public static QuestPlusConfig ForFrameTimeDiff(StudyConfig c)
         {
             return new QuestPlusConfig
             {
-                stimGrid   = StepGrid(c.minDiffFps, c.maxDiffFps, c.diffStepFps),
-                threshGrid = Linspace(c.minDiffFps, c.maxDiffFps, c.threshCount),
+                stimGrid   = c.DiffGridMs(),
+                threshGrid = Linspace(c.minDiffMs, c.maxDiffMs, c.threshCount),
                 slopeGrid  = Linspace(c.slopeMin, c.slopeMax, c.slopeCount),
                 lapseGrid  = Linspace(c.lapseMin, c.lapseMax, c.lapseCount),
                 guessRate  = c.guessRate,
@@ -42,17 +41,6 @@ namespace JndUfo
                 minTrials  = c.minTrials,
                 stopPosteriorSD = c.stopSD,
             };
-        }
-
-        /// <summary><paramref name="lo"/>, lo + step, lo + 2·step, … while ≤ <paramref name="hi"/>.
-        /// StudyConfig already pulls hi onto the grid, so in practice hi is the last value.</summary>
-        static float[] StepGrid(int lo, int hi, int step)
-        {
-            if (hi < lo) { int t = lo; lo = hi; hi = t; }
-            step = Mathf.Max(1, step);
-            var grid = new List<float>((hi - lo) / step + 1);
-            for (int v = lo; v <= hi; v += step) grid.Add(v);
-            return grid.ToArray();
         }
 
         static float[] Linspace(float lo, float hi, int n)
@@ -68,11 +56,11 @@ namespace JndUfo
 
     /// <summary>
     /// QUEST+ (Watson, 2017) Bayesian adaptive staircase for the frame-rate JND: picks the next
-    /// frame-rate difference Δ (fps) to present and updates its belief about the participant's
+    /// frame-time difference Δ (ms) to present and updates its belief about the participant's
     /// threshold after each response.
     ///
     /// What "isHit" means here: one side of the hidden tower runs at the base frame rate and the
-    /// other at base ∓ Δ, and the participant shoots where they think the boundary is. isHit ==
+    /// other Δ ms of frame time away, and the participant shoots where they think the boundary is. isHit ==
     /// true means the shot landed on the tower — they could feel where the frame rate changed.
     /// isHit == false means it missed, or the round ran out. So "hit" and "noticed" are the same
     /// thing throughout this class; there is no separate detection question layered on top of the
@@ -99,7 +87,7 @@ namespace JndUfo
         public int   Streak       { get; private set; } // consecutive hits, cosmetic only
         public int   BestStreak   { get; private set; }
 
-        /// <summary>SD of the θ marginal (fps) before any response — the uniform prior's. The
+        /// <summary>SD of the θ marginal (ms) before any response — the uniform prior's. The
         /// precision stop rule is a journey from here to stopPosteriorSD, which is what the HUD's
         /// progress bar measures (see RoundProgress).</summary>
         public float PriorThresholdSD { get; }
@@ -289,14 +277,14 @@ namespace JndUfo
             return (float)mean;
         }
 
-        /// <summary>Posterior mean of θ — the JND estimate (fps).</summary>
+        /// <summary>Posterior mean of θ — the JND estimate (ms).</summary>
         public float JndEstimate() => PosteriorMeanFrom(ThresholdMarginal());
 
-        /// <summary>Standard deviation of the θ posterior (fps) — shrinks as evidence accumulates.</summary>
+        /// <summary>Standard deviation of the θ posterior (ms) — shrinks as evidence accumulates.</summary>
         public float PosteriorThresholdSD() => PosteriorSD(ThresholdMarginal());
 
         /// <summary>
-        /// A quantile of the θ posterior (fps), <paramref name="p"/> in 0–1.
+        /// A quantile of the θ posterior (ms), <paramref name="p"/> in 0–1.
         ///
         /// Why this exists alongside the SD: the θ posterior is a distribution over a bounded
         /// grid, and near the ends of that grid it is skewed — the mean ± 2 SD can sit outside

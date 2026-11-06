@@ -33,6 +33,10 @@ namespace JndUfo
     ///       point where each strip of repeating scenery jumps a period, both ways, and compares the two
     ///       pictures pixel by pixel. A seamless jump changes nothing; the report gives how many pixels
     ///       changed and by how much, and both pictures are saved. Also a few views far along the world.
+    ///   Invasion.exe -jndShockFx [folder]
+    ///       The shockwave level as it plays: the ship flying its lap, photographed through a turn at either end,
+    ///       then real shockwave shots, each photographed as the blast unfolds (and a TOO EARLY press). To look at
+    ///       the effect and the flight without playing.
     ///   Invasion.exe -jndProfile [folder] [-jndWorldScroll]
     ///       What each part of the scene costs: uncapped, the UFO sweeping across the view (or, with
     ///       -jndWorldScroll, flying steadily across the endless world, the camera following), every
@@ -57,7 +61,7 @@ namespace JndUfo
     /// </summary>
     public class QaRunner : MonoBehaviour
     {
-        enum RunMode { None, Benchmark, Capture, Profile, Seams }
+        enum RunMode { None, Benchmark, Capture, Profile, Seams, ShockFx }
 
         static bool    s_parsed;
         static RunMode s_mode;
@@ -86,6 +90,7 @@ namespace JndUfo
                           : args[i] == "-jndCapture"   ? RunMode.Capture
                           : args[i] == "-jndProfile"   ? RunMode.Profile
                           : args[i] == "-jndSeams"     ? RunMode.Seams
+                          : args[i] == "-jndShockFx"   ? RunMode.ShockFx
                           : RunMode.None;
                 if (m == RunMode.None) continue;
 
@@ -181,6 +186,7 @@ namespace JndUfo
             if      (s_mode == RunMode.Benchmark) yield return Benchmark();
             else if (s_mode == RunMode.Profile)   yield return Profile();
             else if (s_mode == RunMode.Seams)     yield return Seams();
+            else if (s_mode == RunMode.ShockFx)   yield return ShockFx();
             else                                  yield return Capture();
 
             Application.Quit(0);
@@ -402,6 +408,117 @@ namespace JndUfo
             Texture2D shot = ScreenCapture.CaptureScreenshotAsTexture();
             File.WriteAllBytes(Path.Combine(_dir, fileName), shot.EncodeToPNG());
             Destroy(shot);
+        }
+
+        // ── -jndShockFx ──────────────────────────────────────────────────────
+
+        // Grabbed now, encoded at the end: a PNG takes longer to encode than the moments are apart.
+        readonly List<(string name, Texture2D shot)> _grabs = new List<(string, Texture2D)>();
+
+        IEnumerator Grab(string name)
+        {
+            yield return new WaitForEndOfFrame();
+            _grabs.Add((name, ScreenCapture.CaptureScreenshotAsTexture()));
+        }
+
+        void SaveGrabs()
+        {
+            foreach (var g in _grabs)
+            {
+                File.WriteAllBytes(Path.Combine(_dir, g.name + ".png"), g.shot.EncodeToPNG());
+                Destroy(g.shot);
+            }
+            _grabs.Clear();
+        }
+
+        // Opens a shockwave round from the top, the way a GO! hands one over, and flies it.
+        void OpenShockRound()
+        {
+            UfoAutopilot pilot = _game.Autopilot;
+            _ufo.FreezeMovement = false;
+            _ufo.SetHidden(false);
+            if (pilot != null) pilot.BeginRound();
+            _split.ResetSideTracking();
+            _split.BeginTrial();
+            _laser.SetFiringEnabled(true);
+        }
+
+        IEnumerator ShockFx()
+        {
+            StudyConfig cfg = _blocks.Find(b => b.IsShockwave);
+            if (cfg == null)
+            {
+                Debug.LogError("[QaRunner] -jndShockFx needs a shockwave row in ExperimentConfig.csv.");
+                yield break;
+            }
+            BeginBlock(cfg);
+            _game.ApplyLevel(cfg);
+            yield return null;
+
+            // The flight: a frame every 40 ms through a turn at the right end and one at the left.
+            OpenShockRound();
+            UfoAutopilot pilot = _game.Autopilot;
+            for (int side = 0; side < 2; side++)
+            {
+                float want = side == 0 ? 0.80f : 0.20f;
+                for (float end = Time.realtimeSinceStartup + 8f; Time.realtimeSinceStartup < end; )
+                {
+                    CameraRig rig = CameraRig.Instance;
+                    float l  = rig.RestViewportPointAtZ(0f, 0.5f, _ufo.fixedZ).x;
+                    float r  = rig.RestViewportPointAtZ(1f, 0.5f, _ufo.fixedZ).x;
+                    float vx = (_ufo.transform.position.x - l) / (r - l);
+                    if (side == 0 ? (vx > want && pilot.VelocityX > 0f) : (vx < want && pilot.VelocityX < 0f)) break;
+                    yield return null;
+                }
+                float t0 = Time.realtimeSinceStartup;
+                for (int k = 0; k < 16; k++)
+                {
+                    yield return WaitUntil(t0 + 0.05f * k);
+                    yield return Grab(string.Format(CultureInfo.InvariantCulture, "flight_{0}_{1:00}", side == 0 ? "right" : "left", k));
+                }
+            }
+
+            // The shots. The first after a flip (DESTROYED), the second too early, the third after a flip again.
+            float[] moments = { 0.02f, 0.05f, 0.08f, 0.12f, 0.18f, 0.25f, 0.35f, 0.5f, 0.7f, 0.9f, 1.2f, 1.6f };
+            string[] tags = { "detected", "early", "detected2" };
+            for (int i = 0; i < tags.Length; i++)
+            {
+                if (i > 0)
+                {
+                    while (_game.IsRevealing) yield return null;
+                    yield return null;
+                    OpenShockRound();
+                    yield return null;
+                }
+                if (tags[i] == "early")
+                {
+                    yield return new WaitForSecondsRealtime(0.4f);
+                }
+                else
+                {
+                    ShockwaveController sw = ShockwaveController.Instance;
+                    float limit = Time.realtimeSinceStartup + 12f;
+                    while (Time.realtimeSinceStartup < limit && (sw == null || !sw.WindowOpen)) yield return null;
+                    yield return new WaitForSecondsRealtime(0.1f);
+                }
+                float shotAt = Time.realtimeSinceStartup;
+                _laser.Fire();
+                foreach (float m in moments)
+                {
+                    yield return WaitUntil(shotAt + m);
+                    yield return Grab(string.Format(CultureInfo.InvariantCulture, "shot_{0}_t{1:0.00}", tags[i], m));
+                }
+                if (tags[i] == "early")
+                {
+                    // A forgiven press leaves the round live: close it, so the next one opens clean.
+                    _laser.SetFiringEnabled(false);
+                    _split.CancelTrial();
+                }
+            }
+            while (_game.IsRevealing) yield return null;
+            int n = _grabs.Count;
+            SaveGrabs();
+            Debug.Log($"[QaRunner] {n} screenshot(s) in {_dir}");
         }
 
         // ── -jndSeams ────────────────────────────────────────────────────────

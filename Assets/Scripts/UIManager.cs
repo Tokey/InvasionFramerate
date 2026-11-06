@@ -34,7 +34,7 @@ public class UIManager : MonoBehaviour
              "TURN THIS OFF for anything a participant plays - it spells out the very difference " +
              "the staircase is asking them to find, and every trial after they read it measures " +
              "their reading rather than their perception.")]
-    public bool showDebug = true;
+    public bool showDebug = false;
 
     public TMP_Text debugText;
 
@@ -61,6 +61,10 @@ public class UIManager : MonoBehaviour
     [Header("Miss Vignette  (Red)")]
     public Color missRedColor = new(1f, 0.08f, 0.08f, 1f);
     [Range(0f, 1f)] public float missRedAlpha = 0.75f;
+
+    [Header("Shockwave Vignette  (Violet)")]
+    public Color shockwaveFlashColor = new(0.20f, 0.02f, 0.95f, 1f);
+    [Range(0f, 1f)] public float shockwaveAlpha = 0.28f;
 
     [Header("Vignette Shape")]
     [Tooltip("Normalized distance from center where vignette begins. 0.5 = half screen.")]
@@ -158,11 +162,19 @@ public class UIManager : MonoBehaviour
     [Range(1f, 2.5f)] public float tallyPopScale = 1.7f;
     [Min(0.05f)]      public float tallyPopSec   = 0.34f;
 
-    [Header("Ran-Out Callout")]
+    [Header("Ran-Out & Shockwave Callouts")]
     [Tooltip("The round's time limit expired with no shot fired.")]
     public string calloutOutOfTimeText = "OUT OF TIME!";
     [Tooltip("The UFO crossed the tower more times than the round allows, with no shot fired.")]
     public string calloutCrossingCapText = "TOO MANY PASSES!";
+    [Tooltip("Shockwave: fired inside the detection window after a frame-rate flip.")]
+    public string calloutShockwaveHitText = "DESTROYED!";
+    [Tooltip("Shockwave: fired before any frame-rate flip occurred.")]
+    public string calloutEarlyText = "TOO EARLY!";
+    [Tooltip("Shockwave: fired after a flip's detection window had already closed.")]
+    public string calloutLateText = "TOO LATE!";
+    [Tooltip("Shockwave: all allowed flips passed unanswered.")]
+    public string calloutShockwaveTimeoutText = "CHANCES MISSED!";
 
     [Header("Hit / Miss Callout")]
     public string calloutHitText  = "Hit!";
@@ -363,10 +375,40 @@ public class UIManager : MonoBehaviour
     public void DisplayOutcomeCallout(TrialOutcome outcome, float totalScore)
     {
         RefreshScoreText();
-        TriggerMissFlash(tallyRanOutColor);
-        ShowCallout(false,
-                    outcome == TrialOutcome.CrossingCap ? calloutCrossingCapText : calloutOutOfTimeText,
-                    tallyRanOutColor);
+
+        switch (outcome)
+        {
+            case TrialOutcome.Detected:
+                // The blast's own violet flash is already up: a green wash over it would fight it.
+                PulseScore(new Color(0.2f, 1f, 0.3f, 1f), positive: true);
+                ShowCallout(true, calloutShockwaveHitText, calloutHitColor);
+                break;
+
+            case TrialOutcome.Early:
+                TriggerMissFlash(tallyRanOutColor);
+                ShowCallout(false, calloutEarlyText, tallyRanOutColor);
+                break;
+
+            case TrialOutcome.Late:
+                TriggerMissFlash();
+                ShowCallout(false, calloutLateText, calloutMissColor);
+                break;
+
+            case TrialOutcome.Timeout:
+                TriggerMissFlash(tallyRanOutColor);
+                ShowCallout(false, calloutShockwaveTimeoutText, tallyRanOutColor);
+                break;
+
+            case TrialOutcome.CrossingCap:
+                TriggerMissFlash(tallyRanOutColor);
+                ShowCallout(false, calloutCrossingCapText, tallyRanOutColor);
+                break;
+
+            default:
+                TriggerMissFlash(tallyRanOutColor);
+                ShowCallout(false, calloutOutOfTimeText, tallyRanOutColor);
+                break;
+        }
     }
 
     /// <summary>
@@ -658,7 +700,7 @@ public class UIManager : MonoBehaviour
             _tallyCounted = total;
 
             _tallyOutcomes.Add(scoreManager.LastWasHit ? Pip.Hit
-                               : scoreManager.LastOutcome == TrialOutcome.Shot ? Pip.Miss
+                               : scoreManager.LastOutcome.IsPlayerShot() ? Pip.Miss
                                : Pip.RanOut);
             while (_tallyOutcomes.Count > tallySlots) _tallyOutcomes.RemoveAt(0);
 
@@ -941,6 +983,14 @@ public class UIManager : MonoBehaviour
     }
 
     // ── Flash ─────────────────────────────────────────────────────────────
+
+    public void TriggerShockwaveFlash()
+    {
+        if (_vignette == null) return;
+        StopFlash();
+        _vignette.color = new Color(shockwaveFlashColor.r, shockwaveFlashColor.g, shockwaveFlashColor.b, Mathf.Min(shockwaveAlpha, 0.14f));
+        _flashCoroutine = StartCoroutine(VignetteRoutine());
+    }
 
     void TriggerHitFlash()
     {

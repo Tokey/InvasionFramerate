@@ -48,33 +48,34 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from jnd_analysis import Grid, Posterior, effective_config  # noqa: E402 - the exact QUEST+ port
+from jnd_analysis import Grid, Posterior, altered_fps_for  # noqa: E402 - the exact QUEST+ port
 
 VIEW_W = 2 * 100 * math.tan(math.radians(7.5)) * 16 / 9      # play-plane width on 16:9: 46.81
-CLOSE_R, DEAD_ZONE, PAN, PERIOD, SPAWN = 6.0, 0.25, 6.0, 96.0, 0.8
+CLOSE_R, DEAD_ZONE, PAN, PERIOD, SPAWN = 6.0, 0.25, 6.0, 96.0, 0.6
 GO_SEC, GAP_SEC = 0.5, 3.3
-FLOOR_Y, CEIL_Y = 2.4, 15.9
+FLOOR_Y, CEIL_Y = 2.85, 15.9
 COUNTS_PER_UNIT = 25.0                                         # mouse counts per world unit flown
 PRACTICE = [(30, 60), (60, 500), (60, 144), (144, 500), (240, 500)]
 
 CONFIG_COLUMNS = [
-    "levelType", "baseFps", "direction", "maxDiffFps", "minDiffFps", "diffStepFps", "alteredSide", "frameLimiter",
+    "levelType", "baseFps", "direction", "maxDiffMs", "minDiffMs", "diffStepMs", "alteredSide", "frameLimiter",
     "maxCrossingsPerRound", "roundTimeoutSec", "hitPoints", "missPoints", "threshCount", "slopeMin", "slopeMax",
     "slopeCount", "lapseMin", "lapseMax", "lapseCount", "guessRate", "maxTrials", "minTrials", "stopSD",
     "scrollFollow", "autoSpeed", "autoPath", "autoSweep", "autoTurnSec", "autoHeight", "autoBobAmp", "autoBobHz",
-    "autoStart"]
-_GRID = "50,1,7,10,0,0.06,4"
+    "autoStart", "swFlipDelayMinSec", "swFlipDelayMaxSec", "swWindowSec",
+    "swMaxEarlyPerRound", "maxFlipsPerRound", "showDebug"]
+_GRID = "1,7,10,0,0.06,4"
 _AUTO = "8,linear,0.9,0.6,0.4,0.5,0.4,random"
 DEFAULT_ROWS = [
-    f"manual,60,down,59,1,1,random,unity,15,15,100,-10,{_GRID},0.235,50,8,5,,,,,,,,,",
-    f"scroll,144,down,143,2,2,random,unity,15,15,100,-10,{_GRID},0.235,50,8,10,locked,,,,,,,,",
-    f"auto,500,down,499,5,5,random,unity,15,20,100,-10,{_GRID},0.248,50,8,20,,{_AUTO}",
-    f"auto,60,up,440,5,5,random,unity,15,20,100,-10,{_GRID},0.248,50,8,20,,{_AUTO}",
-    f"manual,144,up,356,4,4,random,unity,15,15,100,-10,{_GRID},0.235,50,8,15,,,,,,,,,",
-    f"auto,60,down,59,1,1,random,unity,15,20,100,-10,{_GRID},0.248,50,8,5,,{_AUTO}",
+    f"manual,60,down,50,0.5,0.5,random,unity,15,15,100,-10,100,{_GRID},0.235,50,8,0.5,,,,,,,,,",
+    f"scroll,144,down,50,0.5,0.5,random,unity,15,15,100,-10,100,{_GRID},0.235,50,8,0.5,locked,,,,,,,,",
+    f"auto,500,down,98,0.5,0.5,random,unity,15,20,100,-10,196,{_GRID},0.248,50,8,0.5,,{_AUTO}",
+    f"auto,60,up,14.5,0.5,0.5,random,unity,15,20,100,-10,29,{_GRID},0.248,50,8,0.5,,{_AUTO}",
+    f"manual,144,up,4.5,0.5,0.5,random,unity,15,15,100,-10,9,{_GRID},0.235,50,8,0.5,,,,,,,,,",
+    f"auto,60,down,50,0.5,0.5,random,unity,15,20,100,-10,100,{_GRID},0.248,50,8,0.5,,{_AUTO}",
 ]
 # The observer's threshold, as a Weber fraction of the base, by level; 'up' a little easier.
-WEBER = {"manual": 0.30, "scroll": 0.22, "auto": 0.38}
+WEBER = {"manual": 0.30, "scroll": 0.22, "auto": 0.38, "shockwave": 0.34}
 UP_FACTOR = 0.85
 
 IDENTITY = ["sessionId", "runId", "blockIndex", "blockOrdinal", "latinRow", "latinOrder", "baseFps", "direction",
@@ -82,8 +83,9 @@ IDENTITY = ["sessionId", "runId", "blockIndex", "blockOrdinal", "latinRow", "lat
 SESSION_COLS = IDENTITY + [
     "displayHz", "resolution", "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
     "jndDiffFps", "jndAlteredFps", "jndFrameTimeDiffMs", "sd", "priorSd", "jndMedianDiffFps", "jndModeDiffFps",
-    "jndCI95LoDiffFps", "jndCI95HiDiffFps", "jndRangeEdge", "slopeEstimate", "lapseEstimate", "staircaseTrials",
-    "lastDiffFps", "trials", "shotsFired", "hits", "accuracy", "score", "roundsExpired", "roundsCrossingCapped",
+    "jndCI95LoDiffFps", "jndCI95HiDiffFps", "jndMedianDiffMs", "jndModeDiffMs", "jndCI95LoDiffMs", "jndCI95HiDiffMs",
+    "jndRangeEdge", "slopeEstimate", "lapseEstimate", "staircaseTrials",
+    "lastDiffFps", "lastDiffMs", "trials", "shotsFired", "hits", "accuracy", "score", "roundsExpired", "roundsCrossingCapped",
     "avgRoundDurationSec", "avgCrossingsPerRound", "shotsWithoutCrossing", "avgSinceLastCrossingSec",
     "avgMissDistX", "avgMissDistXMissesOnly", "medianMissDistX", "sdMissDistX", "maxMissDistX",
     "totalMousePathPx", "avgMouseSpeedPxPerSec", "peakMouseSpeedPxPerSec", "totalUfoPathWorld", "frameCount",
@@ -92,15 +94,15 @@ SESSION_COLS = IDENTITY + [
     "guessRateScreen", "avgFirstCrossingSec", "avgCrossingSpeed", "avgShotUfoSpeed", "medianSinceLastCrossingSec",
     "avgMissAlongTravelX"]
 SHOT_COLS = IDENTITY + [
-    "closeRadius", "phase", "phaseStartIso", "roundNumber", "timeSinceStartSec", "diffFps", "alteredFps",
+    "closeRadius", "phase", "phaseStartIso", "roundNumber", "timeSinceStartSec", "diffFps", "diffMs", "alteredFps",
     "alteredSide", "measuredBaseFps", "measuredAlteredFps", "baseSideSec", "alteredSideSec", "lateFrames",
     "crossings", "lastCrossingAtSec", "sinceLastCrossingSec", "outcome", "playerFired", "isHit",
     "countedByStaircase", "totalScore", "trialStartSec", "firedAtSec", "roundDurationSec", "hitX", "missDistX",
-    "towerX", "ufoY", "side", "threshDiffFps", "sd", "slopeEstimate", "lapseEstimate", "camX", "ufoViewportX",
+    "towerX", "ufoY", "side", "threshDiffFps", "threshDiffMs", "sd", "slopeEstimate", "lapseEstimate", "camX", "ufoViewportX",
     "towerViewportX", "ufoVelX", "ufoXAtStart", "firstCrossingAtSec", "meanCrossingSpeed", "lastCrossingSpeed"]
 PLAYER_COLS = IDENTITY + [
     "phase", "phaseStartIso", "roundNumber", "frameIndex", "timeSinceStartSec", "unscaledDeltaMs", "targetFps",
-    "pacedBy", "diffFps", "alteredSide", "side", "crossed", "mouseX", "mouseY", "mouseDeltaX", "mouseDeltaY",
+    "pacedBy", "diffFps", "alteredSide", "side", "crossed", "shockwaveFastPhase", "shockwaveWindow", "shockwaveFlips", "mouseX", "mouseY", "mouseDeltaX", "mouseDeltaY",
     "ufoX", "ufoY", "towerX", "leftButtonDown", "leftButtonPressed", "fireKeyDown", "shotFired", "shotHitX",
     "camX"]
 
@@ -172,6 +174,19 @@ def manual_gamma():
                  / (u_hi - u_lo))
 
 
+def shockwave_gamma(row):
+    d_min, d_max = num(row, "swFlipDelayMinSec", 1.0), num(row, "swFlipDelayMaxSec", 3.5)
+    w = num(row, "swWindowSec", 0.9)
+    spread = d_max - d_min
+    return min(1.0, max(0.0, w / spread)) if spread > 1e-4 else 1.0
+
+
+def alt_at(base, direction, diff_ms):
+    """StudyConfig.AlteredFpsAt: a threshold (ms) as the altered side's frame rate, unrounded."""
+    ms = 1000.0 / base + (-diff_ms if direction == "up" else diff_ms)
+    return 1000.0 / ms if ms > 0 else math.nan
+
+
 # ------------------------------------------------------------------ config
 
 def load_rows(path):
@@ -229,8 +244,11 @@ class Session:
         self.mouse = np.array([960.0, 540.0])
 
     def threshold(self, level, base, direction):
+        """The observer's threshold in ms of frame time: the Weber fraction of the base rate, converted."""
         w = WEBER[level] * self.skill * (UP_FACTOR if direction == "up" else 1.0)
-        return max(1.0, w * base)
+        fps = max(1.0, w * base)
+        alt = base + fps if direction == "up" else max(1.0, base - fps)
+        return abs(1000.0 / alt - 1000.0 / base)
 
     # one phase: practice (pairs) or a main block (QUEST+)
     def phase(self, row, block_index, ordinal, practice):
@@ -283,17 +301,19 @@ class Session:
                 base_r, alt_r, diff = hi, lo, hi - lo
                 p_det = 0.95
             else:
-                diff = int(round(post.next_stimulus()))
+                x_ms = post.next_stimulus()
                 base_r = int(num(row, "baseFps", 60))
-                alt_r = max(1, base_r + diff if direction == "up" else base_r - diff)
-                p_det = (1 - 0.02) * (1 - math.exp(-((diff / theta) ** 2.5)))
+                alt_r = altered_fps_for(base_r, direction, x_ms)
+                diff = abs(alt_r - base_r)
+                p_det = (1 - 0.02) * (1 - math.exp(-((x_ms / theta) ** 2.5)))
             res = self.play_round(base_r, alt_r, diff, p_det, timeout, cap_crossings, k == 0, crossing_speeds)
             self.score += hit_pts if res["isHit"] else miss_pts
             res["totalScore"] = self.score
             if post is not None:
-                post.update(diff, res["isHit"])
+                post.update(x_ms, res["isHit"])
                 li = post.light()
-                res.update(threshDiffFps=li["theta"], sd=li["sd"], slopeEstimate=li["beta"], lapseEstimate=li["lam"])
+                res.update(threshDiffMs=li["theta"], threshDiffFps=abs(alt_at(base_r, direction, li["theta"]) - base_r),
+                           sd=li["sd"], slopeEstimate=li["beta"], lapseEstimate=li["lam"])
                 n = len(shots_here) + 1
                 if n >= grid.max_trials:
                     end_reason = "maxTrials"
@@ -313,7 +333,8 @@ class Session:
         self.clock = self.phase_start + timedelta(seconds=self.t + 1.0)
 
     # ---- frames
-    def emit(self, base, cap, pace, diff, alt_side, side, crossed, tower_x, dmouse, live, fired=None, click=False):
+    def emit(self, base, cap, pace, diff, alt_side, side, crossed, tower_x, dmouse, live, fired=None, click=False,
+             sw_fast=False, sw_win=False, sw_evt=0):
         """One frame row. `cap`/`pace` are what this frame's end chooses for the NEXT frame; the row itself
         carries the previous choice (targetFps, pacedBy), the one this frame's duration measures."""
         rng = self.rng
@@ -330,7 +351,8 @@ class Session:
                    roundNumber=str(self.cur_round), frameIndex=str(self.frame_index),
                    timeSinceStartSec=F(self.t, 5), unscaledDeltaMs=F(dt * 1000, 4), targetFps=str(target),
                    pacedBy=self.prev_pace, diffFps=str(diff) if alt_side else "", alteredSide=alt_side, side=side,
-                   crossed=B(crossed), mouseX=F(self.mouse[0], 2), mouseY=F(self.mouse[1], 2),
+                   crossed=B(crossed), shockwaveFastPhase=B(sw_fast), shockwaveWindow=B(sw_win),
+                   shockwaveFlips=str(sw_evt), mouseX=F(self.mouse[0], 2), mouseY=F(self.mouse[1], 2),
                    mouseDeltaX=F(dmouse[0], 3), mouseDeltaY=F(dmouse[1], 3), ufoX=F(self.ufo_x, 4),
                    ufoY=F(self.ufo_y, 4), towerX=F(tower_x, 4), leftButtonDown=B(click),
                    leftButtonPressed=B(click), fireKeyDown="0", shotFired=B(fired is not None),
@@ -370,7 +392,7 @@ class Session:
             self.cam_x = self.ufo_x
         bx = self.cam_x + float(rng.uniform(-SPAWN * VIEW_W / 2, SPAWN * VIEW_W / 2))
         altered = "Left" if rng.random() < 0.5 else "Right"
-        if lv == "auto":
+        if lv in ("auto", "shockwave"):
             sweep = num(self.row, "autoSweep", 0.9) if not self.practice else 0.9
             self.auto = dict(mode=(self.row.get("autoPath") or "linear"), v=num(self.row, "autoSpeed", 8),
                              turn=num(self.row, "autoTurnSec", 0.6), sweep=sweep,
@@ -404,7 +426,14 @@ class Session:
             a_s = altered if not flip else ("Left" if altered == "Right" else "Right")
             return tx, s, a_s
 
+        sw_alt_phase = False
+        sw_win_closes = 0.0
+        sw_evt = 0
+        sw_next_flip = math.inf
+
         def cap_now():
+            if lv == "shockwave":
+                return (alt, "altered") if sw_alt_phase else (base, "base")
             on_alt = (side_sign > 0) == (altered == "Right")
             return (alt, "altered") if on_alt else (base, "base")
 
@@ -452,7 +481,7 @@ class Session:
             # decide to fire on this frame?
             fire = False
             if outcome is None:
-                if lv == "auto":
+                if lv in ("auto", "shockwave"):
                     if detect and not give_up and crossings >= passes and not math.isnan(last_cross):
                         fire = self.t - last_cross >= rt
                     elif (not detect) and not give_up:
@@ -471,7 +500,7 @@ class Session:
                 break
             # move
             dt_est = 1.0 / cap
-            if lv == "auto":
+            if lv in ("auto", "shockwave"):
                 self.tau += dt_est
                 old = self.ufo_x
                 self.place_auto()
@@ -517,9 +546,19 @@ class Session:
         vel_resp = self.trail_velocity()      # over the frames before this one, as the game's trail is
         played = outcome is None
         tx, s_plain, a_s = cells(self.ufo_x)
+        if lv == "shockwave":
+            tx, s_plain, a_s = bx, "Left", altered
         if played:
-            outcome = "shot"
             fired_x = self.ufo_x
+            if lv == "shockwave":
+                if sw_win_closes > 0 and self.t < sw_win_closes:
+                    outcome = "detected"
+                elif sw_evt == 0:
+                    outcome = "early"
+                else:
+                    outcome = "late"
+            else:
+                outcome = "shot"
         self.emit(base, base, "", diff, "", s_plain, False, tx, (0.0, 0.0), True,
                   fired=fired_x if played else self.ufo_x, click=played)
         fire_t = self.t + 1e-4
@@ -530,13 +569,14 @@ class Session:
             meas[kind] = (len(ds) / sum(ds) if ds else math.nan, sum(ds))
         tower_x, flip = nearest(self.ufo_x)
         alt_side = altered if not flip else ("Left" if altered == "Right" else "Right")
-        miss = (fired_x - tower_x) if played else math.nan
-        is_hit = played and abs(miss) <= CLOSE_R
+        miss = math.nan if (not played or lv == "shockwave") else (fired_x - tower_x)
+        is_hit = (outcome == "detected") if lv == "shockwave" else (played and abs(miss) <= CLOSE_R)
         ref_x = fired_x if played else self.ufo_x
         res = dict(self.id_cells)
         res.update(
             baseFps=base, closeRadius=CLOSE_R, phase="practice" if self.practice else "main",
             phaseStartIso=self.phase_iso, roundNumber=self.cur_round, timeSinceStartSec=self.t, diffFps=diff,
+            diffMs=abs(1000.0 / alt - 1000.0 / base),
             alteredFps=alt, alteredSide=alt_side, measuredBaseFps=meas["base"][0], measuredAlteredFps=meas["altered"][0],
             baseSideSec=meas["base"][1], alteredSideSec=meas["altered"][1], lateFrames=0, crossings=crossings,
             lastCrossingAtSec=last_cross, sinceLastCrossingSec=(fire_t - last_cross) if played else math.nan,
@@ -545,7 +585,7 @@ class Session:
             roundDurationSec=(fire_t if played else self.t) - arm_t, hitX=fired_x if played else math.nan,
             missDistX=miss, towerX=tower_x, ufoY=self.ufo_y,
             side=("Right" if (ref_x - tower_x) >= 0 else "Left"),
-            threshDiffFps=math.nan, sd=math.nan, slopeEstimate=math.nan, lapseEstimate=math.nan,
+            threshDiffFps=math.nan, threshDiffMs=math.nan, sd=math.nan, slopeEstimate=math.nan, lapseEstimate=math.nan,
             camX=self.cam_x, ufoViewportX=0.5 + (ref_x - self.cam_x) / VIEW_W,
             towerViewportX=0.5 + (tower_x - self.cam_x) / VIEW_W, ufoVelX=vel_resp, ufoXAtStart=x_start,
             firstCrossingAtSec=first_cross, meanCrossingSpeed=float(np.mean(speeds)) if speeds else math.nan,
@@ -572,10 +612,14 @@ class Session:
         direction = (row.get("direction") or "down").lower()
         sm = post.summary()
         jnd = sm["theta"]
-        alt_j = base + jnd if direction == "up" else base - jnd
+        alt_j = alt_at(base, direction, jnd)
+
+        def diff_fps(ms):
+            return abs(alt_at(base, direction, ms) - base)
+
         fired = [s for s in shots if s["playerFired"]]
-        miss_abs = [abs(s["missDistX"]) for s in fired]
-        misses = [abs(s["missDistX"]) for s in fired if not s["isHit"]]
+        miss_abs = [abs(s["missDistX"]) for s in fired if math.isfinite(s["missDistX"])]
+        misses = [abs(s["missDistX"]) for s in fired if not s["isHit"] and math.isfinite(s["missDistX"])]
         dts = np.array([float(f["unscaledDeltaMs"]) for f in fr])
         tgt = np.array([float(f["targetFps"]) for f in fr])
         paced = np.array([f["pacedBy"] for f in fr])
@@ -589,11 +633,12 @@ class Session:
         uy = np.array([float(f["ufoY"]) for f in fr])
         play = float(fr[-1]["timeSinceStartSec"]) if fr else math.nan
         along = [s["missDistX"] * math.copysign(1, s["ufoVelX"]) for s in fired
-                 if math.isfinite(s["ufoVelX"]) and abs(s["ufoVelX"]) > 0.5]
+                 if math.isfinite(s["missDistX"]) and math.isfinite(s["ufoVelX"]) and abs(s["ufoVelX"]) > 0.5]
         since = [s["sinceLastCrossingSec"] for s in fired if math.isfinite(s["sinceLastCrossingSec"])]
         firsts = [s["firstCrossingAtSec"] - s["trialStartSec"] for s in shots if math.isfinite(s["firstCrossingAtSec"])]
         lv = row["levelType"] or "manual"
-        g_screen = (auto_gamma(num(row, "autoSweep", 0.9), row.get("autoPath") or "linear", num(row, "autoSpeed", 8),
+        g_screen = (shockwave_gamma(row) if lv == "shockwave" else
+                    auto_gamma(num(row, "autoSweep", 0.9), row.get("autoPath") or "linear", num(row, "autoSpeed", 8),
                                num(row, "autoTurnSec", 0.6)) if lv == "auto" else manual_gamma())
         start = self.phase_start
         end = start + timedelta(seconds=play + 0.2)
@@ -605,14 +650,17 @@ class Session:
         r.update(
             baseFps=str(base), displayHz="500.00", resolution="1920x1080", startIso=iso(start), endIso=iso(end),
             sessionDurationSec=F((end - start).total_seconds(), 3), playDurationSec=F(play, 3), endReason=end_reason,
-            jndDiffFps=F(jnd, 3), jndAlteredFps=F(alt_j, 3),
-            jndFrameTimeDiffMs=F(abs(1000 / alt_j - 1000 / base) if alt_j > 0 else math.nan, 4), sd=F(sm["sd"], 3),
-            priorSd=F(prior_sd, 3), jndMedianDiffFps=F(sm["median_cs"], 3), jndModeDiffFps=F(sm["mode"], 3),
-            jndCI95LoDiffFps=F(sm["ci_lo_cs"], 3), jndCI95HiDiffFps=F(sm["ci_hi_cs"], 3), jndRangeEdge=sm["range_edge"],
+            jndDiffFps=F(diff_fps(jnd), 3), jndAlteredFps=F(alt_j, 3), jndFrameTimeDiffMs=F(jnd, 4), sd=F(sm["sd"], 3),
+            priorSd=F(prior_sd, 3), jndMedianDiffFps=F(diff_fps(sm["median_cs"]), 3),
+            jndModeDiffFps=F(diff_fps(sm["mode"]), 3), jndCI95LoDiffFps=F(diff_fps(sm["ci_lo_cs"]), 3),
+            jndCI95HiDiffFps=F(diff_fps(sm["ci_hi_cs"]), 3), jndMedianDiffMs=F(sm["median_cs"], 4),
+            jndModeDiffMs=F(sm["mode"], 4), jndCI95LoDiffMs=F(sm["ci_lo_cs"], 4), jndCI95HiDiffMs=F(sm["ci_hi_cs"], 4),
+            jndRangeEdge=sm["range_edge"],
             slopeEstimate=F(sm["beta"], 3), lapseEstimate=F(sm["lam"], 4), staircaseTrials=str(len(shots)),
-            lastDiffFps=F(shots[-1]["diffFps"], 0), trials=str(len(shots)), shotsFired=str(len(fired)),
+            lastDiffFps=F(shots[-1]["diffFps"], 0), lastDiffMs=F(shots[-1]["diffMs"], 3), trials=str(len(shots)),
+            shotsFired=str(len(fired)),
             hits=str(sum(s["isHit"] for s in shots)), accuracy=F(sum(s["isHit"] for s in shots) / len(shots), 4),
-            score=F(self.score, 2), roundsExpired=str(sum(s["outcome"] == "expired" for s in shots)),
+            score=F(self.score, 2), roundsExpired=str(sum(s["outcome"] in ("expired", "timeout") for s in shots)),
             roundsCrossingCapped=str(sum(s["outcome"] == "crossingCap" for s in shots)),
             avgRoundDurationSec=F(float(np.mean([s["roundDurationSec"] for s in shots])), 3),
             avgCrossingsPerRound=F(float(np.mean([s["crossings"] for s in shots])), 3),
@@ -667,7 +715,7 @@ class Session:
         decimals = dict(timeSinceStartSec=4, measuredBaseFps=2, measuredAlteredFps=2, baseSideSec=3,
                         alteredSideSec=3, lastCrossingAtSec=4, sinceLastCrossingSec=4, totalScore=2,
                         trialStartSec=4, firedAtSec=4, roundDurationSec=4, hitX=4, missDistX=4, towerX=4, ufoY=4,
-                        threshDiffFps=3, sd=3, slopeEstimate=3, lapseEstimate=4, camX=4, ufoViewportX=4,
+                        threshDiffFps=3, threshDiffMs=4, diffMs=3, sd=3, slopeEstimate=3, lapseEstimate=4, camX=4, ufoViewportX=4,
                         towerViewportX=4, ufoVelX=3, ufoXAtStart=4, firstCrossingAtSec=4, meanCrossingSpeed=3,
                         lastCrossingSpeed=3, closeRadius=3)
 

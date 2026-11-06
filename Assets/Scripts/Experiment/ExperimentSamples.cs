@@ -3,7 +3,10 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// One round: the frame-rate split it presented, how faithfully each side was delivered, how
+    /// One press of the fire button, or one round running out. Every press in an open phase has its row, those that
+    /// fired nothing included (outcome cooldown / lockout / notLive), with the state of the game at that instant, so a
+    /// round has as many rows as it had presses; <see cref="roundEnded"/> marks the row that closed it. It carries: the
+    /// frame-rate split it presented, how faithfully each side was delivered, how
     /// the participant explored it, where the shot landed, and the QUEST+ posterior immediately
     /// after the response was folded in.
     ///
@@ -20,10 +23,12 @@ namespace JndUfo
         public int   baseFps;
 
         // ── The stimulus ─────────────────────────────────────────────────────
-        /// <summary>Δ: how far the altered side's frame rate is from the base (fps). The stimulus
-        /// QUEST+ (or the practice ladder) chose for this round.</summary>
+        /// <summary>Δ: how far the altered side's frame time is from the base's (ms), as its whole-number
+        /// cap really delivers it. The stimulus QUEST+ (or the practice ladder) chose for this round.</summary>
+        public float  diffMs;
+        /// <summary>The same Δ as a frame-rate difference (fps).</summary>
         public int    diffFps;
-        /// <summary>The altered side's frame-rate cap: base − Δ or base + Δ.</summary>
+        /// <summary>The altered side's frame-rate cap: base ∓ diffFps.</summary>
         public int    alteredFps;
         /// <summary>"Left" or "Right" of the tower — drawn per round unless the config pins it.</summary>
         public string alteredSide;
@@ -82,8 +87,9 @@ namespace JndUfo
 
         // ── QUEST+ posterior after this response ─────────────────────────────
         // Blank (NaN) on practice rows: practice never reaches QUEST+.
-        public float threshDiffFps;        // θ̂, fps difference
-        public float sd;                   // SD of the θ marginal (fps)
+        public float threshDiffMs;         // θ̂, frame-time difference (ms): what QUEST+ estimates
+        public float threshDiffFps;        // θ̂ restated as a frame-rate difference (fps)
+        public float sd;                   // SD of the θ marginal (ms)
         public float slopeEstimate;        // β̂
         public float lapseEstimate;        // λ̂ — the curve's ceiling is 1 − λ
 
@@ -106,6 +112,51 @@ namespace JndUfo
         /// NaN with no crossing. In an auto level it is the autopilot's speed; flying by hand, the participant's.</summary>
         public float meanCrossingSpeed;
         public float lastCrossingSpeed;
+
+        // ── The press, and the state it met ──────────────────────────────────
+        /// <summary>Which press of the round this is, counting shots fired: 1, 2, ... A press that fired nothing carries
+        /// the number the next shot will have.</summary>
+        public int   attemptInRound;
+        /// <summary>This row closed the round (the next row is a new round).</summary>
+        public bool  roundEnded;
+        /// <summary>What made the press: "mouse", "key", or blank when a round ran out.</summary>
+        public string inputDevice;
+        /// <summary>Whether firing was enabled when the press came.</summary>
+        public bool  firingEnabled;
+        /// <summary>The cap pacing this frame, as a rate and as a frame time, and whose it was.</summary>
+        public int   capFps;
+        public float capFrameMs;
+        public PerturbationController.Pace pacedBy;
+        /// <summary>Shockwave: whether the response window was open at the press.</summary>
+        public bool  windowOpen;
+
+        // ── The last change of frame rate before it ──────────────────────────
+        /// <summary>How long after the change the press came (= sinceLastCrossingSec), and how many frames.</summary>
+        public float reactionSec;
+        public int   framesSinceLastChange;   // -1 = no change yet
+        /// <summary>Changes of frame rate since the last press.</summary>
+        public int   changesSinceLastPress;
+        /// <summary>How much it changed: the caps either side of it, as rates and frame times, and the signed change of
+        /// frame time (+ = frames got longer). 0 / NaN before the round's first change.</summary>
+        public int   changeFromFps, changeToFps;
+        public float changeFromMs, changeToMs, changeDeltaMs;
+        /// <summary>"slower", "faster", or blank.</summary>
+        public string changeDir;
+        /// <summary>Shockwave: the random wait that ended in the last flip, and the response window.</summary>
+        public float foreperiodSec, windowSec;
+        /// <summary>Every change of frame rate so far this round, phase clock, ';'-separated.</summary>
+        public string changeTimesSec;
+        /// <summary>Where the ship was at the change.</summary>
+        public float changeUfoX, changeUfoY;
+
+        // ── Presses so far this round, this row included ─────────────────────
+        public int   earlyPresses, latePresses, lockoutPresses, cooldownPresses, notLivePresses;
+
+        /// <summary>The ship's X at the press, whether or not anything fired (hitX is blank if nothing did).</summary>
+        public float ufoX;
+
+        // ── The stimulus in frame time ───────────────────────────────────────
+        public float baseFrameMs, alteredFrameMs, measuredBaseMs, measuredAlteredMs;
     }
 
     /// <summary>
@@ -129,8 +180,13 @@ namespace JndUfo
 
         public int   targetFps;            // the cap that paced this frame
         public PerturbationController.Pace pacedBy;
+        public bool   shockwaveFastPhase;
+        public bool   shockwaveWindow;
+        public int    shockwaveFlips;
 
         public int    diffFps;             // the round's Δ; written blank between rounds
+        public float  diffMs;              // the same in frame time (ms); NaN between rounds
+        public bool   armed;               // firing was enabled on this frame
         public string alteredSide;         // the round's altered side; empty between rounds
         public string side;                // side of the tower the UFO is on
         public bool   crossed;             // the UFO crossed the tower on this frame, mid-round

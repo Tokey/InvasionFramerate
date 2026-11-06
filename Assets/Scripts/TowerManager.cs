@@ -26,7 +26,7 @@ namespace JndUfo
         public float fixedZ = 0f;
         [Tooltip("Fraction of the visible width used for spawning (0–1). Keeps the tower off the very edge.")]
         [Range(0.1f, 1f)]
-        public float spawnWidthFraction = 0.8f;
+        public float spawnWidthFraction = 0.6f;
 
         [Header("Towers")]
         [Tooltip("The tower models the field along the ground line is dealt from. The tower that stands on the " +
@@ -471,7 +471,7 @@ namespace JndUfo
         /// 0 again while a block without the scroll plays over the endless world (a session mixing levels): its
         /// camera holds still about the origin and the round has the one boundary it dealt, as in a world that was
         /// never endless. The tower field still repeats, but its copies of the boundary tower stand a period off:
-        /// off screen for any period above about 42 units (half the view's width plus half the spawn band; the
+        /// off screen for any period above about 38 units (half the view's width plus half the spawn band; the
         /// default is 96).
         /// </summary>
         public float BoundaryPeriod =>

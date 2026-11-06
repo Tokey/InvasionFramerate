@@ -5,42 +5,16 @@ using UnityEngine.UI;
 namespace JndUfo
 {
     /// <summary>
-    /// The round's answer, shown after every response: the two frame rates, one either side of the
-    /// tower, each in its side's colour — cool for the faster side, warm for the slower — with the
-    /// rate actually delivered underneath, while each side of the screen slowly takes on its colour.
-    ///
-    /// Layout:
-    ///
-    ///   the numbers  A pair split by the tower's beam. Each side's block sits high in the sky right
-    ///                beside the beam, its text aligned toward it, between the beam and that side's
-    ///                hit-zone line — so the two rates read as one comparison across the boundary.
-    ///                Both blocks share one scale, so the two numbers are always the same size. The
-    ///                hit zone is wide enough to hold a three-digit rate at full size, which keeps
-    ///                the pair looking the same wherever the tower is; only when the tower is so near
-    ///                an edge that the screen cuts into its zone does the pair shrink, together, to
-    ///                fit the narrower side. (If the hit zone is ever set too narrow to hold them,
-    ///                the numbers sit just outside its lines instead.)
-    ///   the tint     Each whole side, from the beam to the screen edge: faint inside the hit zone,
-    ///                so the zone stays a clear window exactly as wide as the target; strongest in a
-    ///                band just beyond the zone lines; easing off toward the screen edge; clear over
-    ///                the city at the bottom. It starts fully transparent and deepens slowly across
-    ///                the whole reveal.
-    ///
-    /// Each side is clipped to its own side of the tower line with a soft mask, so no colour, shadow
-    /// or text can cross it, wherever the tower is.
-    ///
-    /// The motion tells the story of the round: both numbers slide out from behind the beam, the
-    /// base side's lands at once, and the altered side's rolls away from the base rate to where the
-    /// round put it, so the size of the difference is something the eye watches happen. The pacing
-    /// is fitted to how long the reveal stays up, so every part has landed with time left to read it.
-    ///
-    /// Everything is whole numbers, in plain ASCII — the HUD font (StarShield) has nothing beyond it.
-    ///
-    /// Drawn on its own overlay canvas BELOW the gameplay HUD's, so the hit/miss callout lands on
-    /// top of it, and below the ExperimentOverlay's veil. It only runs during the reveal, between
-    /// rounds, at the base frame rate, and does no work at all while hidden. Auto-created by
-    /// <see cref="GameManager"/>. <c>Tools ▸ JND ▸ Render FPS Reveal Previews</c> renders it at a
-    /// sweep of tower positions without playing.
+    /// The round's answer, shown after every response:
+    /// - On spatial laser blocks (<see cref="Show"/>): the two frame rates split left and right at
+    ///   the hidden tower's beam, each in its side's colour — cool for the faster side, warm for
+    ///   the slower — with the rate actually delivered underneath, while each side of the screen
+    ///   slowly takes on its colour.
+    /// - On temporal shockwave blocks (<see cref="ShowShockwave"/>): <b>no left/right split</b>.
+    ///   Instead, a single unified full-sky violet/cyan wash and a centred temporal alternation
+    ///   readout in the upper sky where the whole-screen rate rolls from <c>baseFps</c> to
+    ///   <c>alteredFps</c> and alternates between them above the temporal sequence line
+    ///   (<c>500 FPS  &gt;&gt;  60 FPS  &gt;&gt;  500 FPS</c>) and measured values.
     /// </summary>
     public class FpsRevealOverlay : MonoBehaviour
     {
@@ -50,6 +24,8 @@ namespace JndUfo
         [Tooltip("The side that ran at the LOWER frame rate. Blue against orange stays distinct for " +
                  "the common forms of colour blindness.")]
         public Color slowerColor = new Color(1.00f, 0.58f, 0.22f, 1f);
+        [Tooltip("Primary electric-violet accent for the shockwave temporal reveal.")]
+        public Color shockwaveColor = new Color(0.22f, 0.03f, 0.98f, 1f);
         [Tooltip("Opacity the tint deepens to at its strongest, in the band just beyond the hit-zone " +
                  "lines. It starts fully transparent.")]
         [Range(0f, 1f)] public float washAlpha = 0.15f;
@@ -62,7 +38,7 @@ namespace JndUfo
         [Header("Type  (1920×1080 reference units)")]
         [Min(20f)] public float numberSize   = 128f;
         [Min(8f)]  public float unitSize     = 30f;
-        [Min(8f)]  public float measuredSize = 24f;
+        [Min(8f)]  public float measuredSize = 30f;
         [Tooltip("Height of the numerals' centre as a fraction of the screen, from the bottom: high in " +
                  "the sky, clear of the city, the centre callout and the practice hint.")]
         [Range(0.5f, 0.9f)] public float numberHeight = 0.78f;
@@ -91,22 +67,17 @@ namespace JndUfo
                  "rates and the tint are paced to fit it.")]
         [Min(0.3f)] public float defaultHoldSec = 2f;
 
-        // The tint's profile spans this many hit-zone half-widths out from the beam; a wider side
-        // shows its flat outer tail (the texture clamps).
         const float WashSpanZones   = 8f;
-        // The tint's level toward the screen edge, as a fraction of its strongest.
         const float WashTail        = 0.3f;
         const int   WashTexW        = 512;
         const int   WashTexH        = 128;
-        // How far behind the beam a number starts its slide, in canvas units at full size.
         const float SlideIn         = 28f;
         const float MeasuredFadeSec = 0.25f;
-        // Inside the hit zone is preferred while it holds the numbers at this scale or more.
         const float InsideMinScale  = 0.75f;
 
         // ── Construction ─────────────────────────────────────────────────────
 
-        /// <summary>Everything one side of the screen is made of.</summary>
+        /// <summary>Everything one side of the screen is made of (spatial laser blocks).</summary>
         sealed class Half
         {
             public float           side;     // −1: left of the tower, +1: right of it
@@ -132,10 +103,37 @@ namespace JndUfo
         CanvasGroup   _group;
         RectTransform _root;
         Half          _left, _right;
-        Texture2D     _washTex, _shadowTex;
+        Texture2D     _washTex, _shadowTex, _swSkyWashTex;
         float         _washTexInside = -1f;
-        readonly float[] _numberWidth = new float[5];   // by digit count, at scale 1 (NumberWidth)
+        readonly float[] _numberWidth = new float[5];
         char          _widestDigit;
+
+        // Shockwave unified temporal reveal elements (centred in upper sky, floating typography like laser mode)
+        bool            _shockwaveMode;
+        RectTransform   _swRoot;
+        RawImage        _swSkyWash;
+        RectTransform   _swBlock;
+        RectTransform   _swWasBlock;
+        RectTransform   _swWasShadowRect;
+        RawImage        _swWasShadow;
+        TextMeshProUGUI _swWasSub;
+        TextMeshProUGUI _swWasNumber;
+        TextMeshProUGUI _swWasUnit;
+        TextMeshProUGUI _swWasMeasured;
+        TextMeshProUGUI _swArrow;
+        RectTransform   _swNowBlock;
+        RectTransform   _swNowShadowRect;
+        RawImage        _swNowShadow;
+        TextMeshProUGUI _swNowSub;
+        TextMeshProUGUI _swNowNumber;
+        TextMeshProUGUI _swNowUnit;
+        TextMeshProUGUI _swNowMeasured;
+        int             _swWasFps;
+        int             _swNowFps;
+        Color           _swWasColor;
+        Color           _swNowColor;
+        int             _swShownNowFps = int.MinValue;
+        bool            _swRolls;
 
         // Vertical rhythm inside a block, from the type sizes (see Build).
         float _unitY, _measuredY, _blockMidY;
@@ -157,23 +155,16 @@ namespace JndUfo
 
         void OnDestroy()
         {
-            if (_washTex   != null) Destroy(_washTex);
-            if (_shadowTex != null) Destroy(_shadowTex);
+            if (_washTex      != null) Destroy(_washTex);
+            if (_shadowTex    != null) Destroy(_shadowTex);
+            if (_swSkyWashTex != null) Destroy(_swSkyWashTex);
         }
 
         // ── API ──────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Starts the reveal for a round that has just ended. <paramref name="towerBase"/> is where
-        /// the boundary was and <paramref name="hitRadius"/> the hit zone's half-width, both in world
-        /// units. <paramref name="holdSec"/> is how long the reveal will stay up, counted from the end
-        /// of <paramref name="delaySec"/> to <see cref="Hide"/>; the animation is paced to land well
-        /// inside it. 0 uses <see cref="defaultHoldSec"/>. With <paramref name="track"/> the split
-        /// follows the boundary every frame, for a camera that moves while the reveal is up (the
-        /// world scroll); without it, it is laid out once, here. <paramref name="settleShiftX"/> is how far
-        /// (world X) the camera is about to pan: the numbers' size and placement are fitted once, to the
-        /// view it lands on, so only the split moves while it pans rather than the numbers jumping between
-        /// layouts on the way.
+        /// Spatial reveal for laser blocks (<c>manual</c>, <c>scroll</c>, <c>auto</c>): splits the
+        /// screen left and right at <paramref name="towerBase"/>.
         /// </summary>
         public void Show(PerturbationController.TrialRecord trial, Vector3 towerBase, float hitRadius,
                          float delaySec = 0f, float holdSec = 0f, bool track = false, float settleShiftX = 0f)
@@ -181,15 +172,19 @@ namespace JndUfo
             if (_root == null) Build();
             if (_root == null || !trial.valid) return;
 
-            _track     = track;
-            _towerBase = towerBase;
-            _hitRadius = hitRadius;
+            _shockwaveMode = false;
+            _track         = track;
+            _towerBase     = towerBase;
+            _hitRadius     = hitRadius;
             Project(towerBase, hitRadius, out float split, out float zone);
             _split = split;
             _zone  = zone;
 
-            // Live before measuring: the layout below asks TextMeshPro to lay the text out.
             _root.gameObject.SetActive(true);
+            _left.area.gameObject.SetActive(true);
+            _right.area.gameObject.SetActive(true);
+            if (_swRoot != null) _swRoot.gameObject.SetActive(false);
+
             RefreshWashTexture();
 
             bool leftFaster = trial.LeftFps >= trial.RightFps;
@@ -212,7 +207,57 @@ namespace JndUfo
             _shownAt = Time.realtimeSinceStartup + Mathf.Max(0f, delaySec);
             _state   = State.Showing;
             _group.alpha = 1f;
-            Animate(-1f);   // the very first drawn frame is the start pose, not whatever was left
+            Animate(-1f);
+        }
+
+        /// <summary>
+        /// Temporal reveal for shockwave blocks (<c>shockwave</c>): does NOT split the screen into
+        /// left and right sides. Instead, shows a clean, floating side-by-side transition readout
+        /// in the upper sky matching the exact typography and minimalist elegance of laser mode.
+        /// </summary>
+        public void ShowShockwave(PerturbationController.TrialRecord trial, float delaySec = 0f, float holdSec = 0f)
+        {
+            if (_root == null) Build();
+            if (_root == null || !trial.valid) return;
+
+            _shockwaveMode = true;
+            _track         = false;
+
+            _root.gameObject.SetActive(true);
+            _left.area.gameObject.SetActive(false);
+            _right.area.gameObject.SetActive(false);
+            _swRoot.gameObject.SetActive(true);
+
+            // The last change the participant met: what it was and what it became. Before any, just the base.
+            bool changed = trial.changeToFps > 0 && trial.changeFromFps > 0;
+            int  wasFps  = changed ? trial.changeFromFps : trial.baseFps;
+            int  nowFps  = changed ? trial.changeToFps   : trial.baseFps;
+            _swRolls = wasFps != nowFps;
+
+            _swWasFps   = wasFps;
+            _swNowFps   = nowFps;
+            _swWasColor = wasFps >= nowFps ? fasterColor : slowerColor;
+            _swNowColor = nowFps >= wasFps ? fasterColor : slowerColor;
+            _swShownNowFps = int.MinValue;
+
+            _swWasSub.SetText("WAS");
+            _swWasNumber.SetText("{0}", wasFps);
+            _swWasUnit.SetText("FPS");
+            _swWasMeasured.SetText(FrameTimeLine(wasFps));
+
+            _swArrow.SetText("→");
+
+            _swNowSub.SetText("NOW");
+            _swNowNumber.SetText("{0}", _swRolls ? wasFps : nowFps);
+            _swNowUnit.SetText("FPS");
+            _swNowMeasured.SetText(FrameTimeLine(nowFps));
+
+            Pace(holdSec);
+
+            _shownAt = Time.realtimeSinceStartup + Mathf.Max(0f, delaySec);
+            _state   = State.Showing;
+            _group.alpha = 1f;
+            Animate(-1f);
         }
 
         /// <summary>Fades the reveal out. Safe to call when it is not showing.</summary>
@@ -225,8 +270,6 @@ namespace JndUfo
 
         // ── Editor preview hooks (Tools ▸ JND ▸ Render FPS Reveal Previews) ───
 
-        /// <summary>Renders into <paramref name="cam"/> instead of over the screen, so an editor tool
-        /// can capture it to a texture. Not used in play.</summary>
         public void PreviewOnCamera(Camera cam)
         {
             if (_root == null) Build();
@@ -236,8 +279,6 @@ namespace JndUfo
             RefreshScaler();
         }
 
-        /// <summary>Re-reads the screen size into the canvas scaler — after the preview camera's target
-        /// changes size, which the scaler only notices in an Update that edit mode never runs.</summary>
         public void RefreshScaler()
         {
             if (_scaler == null) return;
@@ -246,20 +287,23 @@ namespace JndUfo
             Canvas.ForceUpdateCanvases();
         }
 
-        /// <summary>Poses the reveal <paramref name="t"/> seconds in.</summary>
         public void PreviewPose(float t) => Animate(t);
 
-        /// <summary>Poses the exit <paramref name="h"/> of the way through (0–1).</summary>
         public void PreviewHidePose(float h)
         {
             Animate(10f);
             _group.alpha = 1f - EaseInQuad(Mathf.Clamp01(h));
-            Drift(_left,  h);
-            Drift(_right, h);
+            if (_shockwaveMode)
+            {
+                DriftShockwave(h);
+            }
+            else
+            {
+                Drift(_left,  h);
+                Drift(_right, h);
+            }
         }
 
-        // Where the boundary and the hit-zone lines fall on screen. The camera looks straight down +Z, so
-        // vertical lines in the world stay vertical on screen.
         void Project(Vector3 towerBase, float hitRadius, out float split, out float zone)
         {
             split = 0.5f;
@@ -280,12 +324,11 @@ namespace JndUfo
 
         // ── Per frame ────────────────────────────────────────────────────────
 
-        // LateUpdate, so a tracked split reads the camera as CameraRig has posed it for this frame.
         void LateUpdate()
         {
             if (_state == State.Hidden) return;
 
-            if (_track)
+            if (!_shockwaveMode && _track)
             {
                 Project(_towerBase, _hitRadius, out float split, out float zone);
                 if (!Mathf.Approximately(split, _split) || !Mathf.Approximately(zone, _zone))
@@ -296,16 +339,21 @@ namespace JndUfo
                 }
             }
 
-            // realtimeSinceStartup throughout: the reveal must animate on the wall clock whatever
-            // the frame rate, and unscaledTime is only stamped once per frame.
             float now = Time.realtimeSinceStartup;
 
             if (_state == State.Hiding)
             {
                 float h = Mathf.Clamp01((now - _hideAt) / hideSec);
                 _group.alpha = 1f - EaseInQuad(h);
-                Drift(_left,  h);
-                Drift(_right, h);
+                if (_shockwaveMode)
+                {
+                    DriftShockwave(h);
+                }
+                else
+                {
+                    Drift(_left,  h);
+                    Drift(_right, h);
+                }
                 if (h >= 1f)
                 {
                     _state = State.Hidden;
@@ -319,35 +367,97 @@ namespace JndUfo
 
         void Animate(float t)
         {
+            if (_shockwaveMode)
+            {
+                AnimateShockwave(t);
+                return;
+            }
             AnimateHalf(_left,  t);
             AnimateHalf(_right, t);
         }
 
-        void AnimateHalf(Half s, float t)
+        void AnimateShockwave(float t)
         {
-            // Tint: fully transparent at first, deepening slowly across the whole reveal.
+            // 1. Subtle sky glow wash (matches laser mode washAlpha)
             float w    = Mathf.Clamp01((t - _washStart) / (_washEnd - _washStart));
-            float glow = w * w * (3f - 2f * w);   // smoothstep: eases in and settles
-            s.wash.color = WithAlpha(s.color, washAlpha * glow);
+            float glow = w * w * (3f - 2f * w);
+            _swSkyWash.color = WithAlpha(_swNowColor, washAlpha * glow);
 
-            // Number: slides out from behind the beam (the mask hides what is still past the tower
-            // line), growing outward from its inner edge, overshooting and settling.
+            // Pop-in scale and punch (matches laser mode AnimateHalf)
             float tp   = t - 0.04f;
             float pop  = Mathf.Clamp01(tp / popSec);
             float grow = Mathf.LerpUnclamped(0.6f, 1f, EaseOutBack(pop));
             float fade = Mathf.Clamp01(tp / (popSec * 0.45f));
 
-            // Roll: the altered side counts from the base rate to its own; the base side holds.
+            float tr   = t - _rollStart;
+            float roll = EaseOutCubic(Mathf.Clamp01(tr / _rollSec));
+            int   fps  = _swRolls ? Mathf.RoundToInt(Mathf.Lerp(_swWasFps, _swNowFps, roll)) : _swNowFps;
+            if (fps != _swShownNowFps)
+            {
+                _swShownNowFps = fps;
+                _swNowNumber.SetText("{0}", fps);
+            }
+
+            float punch = 0f;
+            if (_swRolls && tr >= _rollSec)
+                punch = Mathf.Sin(Mathf.Clamp01((tr - _rollSec) / 0.2f) * Mathf.PI) * 0.06f;
+
+            _swBlock.localScale       = Vector3.one * (grow + punch * 0.5f);
+            _swBlock.anchoredPosition = new Vector2(0f, 0f);
+
+            // WAS block colors & fade
+            Color wasCol = Color.Lerp(_swWasColor, Color.white, 0.18f);
+            _swWasSub.color       = new Color(0.85f, 0.88f, 0.95f, 0.65f * fade);
+            _swWasNumber.color    = WithAlpha(wasCol, fade);
+            _swWasUnit.color      = WithAlpha(wasCol, 0.85f * fade);
+            _swWasShadow.color    = new Color(0f, 0f, 0f, shadowAlpha * fade);
+
+            // Arrow
+            Color arrowCol = Color.Lerp(Color.white, _swNowColor, 0.35f);
+            _swArrow.color = WithAlpha(arrowCol, 0.55f * fade);
+
+            // NOW block colors & fade
+            Color nowCol = Color.Lerp(_swNowColor, Color.white, 0.18f);
+            _swNowSub.color       = new Color(0.95f, 0.98f, 1f, 0.85f * fade);
+            _swNowNumber.color    = WithAlpha(nowCol, fade);
+            _swNowUnit.color      = WithAlpha(nowCol, 0.85f * fade);
+            _swNowShadow.color    = new Color(0f, 0f, 0f, shadowAlpha * fade);
+
+            // Measured lines fade in as numbers settle
+            float m = EaseOutCubic(Mathf.Clamp01((t - _measuredAt) / MeasuredFadeSec));
+            _swWasMeasured.color = WithAlpha(Color.Lerp(_swWasColor, Color.white, 0.55f), 0.9f * m);
+            _swNowMeasured.color = WithAlpha(Color.Lerp(_swNowColor, Color.white, 0.55f), 0.9f * m);
+            _swWasMeasured.rectTransform.anchoredPosition = new Vector2(0f, _measuredY - 8f * (1f - m));
+            _swNowMeasured.rectTransform.anchoredPosition = new Vector2(0f, _measuredY - 8f * (1f - m));
+        }
+
+        void DriftShockwave(float h)
+        {
+            float e = EaseInQuad(h);
+            _swBlock.localScale       = Vector3.one * (1f + 0.05f * e);
+            _swBlock.anchoredPosition = new Vector2(0f, 18f * e);
+        }
+
+        void AnimateHalf(Half s, float t)
+        {
+            float w    = Mathf.Clamp01((t - _washStart) / (_washEnd - _washStart));
+            float glow = w * w * (3f - 2f * w);
+            s.wash.color = WithAlpha(s.color, washAlpha * glow);
+
+            float tp   = t - 0.04f;
+            float pop  = Mathf.Clamp01(tp / popSec);
+            float grow = Mathf.LerpUnclamped(0.6f, 1f, EaseOutBack(pop));
+            float fade = Mathf.Clamp01(tp / (popSec * 0.45f));
+
             float tr   = t - _rollStart;
             float roll = EaseOutCubic(Mathf.Clamp01(tr / _rollSec));
             int   fps  = s.rolls ? Mathf.RoundToInt(Mathf.Lerp(s.startFps, s.targetFps, roll)) : s.targetFps;
             if (fps != s.shownFps)
             {
                 s.shownFps = fps;
-                s.number.SetText("{0}", fps);   // no allocation, unlike a string per frame
+                s.number.SetText("{0}", fps);
             }
 
-            // A small punch when the rolling number lands, so its arrival reads as an event.
             float punch = 0f;
             if (s.rolls && tr >= _rollSec)
                 punch = Mathf.Sin(Mathf.Clamp01((tr - _rollSec) / 0.2f) * Mathf.PI) * 0.06f;
@@ -361,13 +471,11 @@ namespace JndUfo
             s.unit.color   = WithAlpha(c, 0.85f * fade);
             s.shadow.color = new Color(0f, 0f, 0f, shadowAlpha * fade);
 
-            // Measured: quieter, and only once the numbers have landed.
             float m = EaseOutCubic(Mathf.Clamp01((t - _measuredAt) / MeasuredFadeSec));
             s.measured.color = WithAlpha(Color.Lerp(s.color, Color.white, 0.55f), 0.9f * m);
             s.measured.rectTransform.anchoredPosition = new Vector2(0f, _measuredY - 8f * (1f - m));
         }
 
-        // On the way out: the block lifts and swells a touch as everything fades.
         void Drift(Half s, float h)
         {
             float e = EaseInQuad(h);
@@ -377,6 +485,10 @@ namespace JndUfo
 
         // ── Layout ───────────────────────────────────────────────────────────
 
+        // The line under a frame rate: the same thing as a frame time, the unit the study steps in.
+        static string FrameTimeLine(int fps) =>
+            (1000f / Mathf.Max(1, fps)).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " ms";
+
         void Configure(Half s, int fps, float measured, bool isAltered, int baseFps, Color color)
         {
             s.targetFps = fps;
@@ -385,31 +497,23 @@ namespace JndUfo
             s.color     = color;
             s.shownFps  = int.MinValue;
 
-            string m = float.IsNaN(measured) ? "not visited" : "measured " + Mathf.RoundToInt(measured);
+            string m = FrameTimeLine(fps);
             s.unit.SetText("FPS");
             s.measured.SetText(m);
 
-            // The block's footprint: its widest line at scale 1. The number is sized for the most
-            // digits the roll passes through, all of them the widest numeral, so nothing has to move
-            // mid-animation.
             float numW  = NumberWidth(s.number, DigitCount(Mathf.Max(s.startFps, s.targetFps)));
             float unitW = s.unit.GetPreferredValues("FPS").x;
             float measW = s.measured.GetPreferredValues(m).x;
             s.naturalWidth = Mathf.Max(numW, Mathf.Max(unitW, measW));
 
-            // The shadow sits behind the whole block, which runs outward from the beam.
             s.shadowRect.sizeDelta        = new Vector2(s.naturalWidth + 0.9f * numberSize, 1.9f * numberSize);
             s.shadowRect.anchoredPosition = new Vector2(s.side * s.naturalWidth * 0.5f, _blockMidY);
         }
 
-        /// <summary>
-        /// Splits the screen at the tower and points each side's tint outward from it. All of it is in
-        /// canvas units.
-        /// </summary>
         void Place(float split, float zoneHalf)
         {
             float W = CanvasWidth;
-            float z = zoneHalf * W;            // the hit zone's half-width
+            float z = zoneHalf * W;
 
             SetArea(_left,  0f,    split);
             SetArea(_right, split, 1f);
@@ -417,23 +521,15 @@ namespace JndUfo
             SetWash(_right, W - split * W, z);
         }
 
-        /// <summary>
-        /// Sizes and places the two number blocks for a split. See the class summary for the rules; all
-        /// of it is in canvas units.
-        /// </summary>
         void Fit(float split, float zoneHalf)
         {
             float W  = CanvasWidth;
-            float xs = split * W;              // the tower line
-            float z  = zoneHalf * W;           // the hit zone's half-width
-            float wl = xs, wr = W - xs;        // each side's width
+            float xs = split * W;
+            float z  = zoneHalf * W;
+            float wl = xs, wr = W - xs;
 
-            // The scale each block fits at between the beam and its hit-zone line, or the screen
-            // edge where that comes first — together with its gap from the beam, which scales with
-            // it like the type does ...
             float inL  = Mathf.Min(z - zoneGap, wl - edgeMargin) / Mathf.Max(1f, _left.naturalWidth  + beamGap);
             float inR  = Mathf.Min(z - zoneGap, wr - edgeMargin) / Mathf.Max(1f, _right.naturalWidth + beamGap);
-            // ... or beyond the zone line, out to the screen edge.
             float outL = (wl - z - zoneGap - edgeMargin) / Mathf.Max(1f, _left.naturalWidth);
             float outR = (wr - z - zoneGap - edgeMargin) / Mathf.Max(1f, _right.naturalWidth);
 
@@ -441,8 +537,6 @@ namespace JndUfo
             float kOut  = Mathf.Min(outL, outR);
             bool inside = kIn >= InsideMinScale || kIn >= kOut;
 
-            // One scale for both, so the two numbers stay the same size — unless the screen edge
-            // squeezes one side below pairFloor, in which case that side alone goes smaller.
             float fitL  = inside ? inL : outL;
             float fitR  = inside ? inR : outR;
             float pair  = Mathf.Min(1f, Mathf.Min(fitL, fitR));
@@ -454,17 +548,12 @@ namespace JndUfo
             _right.gap = inside ? beamGap * _right.scale : z + zoneGap;
         }
 
-        /// <summary>
-        /// Fits the reveal's beats into how long it stays up: the roll takes up to 40% of it, the
-        /// measured rates fade in as the roll settles (not before, or they would give away where
-        /// it lands), and the tint keeps deepening until just before the end.
-        /// </summary>
         void Pace(float holdSec)
         {
             float hold  = holdSec > 0f ? holdSec : defaultHoldSec;
             _rollStart  = 0.1f;
             _rollSec    = Mathf.Clamp(0.4f * hold, 0.3f, 0.7f);
-            _measuredAt = _rollStart + _rollSec - 0.1f;   // the roll's last, slowest tenth of a second
+            _measuredAt = _rollStart + _rollSec - 0.1f;
             _washStart  = 0.08f;
             _washEnd    = Mathf.Clamp(0.9f * hold, _washStart + 0.4f, 2.2f);
         }
@@ -477,10 +566,6 @@ namespace JndUfo
             s.area.offsetMax = Vector2.zero;
         }
 
-        /// <summary>
-        /// The tint fills its whole side; this maps its texture so that u = 0 sits on the beam and
-        /// the profile is measured in hit-zone half-widths from there (the left side mirrors it).
-        /// </summary>
         void SetWash(Half s, float width, float zoneHalf)
         {
             s.wash.enabled = width > 2f;
@@ -500,9 +585,6 @@ namespace JndUfo
             }
         }
 
-        // The widest a number of this many digits can be at scale 1: the widest numeral repeated,
-        // measured as one string — bold type adds spacing between characters, which a sum of single
-        // numerals would miss. Measured once per digit count.
         float NumberWidth(TextMeshProUGUI t, int digits)
         {
             digits = Mathf.Clamp(digits, 1, _numberWidth.Length - 1);
@@ -535,16 +617,13 @@ namespace JndUfo
             canvasGo.transform.SetParent(transform, false);
 
             _canvas = canvasGo.AddComponent<Canvas>();
-            _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            // Below the gameplay HUD (0), so the callout and the vignette land on top of the tint
-            // instead of being tinted by it; far below the ExperimentOverlay's veil (5000).
+            _canvas.renderMode   = RenderMode.ScreenSpaceOverlay;
             _canvas.sortingOrder = -10;
 
             _scaler = canvasGo.AddComponent<CanvasScaler>();
             _scaler.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             _scaler.referenceResolution = new Vector2(1920f, 1080f);
             _scaler.matchWidthOrHeight  = 0.5f;
-            // No GraphicRaycaster: nothing here is clickable, and without one it cannot swallow input.
 
             var rootGo = new GameObject("Reveal", typeof(RectTransform));
             rootGo.transform.SetParent(canvasGo.transform, false);
@@ -554,8 +633,6 @@ namespace JndUfo
             _group.interactable   = false;
             _group.blocksRaycasts = false;
 
-            // Vertical rhythm, from the type sizes: StarShield's numerals are 0.7 em tall and
-            // TextMeshPro centres them on the line, so each line's half-height is 0.35 of its size.
             float numHalf  = 0.35f * numberSize;
             float unitHalf = 0.35f * unitSize;
             float measHalf = 0.35f * measuredSize;
@@ -563,13 +640,129 @@ namespace JndUfo
             _measuredY = _unitY - (unitHalf + 0.4f * unitSize + measHalf);
             _blockMidY = (numHalf + _measuredY - measHalf) * 0.5f;
 
-            _shadowTex = BuildShadowTexture(128);
+            _shadowTex    = BuildShadowTexture(128);
+            _swSkyWashTex = BuildShockwaveSkyWashTexture(256, 128);
 
             _left  = BuildHalf("Left",  -1f);
             _right = BuildHalf("Right", +1f);
+            BuildShockwaveReveal();
             RefreshWashTexture();
 
             rootGo.SetActive(false);
+        }
+
+        void BuildShockwaveReveal()
+        {
+            _swRoot = NewRect("ShockwaveReveal", _root);
+            Stretch(_swRoot);
+
+            var washRect = NewRect("SkyWash", _swRoot);
+            Stretch(washRect);
+            _swSkyWash = washRect.gameObject.AddComponent<RawImage>();
+            _swSkyWash.texture       = _swSkyWashTex;
+            _swSkyWash.raycastTarget = false;
+
+            _swBlock = NewRect("CenterBlock", _swRoot);
+            _swBlock.anchorMin = _swBlock.anchorMax = new Vector2(0.5f, numberHeight);
+            _swBlock.pivot     = new Vector2(0.5f, 0.5f);
+            _swBlock.sizeDelta = Vector2.zero;
+
+            float numHalf  = 0.35f * numberSize;
+            float subY     = numHalf + 22f;
+            float colSpread = 240f;
+
+            // ── Left (WAS) Block ─────────────────────────────────────────────
+            _swWasBlock = NewRect("WasBlock", _swBlock);
+            _swWasBlock.anchorMin = _swWasBlock.anchorMax = new Vector2(0.5f, 0.5f);
+            _swWasBlock.pivot     = new Vector2(0.5f, 0.5f);
+            _swWasBlock.anchoredPosition = new Vector2(-colSpread, 0f);
+
+            _swWasShadowRect = NewRect("Shadow", _swWasBlock);
+            _swWasShadowRect.anchorMin = _swWasShadowRect.anchorMax = new Vector2(0.5f, 0.5f);
+            _swWasShadowRect.pivot     = new Vector2(0.5f, 0.5f);
+            _swWasShadowRect.sizeDelta = new Vector2(400f, 260f);
+            _swWasShadowRect.anchoredPosition = new Vector2(0f, _blockMidY);
+            _swWasShadow = _swWasShadowRect.gameObject.AddComponent<RawImage>();
+            _swWasShadow.texture       = _shadowTex;
+            _swWasShadow.raycastTarget = false;
+
+            _swWasSub = MakeSubText("Sub", _swWasBlock, 0f, subY, 20f, FontStyles.Bold, 6f);
+            _swWasNumber = MakeSubText("Number", _swWasBlock, 0f, 0f, numberSize, FontStyles.Bold, 0f);
+            _swWasUnit = MakeSubText("Unit", _swWasBlock, 0f, _unitY, unitSize, FontStyles.Bold, 14f);
+            _swWasMeasured = MakeSubText("Measured", _swWasBlock, 0f, _measuredY, measuredSize, FontStyles.Normal, 2f);
+
+            _swWasNumber.outlineWidth = 0.12f;
+            _swWasNumber.outlineColor = new Color32(0, 0, 0, 160);
+
+            // ── Center Arrow ─────────────────────────────────────────────────
+            _swArrow = MakeSubText("Arrow", _swBlock, 0f, 0f, 44f, FontStyles.Bold, 0f);
+
+            // ── Right (NOW) Block ────────────────────────────────────────────
+            _swNowBlock = NewRect("NowBlock", _swBlock);
+            _swNowBlock.anchorMin = _swNowBlock.anchorMax = new Vector2(0.5f, 0.5f);
+            _swNowBlock.pivot     = new Vector2(0.5f, 0.5f);
+            _swNowBlock.anchoredPosition = new Vector2(colSpread, 0f);
+
+            _swNowShadowRect = NewRect("Shadow", _swNowBlock);
+            _swNowShadowRect.anchorMin = _swNowShadowRect.anchorMax = new Vector2(0.5f, 0.5f);
+            _swNowShadowRect.pivot     = new Vector2(0.5f, 0.5f);
+            _swNowShadowRect.sizeDelta = new Vector2(400f, 260f);
+            _swNowShadowRect.anchoredPosition = new Vector2(0f, _blockMidY);
+            _swNowShadow = _swNowShadowRect.gameObject.AddComponent<RawImage>();
+            _swNowShadow.texture       = _shadowTex;
+            _swNowShadow.raycastTarget = false;
+
+            _swNowSub = MakeSubText("Sub", _swNowBlock, 0f, subY, 20f, FontStyles.Bold, 6f);
+            _swNowNumber = MakeSubText("Number", _swNowBlock, 0f, 0f, numberSize, FontStyles.Bold, 0f);
+            _swNowUnit = MakeSubText("Unit", _swNowBlock, 0f, _unitY, unitSize, FontStyles.Bold, 14f);
+            _swNowMeasured = MakeSubText("Measured", _swNowBlock, 0f, _measuredY, measuredSize, FontStyles.Normal, 2f);
+
+            _swNowNumber.outlineWidth = 0.12f;
+            _swNowNumber.outlineColor = new Color32(0, 0, 0, 160);
+
+            _swRoot.gameObject.SetActive(false);
+        }
+
+        static TextMeshProUGUI MakeSubText(string name, RectTransform parent, float x, float y, float size,
+                                           FontStyles style, float spacing)
+        {
+            var rt = NewRect(name, parent);
+            rt.anchorMin        = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot            = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta        = new Vector2(500f, size * 1.35f);
+            rt.anchoredPosition = new Vector2(x, y);
+
+            var t = rt.gameObject.AddComponent<TextMeshProUGUI>();
+            t.fontSize         = size;
+            t.fontStyle        = style;
+            t.alignment        = TextAlignmentOptions.Center;
+            t.characterSpacing = spacing;
+            t.textWrappingMode = TextWrappingModes.NoWrap;
+            t.overflowMode     = TextOverflowModes.Overflow;
+            t.raycastTarget    = false;
+            HudFont.Apply(t);
+            return t;
+        }
+
+        static TextMeshProUGUI MakeCenterText(string name, RectTransform parent, float size,
+                                              FontStyles style, float y, float spacing)
+        {
+            var rt = NewRect(name, parent);
+            rt.anchorMin        = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot            = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta        = new Vector2(1100f, size * 1.35f);
+            rt.anchoredPosition = new Vector2(0f, y);
+
+            var t = rt.gameObject.AddComponent<TextMeshProUGUI>();
+            t.fontSize         = size;
+            t.fontStyle        = style;
+            t.alignment        = TextAlignmentOptions.Center;
+            t.characterSpacing = spacing;
+            t.textWrappingMode = TextWrappingModes.NoWrap;
+            t.overflowMode     = TextOverflowModes.Overflow;
+            t.raycastTarget    = false;
+            HudFont.Apply(t);
+            return t;
         }
 
         Half BuildHalf(string name, float side)
@@ -578,7 +771,6 @@ namespace JndUfo
             bool left = side < 0f;
 
             s.area = NewRect(name, _root);
-            // Everything on this side is clipped to it, softly, so nothing crosses the tower line.
             s.mask = s.area.gameObject.AddComponent<RectMask2D>();
             s.mask.softness = new Vector2Int(12, 0);
 
@@ -587,8 +779,6 @@ namespace JndUfo
             s.wash = washRect.gameObject.AddComponent<RawImage>();
             s.wash.raycastTarget = false;
 
-            // A point on the tower line's side of the area, at the numbers' height; everything in
-            // the block hangs off it and runs outward, so the block scales out from the beam.
             s.block = NewRect("Block", s.area);
             s.block.anchorMin = s.block.anchorMax = new Vector2(left ? 1f : 0f, numberHeight);
             s.block.pivot     = new Vector2(left ? 1f : 0f, 0.5f);
@@ -605,15 +795,12 @@ namespace JndUfo
             s.unit     = MakeText("Unit",     s.block, side, unitSize,     FontStyles.Bold,   _unitY,     14f);
             s.measured = MakeText("Measured", s.block, side, measuredSize, FontStyles.Normal, _measuredY, 2f);
 
-            // A dark rim, so a pale number stays legible over a bright sky or a lit building.
             s.number.outlineWidth = 0.12f;
             s.number.outlineColor = new Color32(0, 0, 0, 160);
 
             return s;
         }
 
-        // Text that runs outward from the block's point beside the beam: right-aligned on the left
-        // side, left-aligned on the right, so both sides' lines hug the tower line.
         static TextMeshProUGUI MakeText(string name, RectTransform parent, float side, float size,
                                         FontStyles style, float y, float spacing)
         {
@@ -653,8 +840,6 @@ namespace JndUfo
 
         // ── Textures ─────────────────────────────────────────────────────────
 
-        // (Re)paints the tint whenever washInsideZone has changed since it was last painted, so the
-        // inspector value takes effect on the next reveal.
         void RefreshWashTexture()
         {
             if (_washTex != null && Mathf.Approximately(_washTexInside, washInsideZone)) return;
@@ -669,13 +854,6 @@ namespace JndUfo
             _left.wash.texture = _right.wash.texture = _washTex;
         }
 
-        /// <summary>
-        /// The tint. Horizontally, u = 0 is the beam and u = 1 is <see cref="WashSpanZones"/>
-        /// hit-zone half-widths out from it: <paramref name="inside"/> of full strength across the
-        /// zone, rising through the zone line to a peak just beyond it, then easing off to a faint
-        /// flat tail. Vertically it is clear over the bottom fifth — the city and the tower's base —
-        /// fades in toward the sky, and eases off at the very top so the HUD row stays clean.
-        /// </summary>
         static void PaintWash(Texture2D tex, float inside)
         {
             int w = tex.width, h = tex.height;
@@ -687,7 +865,7 @@ namespace JndUfo
                 float top = 1f - 0.45f * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.85f, 1f, v));
                 for (int x = 0; x < w; x++)
                 {
-                    float r = x / (float)(w - 1) * WashSpanZones;   // out from the beam, in zone half-widths
+                    float r = x / (float)(w - 1) * WashSpanZones;
                     float level = r < 1.25f
                         ? Mathf.Lerp(inside, 1f, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.8f, 1.25f, r)))
                         : Mathf.Lerp(1f, WashTail, Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(1.25f, 5f, r)));
@@ -698,7 +876,36 @@ namespace JndUfo
             tex.Apply();
         }
 
-        /// <summary>A soft elliptical shadow — a radial falloff that never shows an edge.</summary>
+        /// <summary>
+        /// Unified horizontal sky glow for the shockwave reveal: symmetric across the entire screen
+        /// width (strongest in a wide band across the upper sky, clear over the city below, never
+        /// divided into left and right halves).
+        /// </summary>
+        static Texture2D BuildShockwaveSkyWashTexture(int w, int h)
+        {
+            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false)
+            {
+                filterMode = FilterMode.Bilinear,
+                wrapMode   = TextureWrapMode.Clamp,
+            };
+            var px = new Color32[w * h];
+            for (int y = 0; y < h; y++)
+            {
+                float v    = y / (float)(h - 1);
+                float band = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.32f, 0.68f, v)) *
+                             (1f - 0.55f * Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(0.86f, 1f, v)));
+                for (int x = 0; x < w; x++)
+                {
+                    float u     = Mathf.Abs(2f * x / (w - 1) - 1f);
+                    float horiz = Mathf.Lerp(1f, 0.35f, Mathf.SmoothStep(0.15f, 0.95f, u));
+                    px[y * w + x] = new Color32(255, 255, 255, (byte)(255f * band * horiz));
+                }
+            }
+            tex.SetPixels32(px);
+            tex.Apply();
+            return tex;
+        }
+
         static Texture2D BuildShadowTexture(int res)
         {
             var tex = new Texture2D(res, res, TextureFormat.RGBA32, false)
@@ -715,7 +922,7 @@ namespace JndUfo
                 float ny = 2f * y / (res - 1) - 1f;
                 float r  = Mathf.Sqrt(nx * nx + ny * ny);
                 float a  = Mathf.Clamp01(1f - r);
-                a = a * a * (3f - 2f * a);   // smoothstep: soft centre, no visible rim
+                a = a * a * (3f - 2f * a);
                 px[y * res + x] = new Color32(255, 255, 255, (byte)(255f * a));
             }
 
@@ -729,7 +936,6 @@ namespace JndUfo
         static float EaseOutCubic(float t) { t = 1f - t; return 1f - t * t * t; }
         static float EaseInQuad(float t)   => t * t;
 
-        // Overshoots by ~10% and settles — the "pop".
         static float EaseOutBack(float t)
         {
             const float c1 = 1.70158f;

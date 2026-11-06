@@ -12,7 +12,7 @@ namespace JndUfo
     /// Enforces the frame-rate cap — the stimulus itself in this study — in one of two ways, chosen
     /// per block by the <c>frameLimiter</c> column of ExperimentConfig.csv:
     ///
-    ///   Unity    Application.targetFrameRate. Unity's own limiter, as the stutter study used.
+    ///   Unity    Application.targetFrameRate. Unity's own limiter.
     ///
     ///   Precise  A busy-wait at the very start of the frame, inserted as the first step of the
     ///            player loop's TimeUpdate phase — the same place Unity's own limiter waits, ahead

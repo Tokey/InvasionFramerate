@@ -80,8 +80,22 @@ namespace JndUfo
         readonly List<TickSample> _ticks = new List<TickSample>(TickCapacity);
         readonly List<ShotSample> _shots = new List<ShotSample>(256);
 
-        static readonly string[] OutcomeCells = { "shot", "expired", "crossingCap" };
-        static readonly string[] PaceCells    = { "", "base", "altered" };
+        static string OutcomeCell(TrialOutcome outcome) => outcome switch
+        {
+            TrialOutcome.Shot        => "shot",
+            TrialOutcome.Detected    => "detected",
+            TrialOutcome.Early       => "early",
+            TrialOutcome.Late        => "late",
+            TrialOutcome.Timeout     => "timeout",
+            TrialOutcome.Expired     => "expired",
+            TrialOutcome.CrossingCap => "crossingCap",
+            TrialOutcome.PressCooldown => "cooldown",
+            TrialOutcome.PressLockout  => "lockout",
+            TrialOutcome.PressNotLive  => "notLive",
+            _                        => "shot",
+        };
+
+        static readonly string[] PaceCells = { "", "base", "altered" };
 
         /// <param name="firstBlock">Only supplies the cfg_* column NAMES for the headers — every
         /// block shares them, since they all come from one CSV. Call <see cref="BeginBlock"/> before
@@ -140,14 +154,16 @@ namespace JndUfo
                 // where and when
                 "displayHz", "resolution",
                 "startIso", "endIso", "sessionDurationSec", "playDurationSec", "endReason",
-                // QUEST+ result. Every *DiffFps is Δ, the frame-rate difference. jndDiffFps is the
-                // posterior MEAN of θ; jndAlteredFps and jndFrameTimeDiffMs restate it as the altered
-                // side's frame rate and as a frame-time difference. The median, mode and 95%
-                // credible interval come with it because the posterior is skewed near the ends of
-                // its grid, where mean ± 2·sd is not the interval it actually puts 95% in.
+                // QUEST+ result. QUEST+ works in frame time: jndFrameTimeDiffMs is the posterior MEAN
+                // of θ, and sd and priorSd are in ms. jndAlteredFps and jndDiffFps restate it as the
+                // altered side's frame rate and a frame-rate difference, as every *DiffFps restates
+                // its *DiffMs. The median, mode and 95% credible interval come with it because the
+                // posterior is skewed near the ends of its grid, where mean ± 2·sd is not the
+                // interval it actually puts 95% in.
                 "jndDiffFps", "jndAlteredFps", "jndFrameTimeDiffMs", "sd", "priorSd",
-                "jndMedianDiffFps", "jndModeDiffFps", "jndCI95LoDiffFps", "jndCI95HiDiffFps", "jndRangeEdge",
-                "slopeEstimate", "lapseEstimate", "staircaseTrials", "lastDiffFps",
+                "jndMedianDiffFps", "jndModeDiffFps", "jndCI95LoDiffFps", "jndCI95HiDiffFps",
+                "jndMedianDiffMs", "jndModeDiffMs", "jndCI95LoDiffMs", "jndCI95HiDiffMs", "jndRangeEdge",
+                "slopeEstimate", "lapseEstimate", "staircaseTrials", "lastDiffFps", "lastDiffMs",
                 // performance
                 "trials", "shotsFired", "hits", "accuracy", "score",
                 "roundsExpired", "roundsCrossingCapped", "avgRoundDurationSec",
@@ -167,13 +183,18 @@ namespace JndUfo
                 "viewWidthWorld", "guessRateScreen",
                 "avgFirstCrossingSec", "avgCrossingSpeed", "avgShotUfoSpeed",
                 "medianSinceLastCrossingSec", "avgMissAlongTravelX",
+                // the block's frame time; every kind of press; the reaction times; frame times
+                "baseFrameMs", "ftDirection", "swDetections", "earlyFires", "swLateFires", "swTimeouts",
+                "lockoutPresses", "cooldownPresses", "notLivePresses", "roundsNotCounted",
+                "avgReactionSec", "sdReactionSec", "medianReactionSec", "minReactionSec", "maxReactionSec",
+                "shotsPerMinute", "p95FrameTimeMs", "p99FrameTimeMs", "baseP99FrameTimeMs", "alteredP99FrameTimeMs",
             }, cfg)), append: false);
 
             WriteLine(_shotPath, CsvTable.Join(Concat(IdentityColumns, new[]
             {
                 "closeRadius", "phase", "phaseStartIso", "roundNumber", "timeSinceStartSec",
                 // the split presented
-                "diffFps", "alteredFps", "alteredSide",
+                "diffFps", "diffMs", "alteredFps", "alteredSide",
                 // what was actually delivered
                 "measuredBaseFps", "measuredAlteredFps", "baseSideSec", "alteredSideSec", "lateFrames",
                 // how the participant explored it
@@ -183,10 +204,22 @@ namespace JndUfo
                 "trialStartSec", "firedAtSec", "roundDurationSec",
                 "hitX", "missDistX", "towerX", "ufoY", "side",
                 // QUEST+ posterior after this response (blank in practice)
-                "threshDiffFps", "sd", "slopeEstimate", "lapseEstimate",
+                "threshDiffFps", "threshDiffMs", "sd", "slopeEstimate", "lapseEstimate",
                 // where on screen, and how the UFO was moving
                 "camX", "ufoViewportX", "towerViewportX", "ufoVelX", "ufoXAtStart",
                 "firstCrossingAtSec", "meanCrossingSpeed", "lastCrossingSpeed",
+                // the press, and the state it met
+                "attemptInRound", "roundEnded", "inputDevice", "firingEnabled",
+                "capFps", "capFrameMs", "pacedBy", "windowOpen",
+                // the last change of frame rate before it: how long ago, how much, and where the ship was
+                "reactionSec", "framesSinceLastChange", "changesSinceLastPress",
+                "changeFromFps", "changeToFps", "changeFromMs", "changeToMs", "changeDeltaMs", "changeDir",
+                "foreperiodSec", "windowSec", "changeTimesSec", "changeUfoX", "changeUfoY",
+                // presses so far this round
+                "earlyPresses", "latePresses", "lockoutPresses", "cooldownPresses", "notLivePresses",
+                "ufoX",
+                // the stimulus in frame time
+                "baseFrameMs", "ftDirection", "alteredFrameMs", "measuredBaseMs", "measuredAlteredMs",
             }, cfg)), append: false);
 
             WriteLine(_playerPath, CsvTable.Join(Concat(IdentityColumns, new[]
@@ -194,24 +227,17 @@ namespace JndUfo
                 "phase", "phaseStartIso", "roundNumber",
                 "frameIndex", "timeSinceStartSec", "unscaledDeltaMs", "targetFps", "pacedBy",
                 "diffFps", "alteredSide", "side", "crossed",
+                "shockwaveFastPhase", "shockwaveWindow", "shockwaveFlips",
                 "mouseX", "mouseY", "mouseDeltaX", "mouseDeltaY",
                 "ufoX", "ufoY", "towerX",
                 "leftButtonDown", "leftButtonPressed", "fireKeyDown",
                 "shotFired", "shotHitX",
-                "camX",
+                "camX", "diffMs", "armed",
             })), append: false);
         }
 
         // ── Intake ───────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Switches to the next block. Its identity cells and cfg_* values are stamped onto every
-        /// row logged from here on, so all three files read as one concatenated stream and any row
-        /// can be traced to the block that produced it.
-        /// </summary>
-        /// <param name="blockOrdinal">1-based position in THIS session's running order.</param>
-        /// <param name="latinRow">Which row of Data/LatinSquare.csv the session is on.</param>
-        /// <param name="latinOrder">That row as "2;3;1" — the whole session's order.</param>
         /// <summary>
         /// Switches to a practice phase. It is not a row of ExperimentConfig.csv, so its rows go out
         /// as blockIndex 0 / blockOrdinal 0 with the cfg_* echo left blank, under the limiter, hit
@@ -274,14 +300,13 @@ namespace JndUfo
 
             QuestPlusStaircase qp = perturbation != null ? perturbation.ActiveStaircase : null;
 
-            float jnd        = qp != null ? qp.JndEstimate() : float.NaN;
-            float jndAltered = float.NaN, jndFtDiffMs = float.NaN;
-            if (_config != null && !float.IsNaN(jnd))
-            {
-                float b = _config.baseFps;
-                jndAltered = _config.direction == FpsDirection.Up ? b + jnd : b - jnd;
-                if (jndAltered > 0f) jndFtDiffMs = Mathf.Abs(1000f / jndAltered - 1000f / b);
-            }
+            float jnd    = qp != null ? qp.JndEstimate()             : float.NaN;
+            float median = qp != null ? qp.ThresholdQuantile(0.5f)   : float.NaN;
+            float mode   = qp != null ? qp.ThresholdMode()           : float.NaN;
+            float ciLo   = qp != null ? qp.ThresholdQuantile(0.025f) : float.NaN;
+            float ciHi   = qp != null ? qp.ThresholdQuantile(0.975f) : float.NaN;
+            // The same numbers in fps. A mean does not convert exactly through 1000/x, but a quantile does.
+            float DiffFps(float ms) => _config != null ? _config.DiffFpsAt(ms) : float.NaN;
 
             var fields = new List<string>(80);
             AddIdentity(fields);
@@ -294,18 +319,19 @@ namespace JndUfo
                 CsvTable.F(stats.ElapsedSeconds, 3),
                 endReason,
 
-                CsvTable.F(jnd, 3), CsvTable.F(jndAltered, 3), CsvTable.F(jndFtDiffMs, 4),
+                CsvTable.F(DiffFps(jnd), 3),
+                CsvTable.F(_config != null ? _config.AlteredFpsAt(jnd) : float.NaN, 3),
+                CsvTable.F(jnd, 4),
                 CsvTable.F(qp != null ? qp.PosteriorThresholdSD() : float.NaN, 3),
                 CsvTable.F(qp != null ? qp.PriorThresholdSD       : float.NaN, 3),
-                CsvTable.F(qp != null ? qp.ThresholdQuantile(0.5f)   : float.NaN, 3),
-                CsvTable.F(qp != null ? qp.ThresholdMode()           : float.NaN, 3),
-                CsvTable.F(qp != null ? qp.ThresholdQuantile(0.025f) : float.NaN, 3),
-                CsvTable.F(qp != null ? qp.ThresholdQuantile(0.975f) : float.NaN, 3),
+                CsvTable.F(DiffFps(median), 3), CsvTable.F(DiffFps(mode), 3),
+                CsvTable.F(DiffFps(ciLo), 3),   CsvTable.F(DiffFps(ciHi), 3),
+                CsvTable.F(median, 4), CsvTable.F(mode, 4), CsvTable.F(ciLo, 4), CsvTable.F(ciHi, 4),
                 qp != null ? qp.RangeEdge() : "",
                 CsvTable.F(qp != null ? qp.SlopeEstimate() : float.NaN, 3),
                 CsvTable.F(qp != null ? qp.LapseEstimate() : float.NaN, 4),
                 CsvTable.I(qp != null ? qp.TrialCount : 0),
-                CsvTable.F(stats.LastDiffFps, 0),
+                CsvTable.F(stats.LastDiffFps, 0), CsvTable.F(stats.LastDiffMs, 3),
 
                 CsvTable.I(stats.Trials), CsvTable.I(stats.ShotsFired), CsvTable.I(stats.Hits),
                 CsvTable.F(stats.Accuracy, 4), CsvTable.F(stats.Score, 2),
@@ -333,6 +359,17 @@ namespace JndUfo
                 CsvTable.F(stats.AvgFirstCrossingSec, 4), CsvTable.F(stats.AvgCrossingSpeed, 3),
                 CsvTable.F(stats.AvgShotUfoSpeed, 3), CsvTable.F(stats.MedianSinceLastCrossingSec, 4),
                 CsvTable.F(stats.AvgMissAlongTravelX, 4),
+
+                CsvTable.F(_config != null ? 1000f / _config.baseFps : float.NaN, 3),
+                _config != null ? _config.FtDirectionCell : "",
+                CsvTable.I(stats.Detections), CsvTable.I(stats.EarlyFires), CsvTable.I(stats.LateFires), CsvTable.I(stats.Timeouts),
+                CsvTable.I(stats.LockoutPresses), CsvTable.I(stats.CooldownPresses), CsvTable.I(stats.NotLivePresses),
+                CsvTable.I(stats.RoundsNotCounted),
+                CsvTable.F(stats.AvgReactionSec, 4), CsvTable.F(stats.SdReactionSec, 4), CsvTable.F(stats.MedianReactionSec, 4),
+                CsvTable.F(stats.MinReactionSec, 4), CsvTable.F(stats.MaxReactionSec, 4),
+                CsvTable.F(stats.ShotsPerMinute, 3),
+                CsvTable.F(stats.P95FrameTimeMs, 3), CsvTable.F(stats.P99FrameTimeMs, 3),
+                CsvTable.F(stats.BaseP99FrameTimeMs, 3), CsvTable.F(stats.AlteredP99FrameTimeMs, 3),
             });
             fields.AddRange(_settingValues);
 
@@ -377,20 +414,35 @@ namespace JndUfo
                         Identity(w, sessionId, s.baseFps)
                          .Cell(_closeRadiusCell).Cell(CurrentPhase).Cell(phaseIso)
                          .Cell(s.roundNumber).Cell(s.timeSinceStartSec, 4)
-                         .Cell(s.diffFps).Cell(s.alteredFps).Cell(s.alteredSide)
+                         .Cell(s.diffFps).Cell(s.diffMs, 3).Cell(s.alteredFps).Cell(s.alteredSide)
                          .Cell(s.measuredBaseFps, 2).Cell(s.measuredAlteredFps, 2)
                          .Cell(s.baseSideSec, 3).Cell(s.alteredSideSec, 3).Cell(s.lateFrames)
                          .Cell(s.crossings).Cell(s.lastCrossingAtSec, 4).Cell(s.sinceLastCrossingSec, 4)
-                         .Cell(OutcomeCells[(int)s.outcome]).Cell(s.playerFired).Cell(s.isHit)
+                         .Cell(OutcomeCell(s.outcome)).Cell(s.playerFired).Cell(s.isHit)
                          .Cell(s.countedByStaircase).Cell(s.totalScore, 2)
                          .Cell(s.trialStartSec, 4).Cell(s.firedAtSec, 4).Cell(s.roundDurationSec, 4)
                          .Cell(s.hitX, 4).Cell(s.missDistX, 4).Cell(s.towerX, 4).Cell(s.ufoY, 4)
                          .Cell(s.side)
-                         .Cell(s.threshDiffFps, 3).Cell(s.sd, 3)
+                         .Cell(s.threshDiffFps, 3).Cell(s.threshDiffMs, 4).Cell(s.sd, 3)
                          .Cell(s.slopeEstimate, 3).Cell(s.lapseEstimate, 4)
                          .Cell(s.camX, 4).Cell(s.ufoViewportX, 4).Cell(s.towerViewportX, 4)
                          .Cell(s.ufoVelX, 3).Cell(s.ufoXAtStart, 4).Cell(s.firstCrossingAtSec, 4)
                          .Cell(s.meanCrossingSpeed, 3).Cell(s.lastCrossingSpeed, 3)
+                         .Cell(s.attemptInRound).Cell(s.roundEnded).Cell(s.inputDevice ?? "").Cell(s.firingEnabled)
+                         .Cell(s.capFps).Cell(s.capFrameMs, 3).Cell(PaceCells[(int)s.pacedBy]).Cell(s.windowOpen)
+                         .Cell(s.reactionSec, 4)
+                         .Cell(s.framesSinceLastChange >= 0 ? CsvTable.I(s.framesSinceLastChange) : "")
+                         .Cell(s.changesSinceLastPress)
+                         .Cell(s.changeToFps > 0 ? CsvTable.I(s.changeFromFps) : "")
+                         .Cell(s.changeToFps > 0 ? CsvTable.I(s.changeToFps) : "")
+                         .Cell(s.changeFromMs, 3).Cell(s.changeToMs, 3).Cell(s.changeDeltaMs, 3).Cell(s.changeDir ?? "")
+                         .Cell(s.foreperiodSec, 4).Cell(s.windowSec, 3).Cell(s.changeTimesSec ?? "")
+                         .Cell(s.changeUfoX, 4).Cell(s.changeUfoY, 4)
+                         .Cell(s.earlyPresses).Cell(s.latePresses).Cell(s.lockoutPresses)
+                         .Cell(s.cooldownPresses).Cell(s.notLivePresses)
+                         .Cell(s.ufoX, 4)
+                         .Cell(s.baseFrameMs, 3).Cell(_blockIndexCell == "0" ? "up" : _config != null ? _config.FtDirectionCell : "")
+                         .Cell(s.alteredFrameMs, 3).Cell(s.measuredBaseMs, 3).Cell(s.measuredAlteredMs, 3)
                          .Cells(_settingValues);
                         w.EndRow();
                     }
@@ -420,12 +472,13 @@ namespace JndUfo
                          // Between rounds there is no split, so no Δ: blank, like alteredSide, not 0.
                          .Cell(string.IsNullOrEmpty(t.alteredSide) ? "" : CsvTable.I(t.diffFps))
                          .Cell(t.alteredSide).Cell(t.side).Cell(t.crossed)
+                         .Cell(t.shockwaveFastPhase).Cell(t.shockwaveWindow).Cell(t.shockwaveFlips)
                          .Cell(t.mousePos.x, 2).Cell(t.mousePos.y, 2)
                          .Cell(t.mouseDelta.x, 3).Cell(t.mouseDelta.y, 3)
                          .Cell(t.ufoX, 4).Cell(t.ufoY, 4).Cell(t.towerX, 4)
                          .Cell(t.leftDown).Cell(t.leftPressedThisFrame).Cell(t.fireKeyDown)
                          .Cell(t.shotFired).Cell(t.shotHitX, 4)
-                         .Cell(t.camX, 4);
+                         .Cell(t.camX, 4).Cell(t.diffMs, 3).Cell(t.armed);
                         w.EndRow();
                     }
                 }

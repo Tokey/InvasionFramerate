@@ -90,7 +90,9 @@ namespace JndUfo
                  "rather than as a stoppage — the participant is being counted in, not told off.")]
         public string gateHoldText = "READY…";
         [Tooltip("The starting gun itself. Shaken, then the gate lifts and firing comes back.")]
-        public string gateGoText   = "GO!";
+        public string gateGoText    = "GO!";
+        [Tooltip("Shown when a shockwave round re-gates after a TOO LATE press.")]
+        public string gateRetryText = "TRY AGAIN!";
         [Tooltip("How much of the play area the reset veil covers. Opaque would hide the pan and " +
                  "the skybox spin, which are what sell the scene changing location; at 0.8 they still " +
                  "read through it, while the towers sinking and rising again stay soft rather than " +
@@ -112,8 +114,9 @@ namespace JndUfo
         float           _veilTarget;
         bool            _textFollowsVeil;   // READY…/SAVING… fade with the veil; GO! stands alone
         Color           _gateTextColor;     // the word at full strength; ApplyGateText derives the frame's alpha
-        readonly Color  _gateHoldColor = new Color(1f, 0.74f, 0.24f, 1f);
-        readonly Color  _gateGoColor   = new Color(0.45f, 1f, 0.6f, 1f);
+        readonly Color  _gateHoldColor  = new Color(1f, 0.74f, 0.24f, 1f);
+        readonly Color  _gateGoColor    = new Color(0.45f, 1f, 0.6f, 1f);
+        readonly Color  _gateRetryColor = new Color(1f, 0.74f, 0.24f, 1f);
 
         public void Show(string title, string body)
         {
@@ -345,7 +348,8 @@ namespace JndUfo
         /// "the word left the screen" and "shots count again" are the same instant — the round
         /// clock arms off that firing-enabled edge, so a round never starts mid-pan.
         /// </summary>
-        public IEnumerator GoBeat(float seconds) => WordBeat(gateGoText, _gateGoColor, seconds);
+        public IEnumerator GoBeat(float seconds)    => WordBeat(gateGoText,    _gateGoColor,    seconds);
+        public IEnumerator RetryBeat(float seconds) => WordBeat(gateRetryText, _gateRetryColor, seconds);
 
         IEnumerator WordBeat(string text, Color color, float seconds)
         {

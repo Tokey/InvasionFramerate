@@ -63,8 +63,6 @@ namespace JndUfo
                  "main round — there it would give away the boundary QUEST+ is asking them to find.")]
         public bool showPracticeHints = true;
 
-        // Named apart from the stutter study's idleHintText on purpose: the scene still carries that
-        // field's serialized "SPOT THE STUTTER", which would otherwise override this default.
         [Tooltip("The standing prompt, up for the whole practice round and quietly breathing.")]
         public string standingHintText = "FIND WHERE THE FRAME RATE CHANGES";
 
@@ -72,12 +70,18 @@ namespace JndUfo
                  "instant, so 'here' is the lesson.")]
         public string crossingHintText = "FRAME RATE CHANGED — FIRE HERE";
 
+        [Tooltip("The standing prompt in a shockwave practice round.")]
+        public string shockwaveStandingHintText = "WAIT FOR THE FRAME RATE TO CHANGE";
+
+        [Tooltip("Flashed in a shockwave practice round the moment the frame rate flips.")]
+        public string shockwaveFlipHintText = "FRAME RATE CHANGED — FIRE NOW!";
+
         [Tooltip("Floor on how long the alert stays readable after the round ENDS on it.")]
         [Min(0.1f)] public float practiceHintSec = 1.1f;
 
         [Header("Level Types")]
         [Tooltip("Play the practice rounds before the first block of EACH level type in the session's order " +
-                 "(manual, scroll, auto: up to three practice phases), so nobody meets a new kind of level in a " +
+                 "(manual, scroll, auto, shockwave), so nobody meets a new kind of level in a " +
                  "block that counts. Off: one practice phase only, before MAIN 1, in its level.")]
         public bool practiceEachLevelType = true;
 
@@ -103,6 +107,13 @@ namespace JndUfo
             "One side has a different frame rate than the other.\n" +
             "The UFO flies back and forth by itself. Watch it, and click to shoot\n" +
             "when it is right over the spot where the framerate changes.";
+
+        [Tooltip("What the participant is told to do in a shockwave level. The timing window is not named.")]
+        [TextArea(2, 5)]
+        public string shockwaveInstruction =
+            "The UFO flies back and forth by itself.\n" +
+            "The whole screen's frame rate will change at random times.\n" +
+            "Watch the motion, and click to fire the shockwave as soon as you notice the frame rate change.";
 
         [Header("References  (auto-found; drag-override if needed)")]
         public GameManager            gameManager;
@@ -184,6 +195,9 @@ namespace JndUfo
         // a response is the frame it happened on.
         bool  _shotFiredThisFrame;
         float _shotHitXThisFrame;
+
+        // Presses so far in the round in progress, for its shot rows, and rounds so far in this block.
+        int _attempt, _nEarly, _nLate, _nLockout, _nCooldown, _nNotLive, _blockRounds;
 
         // Rounds completed so far in this phase.
         int      _roundNumber;
@@ -318,6 +332,7 @@ namespace JndUfo
             {
                 laser.SetFiringEnabled(false);
                 _fireKey = laser.altFireKey;
+                laser.OnPressIgnored += RecordIgnoredPress;
             }
             LogChanceHitRate();
             LogDisplayCheck();
@@ -338,10 +353,10 @@ namespace JndUfo
             try { _logger.WriteSessionInfo(SessionInfo.Gather(SessionId, RunId)); }
             catch (Exception e) { Debug.LogError($"[ExperimentDirector] Session info not written: {e.Message}"); }
 
-            if (gameManager != null && gameManager.uiManager != null && gameManager.uiManager.showDebug)
-                Debug.LogWarning("[ExperimentDirector] The debug readout is ON (UI → UIManager → Show Debug). It " +
-                                  "spells out the frame-rate difference being measured: switch it off before running " +
-                                  "a participant. SessionInfo records it as UIManager.showDebug.");
+            if (_blocks != null && _blocks.Exists(b => b.showDebug))
+                Debug.LogWarning("[ExperimentDirector] showDebug is ON for at least one block in ExperimentConfig.csv. " +
+                                 "It spells out the frame-rate difference being measured: set showDebug=0 before running " +
+                                 "a participant.");
         }
 
         /// <summary>
@@ -358,7 +373,7 @@ namespace JndUfo
             foreach (StudyConfig block in _blocks)
             {
                 int highest = block.direction == FpsDirection.Up
-                    ? block.baseFps + block.maxDiffFps
+                    ? block.AlteredFpsFor(block.maxDiffMs)
                     : block.baseFps;
                 if (highest > hz + 1.0)
                     Debug.LogWarning($"[ExperimentDirector] Block {block.blockIndex} ({block.Describe()}) " +
@@ -388,8 +403,6 @@ namespace JndUfo
         {
             if (_blocks == null || _blocks.Count == 0) return;
 
-            // The manual and scroll levels share one γ (a scroll round's boundary is dealt as far from the ship,
-            // in mouse travel, as without the scroll), reported once; each auto row has its own, from its path.
             var reported = new HashSet<string>();
             foreach (StudyConfig block in _blocks)
             {
@@ -401,34 +414,38 @@ namespace JndUfo
                 }
                 if (reported.Add(key)) Debug.Log(report);
 
-                // Tight: a stale value is typically off by under 0.01 (moving the UFO's edge clamp
-                // from 2% to 0% moved γ by 0.008), and on a 16:9 screen the CSV's three decimals
-                // match the computed γ to well within this.
                 if (Mathf.Abs(block.guessRate - gamma) > 0.005f)
                     Debug.LogWarning($"[GuessRate] ExperimentConfig.csv row {block.blockIndex} ({block.LevelCell} " +
-                                      $"level) has guessRate={block.guessRate:0.000} but this screen implies " +
+                                      $"level) has guessRate={block.guessRate:0.000} but this setup implies " +
                                       $"{gamma:0.000}. A γ far from chance biases the threshold — update the CSV " +
                                       "unless this is deliberate.");
 
-                if (block.AutoFlight) CheckAutopilot(block);
+                if (block.AutoFlight && !block.IsShockwave) CheckAutopilot(block);
             }
         }
 
         /// <summary>
-        /// The chance rate this screen implies for <paramref name="block"/>'s level — the manual and scroll levels'
-        /// blind shot, or an auto level's blind click on its path (GuessRateCalculator) — NaN without a camera.
-        /// <paramref name="key"/> is the same for every block that shares the figure.
+        /// The chance rate this screen/timing implies for <paramref name="block"/>'s level.
         /// </summary>
         float ScreenGuessRate(StudyConfig block, out string report, out string key)
         {
             report = "";
             key    = "";
+
+            if (block != null && block.IsShockwave)
+            {
+                float swGamma = ShockwaveGuessRate.Compute(block, out string detail);
+                report = $"[GuessRate] Shockwave temporal chance rate: γ = {swGamma:0.0000} ({detail}).";
+                key    = $"shockwave:{detail}";
+                return swGamma;
+            }
+
             Camera cam           = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
             float  fixedZ        = ufo != null ? ufo.fixedZ : 0f;
             float  spawnFraction = towerManager != null ? towerManager.spawnWidthFraction : 1f;
 
             key = "scene";
-            bool ok = GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, block.closeRadius,
+            bool ok = GuessRateCalculator.TryCompute(cam, fixedZ, spawnFraction, block != null ? block.closeRadius : 2f,
                                                      out float gamma, out report);
             return ok ? gamma : float.NaN;
         }
@@ -440,7 +457,7 @@ namespace JndUfo
         /// </summary>
         void CheckAutopilot(StudyConfig block)
         {
-            float spawn = towerManager != null ? towerManager.spawnWidthFraction : 0.8f;
+            float spawn = towerManager != null ? towerManager.spawnWidthFraction : 0.6f;
             if (!GuessRateCalculator.AutoSweepCoversSpawn(block.autoSweep, spawn))
                 Debug.LogWarning($"[ExperimentDirector] Row {block.blockIndex} (auto): autoSweep={block.autoSweep:0.##} " +
                                   $"does not reach every place the tower can be dealt (the middle {spawn:0.##} of the " +
@@ -463,6 +480,7 @@ namespace JndUfo
         void OnDestroy()
         {
             if (Instance == this) Instance = null;
+            if (laser != null) laser.OnPressIgnored -= RecordIgnoredPress;
             CloseLogs();
             FrameLimiter.Release();
         }
@@ -523,7 +541,7 @@ namespace JndUfo
                 yield return RunBlock(withPractice: practise);
             }
 
-            SessionState.Advance(SessionId);
+            if (!QaRobot.Running) SessionState.Advance(SessionId);
 
             _logger.Dispose();
             Debug.Log($"[ExperimentDirector] Session {SessionId} complete — {_blocks.Count} block(s). " +
@@ -544,9 +562,10 @@ namespace JndUfo
         /// </summary>
         string TaskInstruction() => Config == null ? manualInstruction : Config.levelType switch
         {
-            LevelType.Scroll => scrollInstruction,
-            LevelType.Auto   => autoInstruction,
-            _                => manualInstruction,
+            LevelType.Scroll    => scrollInstruction,
+            LevelType.Auto      => autoInstruction,
+            LevelType.Shockwave => shockwaveInstruction,
+            _                   => manualInstruction,
         };
 
         string StartPrompt() =>
@@ -695,10 +714,10 @@ namespace JndUfo
             QuestPlusStaircase qp = perturbation != null ? perturbation.ActiveStaircase : null;
             float jnd = qp != null ? qp.JndEstimate() : float.NaN;
             float sd  = qp != null ? qp.PosteriorThresholdSD() : float.NaN;
-            float thresholdFps = Config.direction == FpsDirection.Up ? Config.baseFps + jnd : Config.baseFps - jnd;
+            float thresholdFps = Config.AlteredFpsAt(jnd);
 
             Debug.Log($"[ExperimentDirector] {MainLabel} (row {Config.blockIndex}, " +
-                      $"{Config.Describe()}) complete ({_endReason}) — JND Δ {jnd:0.0} fps (SD {sd:0.0}), " +
+                      $"{Config.Describe()}) complete ({_endReason}) — JND Δ {jnd:0.00} ms (SD {sd:0.00}), " +
                       $"i.e. {Config.baseFps} vs {thresholdFps:0.0} fps. {_stats.Hits}/{_stats.Trials} hit, " +
                       $"{_stats.RoundsExpired} ran out, {_stats.AvgCrossingsPerRound:0.0} crossings/round. " +
                       $"Delivered: base {_stats.BaseSideMeasuredFps:0.0} fps (cap {Config.baseFps}), " +
@@ -708,13 +727,13 @@ namespace JndUfo
             string edge = qp != null ? qp.RangeEdge() : "";
             if (edge == "top")
                 Debug.LogWarning($"[ExperimentDirector] {MainLabel}: the threshold estimate is pressed " +
-                                  $"against the LARGEST difference tested ({Config.maxDiffFps} fps). The participant " +
+                                  $"against the LARGEST difference tested ({Config.maxDiffMs:0.##} ms). The participant " +
                                   "rarely located the boundary even there, so the true threshold is probably above " +
                                   "the range and the stop rule 'converged' on the edge. Treat this block's " +
-                                  "jndDiffFps as a lower bound (jndRangeEdge = top in the session log).");
+                                  "threshold as a lower bound (jndRangeEdge = top in the session log).");
             else if (edge == "bottom")
                 Debug.LogWarning($"[ExperimentDirector] {MainLabel}: the threshold estimate is pressed " +
-                                  $"against the SMALLEST difference tested ({Config.minDiffFps} fps), so the true " +
+                                  $"against the SMALLEST difference tested ({Config.minDiffMs:0.##} ms), so the true " +
                                   "threshold may be below the range (jndRangeEdge = bottom in the session log).");
 
             if (_stats.BaseFrames > 0 && _stats.BaseSideMeasuredFps < 0.97f * Config.baseFps)
@@ -761,10 +780,10 @@ namespace JndUfo
         /// </summary>
         IEnumerator PhaseStartingGun()
         {
-            // An auto level's flight takes up its starting point, before the split opens on the side it starts
-            // on — as at every later round's GO!.
+            // An auto level's ship is in plain view here (Space was only just pressed), so it starts from where it
+            // is rather than jumping: unlike at a later round's GO!, nothing is hiding it.
             UfoAutopilot pilot = gameManager != null ? gameManager.Autopilot : null;
-            if (pilot != null && pilot.Engaged) pilot.BeginRound();
+            if (pilot != null && pilot.Engaged) pilot.BeginFromHere();
 
             // The ship holds still through GO!, as it does at every later round's GO! (GameManager.StartingGun):
             // the split is already open, so a crossing here would count in the round before firing is handed
@@ -795,6 +814,7 @@ namespace JndUfo
             _startRealtime      = Time.unscaledTime;
             _startRealtimeD     = Time.unscaledTimeAsDouble;
             _trailCount         = 0;       // a velocity never spans two phases
+            _attempt = _nEarly = _nLate = _nLockout = _nCooldown = _nNotLive = _blockRounds = 0;
             _roundArmed         = false;
             ResetRoundMotion();
 
@@ -936,6 +956,7 @@ namespace JndUfo
                 unscaledDeltaMs   = Time.unscaledDeltaTime * 1000f,
                 alteredSide       = "",
                 side              = "",
+                diffMs            = float.NaN,
             };
 
             Mouse mouse = Mouse.current;
@@ -965,14 +986,16 @@ namespace JndUfo
             t.camX = rig != null ? rig.RestX : float.NaN;
 
             // A round arms when firing is handed back after its GO!: where the UFO starts it from, and its
-            // crossings from then on.
-            bool armed = laser != null && laser.FiringEnabled;
+            // crossings from then on. Preserved across a mid-round shockwave re-gate ("TRY AGAIN!").
+            bool regating = ShockwaveController.Instance != null && ShockwaveController.Instance.Regating;
+            bool armed    = (laser != null && laser.FiringEnabled) || (_roundArmed && regating);
             if (armed && !_roundArmed)
             {
                 ResetRoundMotion();
                 _roundUfoXAtStart = t.ufoX;
             }
             _roundArmed = armed;
+            t.armed     = laser != null && laser.FiringEnabled;
 
             // The endless world repeats the boundary once a period, the frame rates swapping sides at every copy.
             // Each row is written as if the copy nearest the UFO were the only boundary: towerX is that copy, and
@@ -992,8 +1015,16 @@ namespace JndUfo
                 if (perturbation.SplitActive)
                 {
                     t.diffFps     = perturbation.CurrentTrial.diffFps;
+                    t.diffMs      = perturbation.CurrentTrial.diffMs;
                     t.alteredSide = SideCell(Turned(perturbation.CurrentTrial.alteredSide, turned));
                 }
+            }
+            ShockwaveController shockwave = ShockwaveController.Instance;
+            if (shockwave != null && shockwave.Active)
+            {
+                t.shockwaveFastPhase = shockwave.FastPhase;
+                t.shockwaveWindow    = shockwave.WindowOpen;
+                t.shockwaveFlips     = shockwave.FlipCount;
             }
 
             // How fast the boundary was crossed: the UFO's speed over the last ~0.1 s, this frame included.
@@ -1061,9 +1092,10 @@ namespace JndUfo
 
         /// <summary>
         /// The practice prompt: a standing "what to look for" line while the round is live, slammed
-        /// into the alert state the instant the UFO crosses the boundary. Gated on PracticeMode — the
-        /// same flag that keeps responses away from the posterior — because in a main round the
-        /// alert would hand the participant the boundary they are being tested on.
+        /// into the alert state the instant the UFO crosses the boundary (or the frame rate flips
+        /// on a shockwave block). Gated on PracticeMode — the same flag that keeps responses away
+        /// from the posterior — because in a main round the alert would hand the participant the
+        /// stimulus they are being tested on.
         /// </summary>
         void DrivePracticeHint(bool crossed)
         {
@@ -1072,6 +1104,23 @@ namespace JndUfo
             if (!showPracticeHints || perturbation == null || !perturbation.PracticeMode)
             {
                 overlay.HideHint();
+                return;
+            }
+
+            if (Config != null && Config.IsShockwave)
+            {
+                ShockwaveController sw = ShockwaveController.Instance;
+                if (sw != null && sw.FlippedThisFrame)
+                {
+                    overlay.FlashHint(shockwaveFlipHintText, Mathf.Max(0.4f, Config.swWindowSec));
+                    return;
+                }
+                if (sw != null && !sw.WindowOpen)
+                {
+                    overlay.ReleaseAlertHint();
+                }
+                if (laser != null && !laser.FiringEnabled) { overlay.HideIdleHint(); return; }
+                overlay.ShowIdleHint(shockwaveStandingHintText);
                 return;
             }
 
@@ -1091,23 +1140,53 @@ namespace JndUfo
         // ── Round intake (called by GameManager) ─────────────────────────────
 
         /// <summary>
-        /// Records one round's response — a shot, or a round that ran out. Called from GameManager
-        /// once the split has been closed, the shot scored, and QUEST+ told the outcome, so the
-        /// posterior columns include this response.
+        /// A press of the fire button that fired nothing: inside the cooldown, the early lockout, or with firing off. Its
+        /// row says so (outcome cooldown / lockout / notLive) and carries the state of the game as for any other press.
         /// </summary>
+        void RecordIgnoredPress(TrialOutcome kind)
+        {
+            if (!SessionActive || _logger == null || _stats == null || perturbation == null) return;
+
+            PerturbationController.TrialRecord trial =
+                perturbation.SplitActive ? perturbation.SnapshotTrial() : default;
+            RoundTiming timing = RoundClock.Instance != null ? RoundClock.Instance.Snapshot(false) : default;
+            timing.firedAt = Time.realtimeSinceStartup;
+            Vector3 ufoPos = ufo != null ? ufo.transform.position : Vector3.zero;
+            Vector3 tower  = towerManager != null ? towerManager.MainTowerPosition : Vector3.zero;
+            float   total  = scoreManager != null ? scoreManager.TotalScore : 0f;
+            RecordShot(ufoPos, tower, false, total, kind, trial, timing, counted: false, roundEnded: false);
+        }
+
+        /// <summary>
+        /// Records one press, or a round running out: its row in the shot log, with the state of the game at that instant.
+        /// A shot is recorded once the split has been closed (or snapshotted, for a press that leaves the round going), the
+        /// shot scored, and QUEST+ told the outcome, so the posterior columns include this response.
+        /// </summary>
+        /// <param name="counted">Whether this response reached QUEST+.</param>
+        /// <param name="roundEnded">Whether this row closes the round.</param>
         public void RecordShot(Vector3 hitPoint, Vector3 towerBase, bool isHit, float totalScore,
                                 TrialOutcome outcome, in PerturbationController.TrialRecord trial,
-                                in RoundTiming timing)
+                                in RoundTiming timing, bool counted = true, bool roundEnded = true)
         {
             if (!SessionActive || _logger == null || _stats == null) return;
 
-            bool  playerFired = outcome == TrialOutcome.Shot;
+            bool  playerFired = outcome.IsPlayerShot();
+            bool  ignored     = outcome == TrialOutcome.PressCooldown || outcome == TrialOutcome.PressLockout ||
+                                outcome == TrialOutcome.PressNotLive;
+            bool  pressed     = playerFired || ignored;
+            bool  isShockwave = Config != null && Config.IsShockwave;
             float now         = (float)(Time.unscaledTimeAsDouble - _startRealtimeD);
             float firedAt     = ToPhaseClock(timing.firedAt);
             float lastCross   = trial.valid ? ToPhaseClock(trial.lastCrossingRealtime)  : float.NaN;
             float firstCross  = trial.valid ? ToPhaseClock(trial.firstCrossingRealtime) : float.NaN;
-            float sinceCross  = playerFired && !float.IsNaN(firedAt) && !float.IsNaN(lastCross)
+            float sinceCross  = pressed && !float.IsNaN(firedAt) && !float.IsNaN(lastCross)
                 ? firedAt - lastCross : float.NaN;
+
+            if      (outcome == TrialOutcome.Early)         _nEarly++;
+            else if (outcome == TrialOutcome.Late)          _nLate++;
+            else if (outcome == TrialOutcome.PressLockout)  _nLockout++;
+            else if (outcome == TrialOutcome.PressCooldown) _nCooldown++;
+            else if (outcome == TrialOutcome.PressNotLive)  _nNotLive++;
 
             Vector3 ufoPos = ufo != null ? ufo.transform.position : hitPoint;
             QuestPlusStaircase sc = perturbation != null ? perturbation.ActiveStaircase : null;
@@ -1133,9 +1212,18 @@ namespace JndUfo
                 }
             }
 
-            // Picked up by this frame's LateUpdate row.
-            _shotFiredThisFrame = true;
-            _shotHitXThisFrame  = hitPoint.x;
+            // Picked up by this frame's LateUpdate row. A press that fired nothing is no response.
+            if (!ignored)
+            {
+                _shotFiredThisFrame = true;
+                _shotHitXThisFrame  = hitPoint.x;
+            }
+
+            bool  changed = trial.valid && trial.changeToFps > 0 && trial.changeFromFps > 0;
+            float fromMs  = changed ? 1000f / trial.changeFromFps : float.NaN;
+            float toMs    = changed ? 1000f / trial.changeToFps   : float.NaN;
+            int   capFps  = perturbation != null ? perturbation.PacedFps : 0;
+            ShockwaveController wave = ShockwaveController.Instance;
 
             var s = new ShotSample
             {
@@ -1145,8 +1233,10 @@ namespace JndUfo
                                   : perturbation != null ? perturbation.CurrentBaseFps : 0,
 
                 diffFps            = trial.diffFps,
+                diffMs             = trial.valid ? trial.diffMs : float.NaN,
                 alteredFps         = trial.alteredFps,
-                alteredSide        = trial.valid ? SideCell(trial.alteredSide) : "",
+                // A shockwave block alternates in time: there is no altered side, and no side of a tower to fire from.
+                alteredSide        = trial.valid && !isShockwave ? SideCell(trial.alteredSide) : "",
                 measuredBaseFps    = trial.MeasuredBaseFps,
                 measuredAlteredFps = trial.MeasuredAlteredFps,
                 baseSideSec        = trial.baseSec,
@@ -1160,7 +1250,7 @@ namespace JndUfo
                 outcome            = outcome,
                 playerFired        = playerFired,
                 isHit              = isHit,
-                countedByStaircase = !trial.practice && _logger.CurrentPhase != "practice",
+                countedByStaircase = counted && !practiceRow,
                 totalScore         = totalScore,
 
                 trialStartSec    = ToPhaseClock(timing.armedAt),
@@ -1169,13 +1259,15 @@ namespace JndUfo
 
                 // A round that ran out has no landing point: blank rather than the UFO's resting
                 // position, which would be indistinguishable from a shot that happened to land there.
+                // Shockwave has no target tower, so missDistX is left NaN.
                 hitX      = playerFired ? hitPoint.x : float.NaN,
-                missDistX = playerFired ? hitPoint.x - towerBase.x : float.NaN,
+                missDistX = isShockwave ? float.NaN : (playerFired ? hitPoint.x - towerBase.x : float.NaN),
                 towerX    = towerBase.x,
                 ufoY      = ufoPos.y,
-                side      = perturbation != null ? SideCell(perturbation.SideOf(playerFired ? hitPoint : ufoPos)) : "",
+                side      = isShockwave || perturbation == null ? "" : SideCell(perturbation.SideOf(playerFired ? hitPoint : ufoPos)),
 
-                threshDiffFps = perturbation != null && !practiceRow ? perturbation.ThresholdEstimate  : float.NaN,
+                threshDiffMs  = perturbation != null && !practiceRow ? perturbation.ThresholdEstimate  : float.NaN,
+                threshDiffFps = perturbation != null && !practiceRow ? Config.DiffFpsAt(perturbation.ThresholdEstimate) : float.NaN,
                 sd            = perturbation != null && !practiceRow ? perturbation.PosteriorSD        : float.NaN,
                 slopeEstimate = perturbation != null && !practiceRow ? perturbation.SlopeEstimateValue : float.NaN,
                 lapseEstimate = perturbation != null && !practiceRow ? perturbation.LapseEstimateValue : float.NaN,
@@ -1188,37 +1280,106 @@ namespace JndUfo
                 firstCrossingAtSec = firstCross,
                 meanCrossingSpeed  = _roundCrossSpeedN > 0 ? _roundCrossSpeedSum / _roundCrossSpeedN : float.NaN,
                 lastCrossingSpeed  = _roundLastCrossSpeed,
+
+                attemptInRound = _attempt + 1,
+                roundEnded     = roundEnded,
+                inputDevice    = !pressed || laser == null ? "" : laser.LastPressDevice == 1 ? "mouse" : "key",
+                firingEnabled  = playerFired || (laser != null && laser.FiringEnabled),
+                capFps         = capFps,
+                capFrameMs     = capFps > 0 ? 1000f / capFps : float.NaN,
+                pacedBy        = perturbation != null ? perturbation.PacedBy : PerturbationController.Pace.None,
+                windowOpen     = outcome == TrialOutcome.Detected || (wave != null && wave.WindowOpen),
+
+                reactionSec           = sinceCross,
+                framesSinceLastChange = pressed && trial.valid && trial.changeFrame >= 0 ? Time.frameCount - trial.changeFrame : -1,
+                changesSinceLastPress = trial.changesSincePress,
+                changeFromFps  = trial.changeFromFps,
+                changeToFps    = trial.changeToFps,
+                changeFromMs   = fromMs,
+                changeToMs     = toMs,
+                changeDeltaMs  = toMs - fromMs,
+                changeDir      = !changed ? "" : toMs > fromMs ? "slower" : "faster",
+                foreperiodSec  = trial.valid ? trial.foreperiodSec : float.NaN,
+                windowSec      = isShockwave && Config != null ? Config.swWindowSec : float.NaN,
+                changeTimesSec = trial.valid && perturbation != null ? perturbation.ChangeTimesCell(_trialClockOrigin) : "",
+                changeUfoX     = trial.valid ? trial.changeUfoX : float.NaN,
+                changeUfoY     = trial.valid ? trial.changeUfoY : float.NaN,
+
+                earlyPresses    = _nEarly,
+                latePresses     = _nLate,
+                lockoutPresses  = _nLockout,
+                cooldownPresses = _nCooldown,
+                notLivePresses  = _nNotLive,
+
+                ufoX              = ufoPos.x,
+                baseFrameMs       = trial.valid && trial.baseFps > 0 ? 1000f / trial.baseFps : float.NaN,
+                alteredFrameMs    = trial.valid && trial.alteredFps > 0 ? 1000f / trial.alteredFps : float.NaN,
+                measuredBaseMs    = 1000f / trial.MeasuredBaseFps,
+                measuredAlteredMs = 1000f / trial.MeasuredAlteredFps,
             };
 
-            _roundNumber++;
             _stats.AddShot(s);
             _logger.QueueShot(s);
 
-            LogRound(s, trial, sc);
+            if (playerFired)
+            {
+                _attempt++;
+                if (perturbation != null) perturbation.NotePress();
+            }
+            if (ignored) return;
+
+            LogRound(s, trial, sc, isShockwave);
+
+            if (roundEnded)
+            {
+                _roundNumber++;
+                _attempt = _nEarly = _nLate = _nLockout = _nCooldown = _nNotLive = 0;
+                _blockRounds++;
+            }
 
             // A response is the only thing that can advance the staircase, so this is the one place
             // IsFinished needs evaluating — the run loop just waits on the result.
             if (sc != null && sc.IsFinished && _endReason == null && _logger.CurrentPhase == "main")
                 _endReason = StopRuleFor(sc);
+
+            // Shots fired before any change never reach QUEST+, so in principle a block could go on for ever: a backstop.
+            if (roundEnded && _endReason == null && _logger.CurrentPhase == "main" && Config != null &&
+                _blockRounds >= 3 * Config.maxTrials)
+                _endReason = "roundCap";
         }
 
         // One console line per round — enough to follow a pilot session live without opening a log.
-        void LogRound(in ShotSample s, in PerturbationController.TrialRecord trial, QuestPlusStaircase sc)
+        void LogRound(in ShotSample s, in PerturbationController.TrialRecord trial,
+                      QuestPlusStaircase sc, bool isShockwave)
         {
             string what = s.outcome switch
             {
-                TrialOutcome.Shot    => s.isHit ? "HIT" : $"miss by {Mathf.Abs(s.missDistX):0.0}",
-                TrialOutcome.Expired => "ran out of time",
-                _                    => "too many crossings",
+                TrialOutcome.Shot        => s.isHit ? "HIT" : $"miss by {Mathf.Abs(s.missDistX):0.0}",
+                TrialOutcome.Detected    => "DETECTED",
+                TrialOutcome.Early       => "too early",
+                TrialOutcome.Late        => "too late",
+                TrialOutcome.Timeout     => "chances missed",
+                TrialOutcome.Expired     => "ran out of time",
+                _                        => "too many crossings",
             };
             string staircase = trial.practice
                 ? "practice"
-                : sc != null ? $"T{sc.TrialCount} θ̂ {s.threshDiffFps:0.0} SD {s.sd:0.0}" : "";
+                : sc != null ? $"T{sc.TrialCount} θ̂ {s.threshDiffMs:0.00} ms SD {s.sd:0.00}" : "";
 
-            Debug.Log($"[Round] {BlockOrdinal}/{BlockOrder.Length} {_logger.CurrentPhase} #{s.roundNumber}: " +
-                      $"Δ{s.diffFps} — L {trial.LeftFps} | R {trial.RightFps} fps " +
-                      $"(measured {Fmt(trial.MeasuredLeftFps)} | {Fmt(trial.MeasuredRightFps)}) → {what}, " +
-                      $"{s.crossings} crossing(s), {s.roundDurationSec:0.0}s. {staircase}");
+            if (isShockwave)
+            {
+                Debug.Log($"[Round] {BlockOrdinal}/{BlockOrder.Length} {_logger.CurrentPhase} #{s.roundNumber}: " +
+                          $"Δ{s.diffMs:0.00} ms — {trial.baseFps} ↔ {trial.alteredFps} fps " +
+                          $"(measured {Fmt(trial.MeasuredBaseFps)} ↔ {Fmt(trial.MeasuredAlteredFps)}) → {what}, " +
+                          $"{s.crossings} flip(s), {s.roundDurationSec:0.0}s. {staircase}");
+            }
+            else
+            {
+                Debug.Log($"[Round] {BlockOrdinal}/{BlockOrder.Length} {_logger.CurrentPhase} #{s.roundNumber}: " +
+                          $"Δ{s.diffMs:0.00} ms — L {trial.LeftFps} | R {trial.RightFps} fps " +
+                          $"(measured {Fmt(trial.MeasuredLeftFps)} | {Fmt(trial.MeasuredRightFps)}) → {what}, " +
+                          $"{s.crossings} crossing(s), {s.roundDurationSec:0.0}s. {staircase}");
+            }
         }
 
         static string Fmt(float v) => float.IsNaN(v) ? "—" : v.ToString("0.0");

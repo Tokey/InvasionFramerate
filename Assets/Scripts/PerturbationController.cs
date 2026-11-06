@@ -4,14 +4,16 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// Core JND logic: splits the screen's frame rate at the hidden tower.
+    /// Core JND logic: splits the screen's frame rate at the hidden tower (or alternates it in time
+    /// on shockwave blocks).
     ///
-    /// While a trial is live, the side of the tower the UFO is on decides the frame-rate cap: one
-    /// side runs at the block's base frame rate, the other at base − Δ or base + Δ (the block's
-    /// <c>direction</c>), and which side gets the altered rate is drawn per round (or pinned by the
-    /// block's <c>alteredSide</c>). The participant feels the motion change as they fly across the
-    /// boundary and shoots where they think it is; landing the shot on the hidden tower is the
-    /// detection response. QUEST+ picks Δ for every main round; practice walks a fixed ladder.
+    /// While a trial is live on a laser block, the side of the tower the UFO is on decides the
+    /// frame-rate cap: one side runs at the block's base frame rate, the other at the rate Δ ms of
+    /// frame time away (slower or faster by the block's <c>direction</c>), and which side gets it is
+    /// drawn per round (or pinned by the block's <c>alteredSide</c>). On a shockwave block,
+    /// <see cref="ShockwaveController"/> alternates the whole screen between <c>baseFps</c> and
+    /// <c>alteredFps</c> at random times. QUEST+ picks Δ for every main round; practice walks a fixed
+    /// ladder.
     ///
     /// The split is only in force between <see cref="BeginTrial"/> (the round's starting gun) and
     /// <see cref="EndTrial"/> (its response). Everything else — the reveal, the reset under the
@@ -38,6 +40,8 @@ namespace JndUfo
         {
             public bool  valid;
             public bool  practice;
+            /// <summary>The stimulus, as the two caps really differ: in frame time (ms) and in frame rate.</summary>
+            public float diffMs;
             public int   diffFps;
             public int   baseFps;
             public int   alteredFps;
@@ -47,12 +51,18 @@ namespace JndUfo
             public int   baseFrames, alteredFrames;
             public float baseSec, alteredSec;
 
-            /// <summary>Tower crossings while the split was in force.</summary>
+            /// <summary>Tower crossings (or frame-rate flips on shockwave) while the split was in force.</summary>
             public int   crossings;
 
             /// <summary>Precise limiter: frames released late (no spare time to wait out). Always 0
             /// under Unity's limiter, which does not report it.</summary>
             public int   lateFrames;
+
+            /// <summary>The last change of frame rate the participant met (a crossing or a flip): the caps either side
+            /// of it, the frame it happened on (-1 = none yet), where the ship was, and how long the wait before it was
+            /// (flips only). And how many changes have passed since the last press.</summary>
+            public int   changeFromFps, changeToFps, changeFrame, changesSincePress;
+            public float changeUfoX, changeUfoY, foreperiodSec;
 
             // Time.realtimeSinceStartup; NaN = never happened.
             public float startedRealtime;
@@ -98,11 +108,12 @@ namespace JndUfo
         public float crossingDeadZone = 0.25f;
 
         [Header("References  (auto-found; drag-override if needed)")]
-        public CameraRig     rig;
-        public UfoController ufoController;
-        public TowerManager  towerManager;
-        public ScoreManager  scoreManager;
-        public UIManager     uiManager;
+        public CameraRig           rig;
+        public UfoController       ufoController;
+        public TowerManager        towerManager;
+        public ScoreManager        scoreManager;
+        public UIManager           uiManager;
+        public ShockwaveController shockwave;
 
         // ── Read-only state ──────────────────────────────────────────────────
 
@@ -136,10 +147,6 @@ namespace JndUfo
         /// <summary>The last round that ended, latched by <see cref="EndTrial"/>. This is what the
         /// shot log and the reveal describe.</summary>
         public TrialRecord LastTrial { get; private set; }
-
-        /// <summary>The frame-rate difference in force — the live round's, or the one the next round
-        /// will present.</summary>
-        public int  CurrentDiffFps => SplitActive ? _trial.diffFps : PendingDiffFps;
 
         /// <summary>True while warm-up rounds are being played: Δ comes from the practice ladder and
         /// responses never reach QUEST+.</summary>
@@ -188,9 +195,9 @@ namespace JndUfo
         // ── Cached QUEST+ readouts ───────────────────────────────────────────
         // Recomputed only when a response updates the posterior: each is a full pass over the
         // parameter grid, and the debug HUD reads them once a second.
-        /// <summary>Posterior mean of θ (fps) as of the last response.</summary>
+        /// <summary>Posterior mean of θ (ms) as of the last response.</summary>
         public float ThresholdEstimate  { get; private set; } = float.NaN;
-        /// <summary>SD of the θ marginal (fps) as of the last response.</summary>
+        /// <summary>SD of the θ marginal (ms) as of the last response.</summary>
         public float PosteriorSD        { get; private set; } = float.NaN;
         /// <summary>Posterior mean of the Weibull slope β as of the last response.</summary>
         public float SlopeEstimateValue { get; private set; } = float.NaN;
@@ -232,6 +239,8 @@ namespace JndUfo
             if (towerManager  == null) towerManager  = FindAnyObjectByType<TowerManager>();
             if (scoreManager  == null) scoreManager  = FindAnyObjectByType<ScoreManager>();
             if (uiManager     == null) uiManager     = FindAnyObjectByType<UIManager>();
+            if (shockwave     == null) shockwave     = FindAnyObjectByType<ShockwaveController>();
+            if (shockwave     == null) shockwave     = gameObject.AddComponent<ShockwaveController>();
 
             QualitySettings.vSyncCount = 0;
         }
@@ -273,6 +282,16 @@ namespace JndUfo
             float dt = Time.unscaledDeltaTime;
             if (_appliedPace == Pace.Base)         { _trial.baseFrames++;    _trial.baseSec    += dt; }
             else if (_appliedPace == Pace.Altered) { _trial.alteredFrames++; _trial.alteredSec += dt; }
+
+            if (_config != null && _config.IsShockwave && shockwave != null && shockwave.FlippedThisFrame)
+            {
+                CrossedThisFrame             = true;
+                _trial.crossings             = shockwave.FlipCount;
+                _trial.firstCrossingRealtime = shockwave.FirstFlipAt;
+                _trial.lastCrossingRealtime  = shockwave.LastFlipAt;
+                _trial.foreperiodSec         = shockwave.LastForeperiodSec;
+                NoteChange(shockwave.AlteredPhase ? shockwave.BaseFps : shockwave.AlteredFps, shockwave.CurrentFps);
+            }
         }
 
         // LateUpdate rather than Update: every Update has moved the UFO by now, and coroutines (the
@@ -286,6 +305,7 @@ namespace JndUfo
         void UpdateSide()
         {
             if (ufoController == null || towerManager == null) return;
+            if (_config != null && _config.IsShockwave) return;
 
             // How far past the boundary the UFO is, signed by side — past the nearest of its copies, with the
             // sign turned at every other one, when the world scroll repeats it (see TowerManager.SideAlong).
@@ -320,6 +340,74 @@ namespace JndUfo
             _trial.crossings++;
             _trial.lastCrossingRealtime = Time.realtimeSinceStartup;
             if (_trial.crossings == 1) _trial.firstCrossingRealtime = _trial.lastCrossingRealtime;
+
+            bool toAltered = CurrentSide == _trial.alteredSide;
+            NoteChange(toAltered ? _trial.baseFps : _trial.alteredFps, toAltered ? _trial.alteredFps : _trial.baseFps);
+        }
+
+        // Every change of frame rate the participant meets, for the shot log.
+        readonly float[] _changeTimes = new float[64];
+        int _changeCount;
+
+        void NoteChange(int fromFps, int toFps)
+        {
+            _trial.changeFromFps = fromFps;
+            _trial.changeToFps   = toFps;
+            _trial.changeFrame   = Time.frameCount;
+            _trial.changesSincePress++;
+            if (ufoController != null)
+            {
+                Vector3 p = ufoController.transform.position;
+                _trial.changeUfoX = p.x;
+                _trial.changeUfoY = p.y;
+            }
+            if (_changeCount < _changeTimes.Length) _changeTimes[_changeCount++] = Time.realtimeSinceStartup;
+        }
+
+        /// <summary>This round's changes of frame rate so far, "t1;t2;...", seconds after <paramref name="origin"/>. Built
+        /// only for a press's log row.</summary>
+        public string ChangeTimesCell(float origin)
+        {
+            if (_changeCount == 0) return "";
+            var sb = new StringBuilder(_changeCount * 9);
+            for (int i = 0; i < _changeCount; i++)
+            {
+                if (i > 0) sb.Append(';');
+                sb.Append((_changeTimes[i] - origin).ToString("0.0000", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>The round in progress as it stands, for the log row of a press that does not end it.</summary>
+        public TrialRecord SnapshotTrial()
+        {
+            TrialRecord t = _trial;
+            t.lateFrames = _config != null && _config.frameLimiter == FrameLimiterMode.Precise ? FrameLimiter.Overruns : 0;
+            return t;
+        }
+
+        /// <summary>A press has been logged: the count of changes since the last press starts over.</summary>
+        public void NotePress() => _trial.changesSincePress = 0;
+
+        /// <summary>
+        /// After a counted TOO LATE, on a shockwave block: QUEST+ has moved on, so the rest of the round presents its new
+        /// choice, and the measured rates start afresh, so each log row describes the attempt it answers. The round starts
+        /// again from the base rate, while firing is off under TRY AGAIN!.
+        /// </summary>
+        public void BeginNextAttempt()
+        {
+            if (!SplitActive || _config == null) return;
+            int altered = PendingAlteredFps;
+            _trial.alteredFps    = altered;
+            _trial.diffFps       = Mathf.Abs(altered - _trial.baseFps);
+            _trial.diffMs        = StudyConfig.FrameTimeDiffMs(_trial.baseFps, altered);
+            _trial.baseFrames    = _trial.alteredFrames = 0;
+            _trial.baseSec       = _trial.alteredSec    = 0f;
+            _appliedPace         = Pace.None;
+            if (shockwave != null) shockwave.BeginAttempt(altered);
+            FrameLimiter.ResetOverruns();
+            ApplyCap();
+            RefreshDebugText();
         }
 
         void ApplyCap()
@@ -330,9 +418,17 @@ namespace JndUfo
             Pace pace = Pace.None;
             if (SplitActive)
             {
-                bool onAltered = CurrentSide == _trial.alteredSide;
-                cap  = onAltered ? _trial.alteredFps : _trial.baseFps;
-                pace = onAltered ? Pace.Altered      : Pace.Base;
+                if (_config.IsShockwave && shockwave != null && shockwave.Active)
+                {
+                    cap  = shockwave.CurrentFps;
+                    pace = shockwave.AlteredPhase ? Pace.Altered : Pace.Base;
+                }
+                else
+                {
+                    bool onAltered = CurrentSide == _trial.alteredSide;
+                    cap  = onAltered ? _trial.alteredFps : _trial.baseFps;
+                    pace = onAltered ? Pace.Altered      : Pace.Base;
+                }
             }
 
             FrameLimiter.Apply(cap, _config.frameLimiter);
@@ -358,20 +454,21 @@ namespace JndUfo
             crossingDeadZone = config.crossingDeadZone;
 
             CancelTrial();
+            if (shockwave != null) shockwave.BeginBlock(config);
             LastTrial      = default;
             CrossingCount  = 0;
             _lastSideSign  = 0;
             _prevDiff      = float.NaN;
             _blockActive   = true;
 
-            QuestPlusConfig q = QuestPlusConfig.ForFpsDiff(config);
+            QuestPlusConfig q = QuestPlusConfig.ForFrameTimeDiff(config);
             _staircase = new QuestPlusStaircase(q);
             RefreshStaircaseEstimates();
 
             Debug.Log($"[PerturbationController] Block {config.blockIndex}: {config.Describe()}. QUEST+ " +
-                      $"Δ grid {q.stimGrid[0]:0}–{q.stimGrid[q.stimGrid.Length - 1]:0} fps " +
+                      $"Δ grid {q.stimGrid[0]:0.##}–{q.stimGrid[q.stimGrid.Length - 1]:0.##} ms " +
                       $"({q.stimGrid.Length} values), θ grid {q.threshGrid.Length} × β {q.slopeGrid.Length} × " +
-                      $"λ {q.lapseGrid.Length}, γ={q.guessRate:0.000}, stop at SD ≤ {q.stopPosteriorSD:0.##} fps " +
+                      $"λ {q.lapseGrid.Length}, γ={q.guessRate:0.000}, stop at SD ≤ {q.stopPosteriorSD:0.##} ms " +
                       $"after {q.minTrials} trials or at {q.maxTrials}. Altered side: {config.alteredSide}.");
 
             // The round clock and the staircase have to describe the same block.
@@ -379,6 +476,7 @@ namespace JndUfo
 
             ApplyTaskParams();
             if (scoreManager != null) scoreManager.SetScoring(config.hitPoints, config.missPoints);
+            if (uiManager    != null) uiManager.SetDebugVisible(config.showDebug);
 
             // The base rate from now on, not from the next LateUpdate — the block's first prompt
             // should already be drawn at it.
@@ -428,7 +526,7 @@ namespace JndUfo
             if (towerManager != null)
             {
                 towerManager.hitZoneRadius  = closeRadius;
-                towerManager.showHitZone    = showHitZone;
+                towerManager.showHitZone    = showHitZone && (_config == null || !_config.IsShockwave);
                 towerManager.hitZoneOpacity = 0.6f;    // the target size has to read clearly in the reveal
                 towerManager.RefreshHitZone();
             }
@@ -436,15 +534,18 @@ namespace JndUfo
 
         // ── Trials ───────────────────────────────────────────────────────────
 
-        /// <summary>The Δ the next round will present: the practice pair's during practice,
-        /// otherwise QUEST+'s current choice.</summary>
-        int PendingDiffFps
+        /// <summary>The base and altered caps the next round will present: the practice pair's during
+        /// practice, otherwise the block's base and the cap of QUEST+'s current choice.</summary>
+        int PendingBaseFps => _practiceMode ? _practicePair.highFps
+                            : _config != null ? _config.baseFps : 0;
+
+        int PendingAlteredFps
         {
             get
             {
-                if (_practiceMode) return _practicePair.DiffFps;
-                if (_staircase != null) return Mathf.Max(1, Mathf.RoundToInt(_staircase.CurrentValue));
-                return _config != null ? _config.maxDiffFps : 0;
+                if (_practiceMode) return _practicePair.lowFps;
+                if (_config == null) return 0;
+                return _config.AlteredFpsFor(_staircase != null ? _staircase.CurrentValue : _config.maxDiffMs);
             }
         }
 
@@ -458,7 +559,8 @@ namespace JndUfo
         {
             if (_config == null) return;
 
-            int diff = PendingDiffFps;
+            int baseFps    = PendingBaseFps;
+            int alteredFps = PendingAlteredFps;
             Side altered = _config.alteredSide switch
             {
                 AlteredSideMode.Left  => Side.Left,
@@ -470,14 +572,20 @@ namespace JndUfo
             {
                 valid                = true,
                 practice             = _practiceMode,
-                diffFps              = diff,
-                baseFps              = _practiceMode ? _practicePair.highFps : _config.baseFps,
-                alteredFps           = _practiceMode ? _practicePair.lowFps  : _config.AlteredFpsFor(diff),
+                diffMs               = StudyConfig.FrameTimeDiffMs(baseFps, alteredFps),
+                diffFps              = Mathf.Abs(alteredFps - baseFps),
+                baseFps              = baseFps,
+                alteredFps           = alteredFps,
                 alteredSide          = altered,
-                startedRealtime       = Time.realtimeSinceStartup,
+                startedRealtime      = Time.realtimeSinceStartup,
                 firstCrossingRealtime = float.NaN,
                 lastCrossingRealtime  = float.NaN,
+                changeFrame           = -1,
+                changeUfoX            = float.NaN,
+                changeUfoY            = float.NaN,
+                foreperiodSec         = float.NaN,
             };
+            _changeCount = 0;
 
             // The frame that is running now was paced by the base cap; crediting it to either side
             // would put a base-rate frame into the altered side's measurement.
@@ -485,6 +593,7 @@ namespace JndUfo
             SplitActive  = true;
             _practiceRoundEnded = false;
             if (_practiceMode) _practiceIdleFps = _trial.baseFps;
+            if (_config.IsShockwave && shockwave != null) shockwave.BeginTrial(_config, baseFps, alteredFps);
             FrameLimiter.ResetOverruns();
             ApplyCap();
             RefreshDebugText();
@@ -503,6 +612,7 @@ namespace JndUfo
                 ? FrameLimiter.Overruns : 0;
             LastTrial   = _trial;
             SplitActive = false;
+            if (_config != null && _config.IsShockwave && shockwave != null) shockwave.StopTrial();
             _practiceRoundEnded = _trial.practice;
             ApplyCap();
             RefreshDebugText();
@@ -515,17 +625,19 @@ namespace JndUfo
             _practiceRoundEnded = false;
             if (!SplitActive) return;
             SplitActive = false;
+            if (_config != null && _config.IsShockwave && shockwave != null) shockwave.StopTrial();
             ApplyCap();
         }
 
         /// <summary>
-        /// Folds a response into QUEST+. Correct = the shot landed on the hidden tower: the
-        /// participant located the boundary between the two frame rates. Call after
-        /// <see cref="EndTrial"/>; the round's Δ is fixed in the latched trial, so the staircase moving
-        /// on to the next Δ here cannot change what gets logged against this response.
+        /// Folds a response into QUEST+. Correct = the shot landed on the hidden tower (or fired inside
+        /// the shockwave window). Call after <see cref="EndTrial"/>; the round's Δ is fixed in the
+        /// latched trial, so the staircase moving on to the next Δ here cannot change what gets logged
+        /// against this response.
         /// </summary>
-        public void ReportResponse(bool isHit)
+        public void ReportResponse(bool isHit, bool counted = true)
         {
+            if (!counted) return;
             // Practice responses are warm-up only — they must never inform the posterior.
             if (_practiceMode) return;
             if (_staircase == null) return;
@@ -560,34 +672,57 @@ namespace JndUfo
             sb.Append("FPS JND | ").Append(string.IsNullOrEmpty(DebugLabel) ? "block " + _config.blockIndex : DebugLabel)
               .Append(" | ").Append(_config.LevelCell)
               .Append(" | base ").Append(_config.baseFps).Append(' ').Append(_config.DirectionCell)
-              .Append(" | diff ").Append(_config.minDiffFps).Append('-').Append(_config.maxDiffFps)
-              .Append(" step ").Append(_config.diffStepFps)
+              .Append(" | diff ").Append(_config.minDiffMs.ToString("0.##")).Append('-')
+              .Append(_config.maxDiffMs.ToString("0.##"))
+              .Append(" ms step ").Append(_config.diffStepMs.ToString("0.##"))
               .Append(" | ").Append(_config.LimiterCell).Append(" limiter\n");
 
             if (t.valid)
             {
-                sb.Append(SplitActive ? "LIVE  " : "last  ")
-                  .Append("diff ").Append(t.diffFps).Append(": ").Append(t.baseFps).Append(" vs ")
-                  .Append(t.alteredFps).Append(" fps, altered on ")
-                  .Append(t.alteredSide == Side.Left ? "LEFT" : "RIGHT")
-                  .Append("   (L ").Append(t.LeftFps).Append(" | R ").Append(t.RightFps).Append(")\n");
-                sb.Append("measured  L ").Append(Fmt(t.MeasuredLeftFps))
-                  .Append(" | R ").Append(Fmt(t.MeasuredRightFps))
-                  .Append("   crossings ").Append(t.crossings);
+                if (_config.IsShockwave)
+                {
+                    sb.Append(SplitActive ? "LIVE  " : "last  ")
+                      .Append("diff ").Append(t.diffMs.ToString("0.00")).Append(" ms: ")
+                      .Append(t.baseFps).Append(" <-> ").Append(t.alteredFps)
+                      .Append(" fps   flips ").Append(t.crossings).Append('\n');
+                    sb.Append("measured  base ").Append(Fmt(t.MeasuredBaseFps))
+                      .Append(" | altered ").Append(Fmt(t.MeasuredAlteredFps));
+                }
+                else
+                {
+                    sb.Append(SplitActive ? "LIVE  " : "last  ")
+                      .Append("diff ").Append(t.diffMs.ToString("0.00")).Append(" ms: ")
+                      .Append(t.baseFps).Append(" vs ")
+                      .Append(t.alteredFps).Append(" fps, altered on ")
+                      .Append(t.alteredSide == Side.Left ? "LEFT" : "RIGHT")
+                      .Append("   (L ").Append(t.LeftFps).Append(" | R ").Append(t.RightFps).Append(")\n");
+                    sb.Append("measured  L ").Append(Fmt(t.MeasuredLeftFps))
+                      .Append(" | R ").Append(Fmt(t.MeasuredRightFps))
+                      .Append("   crossings ").Append(t.crossings);
+                }
                 if (_config.frameLimiter == FrameLimiterMode.Precise)
                     sb.Append("   late ").Append(SplitActive ? FrameLimiter.Overruns : t.lateFrames);
                 sb.Append('\n');
             }
             else
             {
-                sb.Append("next diff ").Append(PendingDiffFps).Append(": ")
-                  .Append(_practiceMode ? _practicePair.highFps : _config.baseFps).Append(" vs ")
-                  .Append(_practiceMode ? _practicePair.lowFps : _config.AlteredFpsFor(PendingDiffFps))
+                sb.Append("next diff ")
+                  .Append(StudyConfig.FrameTimeDiffMs(PendingBaseFps, PendingAlteredFps).ToString("0.00"))
+                  .Append(" ms: ").Append(PendingBaseFps).Append(" vs ").Append(PendingAlteredFps)
                   .Append(" fps\n");
             }
 
-            sb.Append("now ").Append(CurrentSide == Side.Left ? "LEFT" : "RIGHT")
-              .Append(" @ ").Append(CurrentTargetFps).Append(" fps cap");
+            if (_config.IsShockwave)
+            {
+                bool win = shockwave != null && shockwave.WindowOpen;
+                sb.Append("now ").Append(CurrentTargetFps).Append(" fps cap")
+                  .Append(win ? " [WINDOW OPEN]" : "");
+            }
+            else
+            {
+                sb.Append("now ").Append(CurrentSide == Side.Left ? "LEFT" : "RIGHT")
+                  .Append(" @ ").Append(CurrentTargetFps).Append(" fps cap");
+            }
             if (_config.frameLimiter == FrameLimiterMode.Precise)
                 sb.Append(" | spin ").Append(FrameLimiter.LastSpinMs.ToString("0.0")).Append(" ms");
             sb.Append('\n');
@@ -600,11 +735,11 @@ namespace JndUfo
             else if (_staircase != null)
             {
                 sb.Append("QUEST+ trial ").Append(_staircase.TrialCount).Append('/').Append(_staircase.Config.maxTrials)
-                  .Append("  threshold ").Append(Fmt(ThresholdEstimate))
-                  .Append("  SD ").Append(Fmt(PosteriorSD))
+                  .Append("  threshold ").Append(FmtMs(ThresholdEstimate))
+                  .Append(" ms  SD ").Append(FmtMs(PosteriorSD))
                   .Append("  slope ").Append(SlopeEstimateValue.ToString("0.00"))
                   .Append("  lapse ").Append(LapseEstimateValue.ToString("0.000"));
-                if (!float.IsNaN(_prevDiff)) sb.Append("  prev diff ").Append(_prevDiff.ToString("0"));
+                if (!float.IsNaN(_prevDiff)) sb.Append("  prev diff ").Append(_prevDiff.ToString("0.00"));
             }
 
             RoundClock clock = RoundClock.Instance;
@@ -613,7 +748,7 @@ namespace JndUfo
                 sb.Append("\nround ").Append(clock.RoundElapsedSec.ToString("0"));
                 if (_config.roundTimeoutSec > 0f) sb.Append('/').Append(_config.roundTimeoutSec.ToString("0"));
                 sb.Append(" s");
-                if (_config.maxCrossingsPerRound > 0)
+                if (!_config.IsShockwave && _config.maxCrossingsPerRound > 0)
                     sb.Append("   crossings ").Append(TrialCrossings).Append('/').Append(_config.maxCrossingsPerRound);
             }
 
@@ -621,5 +756,6 @@ namespace JndUfo
         }
 
         static string Fmt(float v) => float.IsNaN(v) ? "-" : v.ToString("0.0");
+        static string FmtMs(float v) => float.IsNaN(v) ? "-" : v.ToString("0.00");
     }
 }

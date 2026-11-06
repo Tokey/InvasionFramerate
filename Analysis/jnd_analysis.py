@@ -965,24 +965,69 @@ def linspace32(lo, hi, n):
     return np.array([F32(lo + F32(F32(d * F32(i)) / F32(n - 1))) for i in range(n)], dtype=np.float32)
 
 
+def altered_fps_for(base, direction, diff_ms):
+    """StudyConfig.AlteredFpsFor: the whole-number cap nearest a frame-time difference (ms)."""
+    ms = 1000.0 / base + (-float(diff_ms) if direction == "up" else float(diff_ms))
+    return max(1, int(round(1000.0 / ms))) if ms > 0 else base
+
+
+def caps_diff_ms(a, b):
+    """StudyConfig.FrameTimeDiffMs, in the single precision the C# keeps it in."""
+    return F32(abs(1000.0 / a - 1000.0 / b))
+
+
+def diff_grid_ms(base, direction, mn, mx, step):
+    """StudyConfig.DiffGridMs: each step moved to the difference its whole-number cap really
+    produces, a step landing on the same cap as the last one counting once."""
+    mn, step = F32(mn), F32(step)
+    grid, last = [], base
+    for k in range(int(round(float(F32(F32(F32(mx) - mn) / step)))) + 1):
+        cap = altered_fps_for(base, direction, F32(mn + F32(F32(k) * step)))
+        if cap != last:
+            grid.append(caps_diff_ms(base, cap))
+            last = cap
+    return np.array(grid, dtype=np.float32)
+
+
+def _cfg_float(v):
+    """A config cell as a float; NaN when blank or missing, as the ms columns are in older logs."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return math.nan
+
+
 def effective_config(row):
     """The block's QUEST+ configuration as the game used it: the cfg_ echo re-validated the
-    way StudyConfig.Validate does (it pulls maxDiffFps down onto the step grid, e.g. 143 ->
-    142 in 2-fps steps, and below the base rate when the altered side runs slower)."""
+    way StudyConfig.Validate does. It pulls the top of the range down onto the step grid (e.g.
+    143 -> 142 in 2-fps steps). Logs with cfg_diffStepMs step in ms of frame time and carry
+    minDiffMs / maxDiffMs / diffStepMs here; older ones step in whole fps."""
     g = lambda k, d=np.nan: row.get(f"cfg_{k}", d)  # noqa: E731
     base = int(g("baseFps"))
     direction = str(g("direction", "down")).strip().lower()
-    mn, mx, step = int(g("minDiffFps")), int(g("maxDiffFps")), int(g("diffStepFps"))
-    mn = max(1, mn)
-    if direction == "down" and base - mx < 1:
-        mx = base - 1
-    step = max(1, step)
-    if mx > mn and (mx - mn) % step != 0:
-        mx = mn + (mx - mn) // step * step
-    mx = max(mx, mn)
+    step_ms = _cfg_float(g("diffStepMs"))
+    if math.isfinite(step_ms):
+        step_ms = step_ms if step_ms > 0 else 0.5
+        mn = _cfg_float(g("minDiffMs"))
+        mn = mn if mn > 0 else step_ms
+        ceiling = float(caps_diff_ms(base, 1)) if direction == "down" else float(F32(F32(1000.0 / base) - F32(step_ms)))
+        mx = max(min(_cfg_float(g("maxDiffMs")), ceiling), mn)
+        on_grid = float(F32(mn) + F32(math.floor(float(F32(F32(mx) - F32(mn)) / F32(step_ms)) + 1e-4)) * F32(step_ms))
+        if abs(on_grid - mx) > 1e-3:
+            mx = on_grid
+        stim_range = {"minDiffMs": mn, "maxDiffMs": mx, "diffStepMs": step_ms}
+    else:
+        mn, mx, step = int(g("minDiffFps")), int(g("maxDiffFps")), int(g("diffStepFps"))
+        mn = max(1, mn)
+        if direction == "down" and base - mx < 1:
+            mx = base - 1
+        step = max(1, step)
+        if mx > mn and (mx - mn) % step != 0:
+            mx = mn + (mx - mn) // step * step
+        mx = max(mx, mn)
+        stim_range = {"minDiffFps": mn, "maxDiffFps": mx, "diffStepFps": step}
     return {
-        "baseFps": base, "direction": direction, "minDiffFps": mn, "maxDiffFps": mx,
-        "diffStepFps": step, "threshCount": max(2, int(g("threshCount"))),
+        "baseFps": base, "direction": direction, **stim_range, "threshCount": max(2, int(g("threshCount"))),
         "slopeMin": float(g("slopeMin")), "slopeMax": float(g("slopeMax")),
         "slopeCount": max(1, int(g("slopeCount"))),
         "lapseMin": float(g("lapseMin")), "lapseMax": float(g("lapseMax")),
@@ -995,7 +1040,7 @@ def effective_config(row):
 
 @dataclass
 class Grid:
-    stim: np.ndarray       # the differences QUEST+ could place (float32 of whole fps)
+    stim: np.ndarray       # the differences QUEST+ could place (float32: whole fps, or ms in frame-time logs)
     theta: np.ndarray      # float32, as the C# builds them
     beta: np.ndarray
     lam: np.ndarray
@@ -1003,19 +1048,23 @@ class Grid:
     min_trials: int
     max_trials: int
     base: int
-    lo: int
-    hi: int
+    lo: float
+    hi: float
 
     @classmethod
     def from_cfg(cls, row):
         c = effective_config(row)
-        stim = np.arange(c["minDiffFps"], c["maxDiffFps"] + 1, c["diffStepFps"]).astype(np.float32)
+        if "diffStepMs" in c:
+            lo, hi = c["minDiffMs"], c["maxDiffMs"]
+            stim = diff_grid_ms(c["baseFps"], c["direction"], lo, hi, c["diffStepMs"])
+        else:
+            lo, hi = c["minDiffFps"], c["maxDiffFps"]
+            stim = np.arange(lo, hi + 1, c["diffStepFps"]).astype(np.float32)
         return cls(stim,
-                   linspace32(c["minDiffFps"], c["maxDiffFps"], c["threshCount"]),
+                   linspace32(lo, hi, c["threshCount"]),
                    linspace32(c["slopeMin"], c["slopeMax"], c["slopeCount"]),
                    linspace32(c["lapseMin"], c["lapseMax"], c["lapseCount"]),
-                   c["stopSD"], c["minTrials"], c["maxTrials"], c["baseFps"],
-                   c["minDiffFps"], c["maxDiffFps"])
+                   c["stopSD"], c["minTrials"], c["maxTrials"], c["baseFps"], lo, hi)
 
     @classmethod
     def spanning(cls, grids):
@@ -1579,12 +1628,20 @@ def load_participants(root, only=None, exclude=None, level=None, direction=None,
     for folder, tag, session_path, shot_path, player_path in found:
         try:
             blocks = prepare_blocks(pd.read_csv(session_path))
-            shots = prepare_shots(pd.read_csv(shot_path))
+            raw_shots = pd.read_csv(shot_path)
+            # Every press has a row now; a press that fired nothing is not a response.
+            if "outcome" in raw_shots:
+                raw_shots = raw_shots[~raw_shots["outcome"].isin(["cooldown", "lockout", "notLive"])].copy()
+            shots = prepare_shots(raw_shots)
         except Exception as exc:  # truncated mid-write, older schema
             log(f"  {folder.name}: unreadable ({exc}) - skipped")
             continue
         if blocks.empty or not shots["counted"].any():
             log(f"  {folder.name}: no main-phase rounds - skipped")
+            continue
+        # This script replays QUEST+ and draws its figures in fps, so it cannot read a run in ms.
+        if "cfg_diffStepMs" in blocks:
+            log(f"  {folder.name}: QUEST+ ran in ms of frame time - skipped, use level_analysis.py")
             continue
         notes = " | ".join(p.read_text(encoding="utf-8", errors="replace").strip()
                            for p in sorted(folder.glob("*.txt")))

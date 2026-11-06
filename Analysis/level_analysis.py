@@ -62,10 +62,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jnd_analysis as J  # noqa: E402 - house style and the statistics helpers
 
 REPO = Path(__file__).resolve().parent.parent
-LEVELS = ("manual", "scroll", "auto")
-LEVEL_COLOR = {"manual": "#6250d6", "scroll": "#e87ba4", "auto": "#008300"}
-LEVEL_MARKER = {"manual": "o", "scroll": "s", "auto": "^"}
-LEVEL_LABEL = {"manual": "Manual", "scroll": "Scroll", "auto": "Auto"}
+LEVELS = ("manual", "scroll", "auto", "shockwave")
+LEVEL_COLOR = {"manual": "#6250d6", "scroll": "#e87ba4", "auto": "#008300", "shockwave": "#c26a00"}
+LEVEL_MARKER = {"manual": "o", "scroll": "s", "auto": "^", "shockwave": "D"}
+LEVEL_LABEL = {"manual": "Manual", "scroll": "Scroll", "auto": "Auto", "shockwave": "Shockwave"}
 ARROW = {"down": "↓", "up": "↑"}
 CLOSE_R = 6.0
 VIEW_W_16_9 = 2 * J.CAM_DIST * math.tan(math.radians(J.CAM_FOV_DEG / 2)) * 16 / 9
@@ -175,6 +175,8 @@ class Study:
         for f in found:
             try:
                 sh = pd.read_csv(f["shot"], keep_default_na=False, na_values=["", "NaN"])
+                # Every press has a row now; a press that fired nothing is not a response.
+                if "outcome" in sh: sh = sh[~sh["outcome"].isin(["cooldown", "lockout", "notLive"])].copy()
                 ss = pd.read_csv(f["session"], keep_default_na=False, na_values=["", "NaN"]) if f["session"] else None
             except Exception as exc:  # noqa: BLE001
                 self.notes.append(f"{f['folder'].name}: unreadable ({exc})")
@@ -394,6 +396,12 @@ def fig_thresholds_fps(st):
     return _thresholds(st, "jndDiffFps", "Threshold difference (fps)", log_y=True)
 
 
+@figure("L02b_thresholds_ms", "thresholds",
+        "The same thresholds as frame-time differences (ms, log scale): the unit QUEST+ steps and estimates in")
+def fig_thresholds_ms(st):
+    return _thresholds(st, "jndFrameTimeDiffMs", "Threshold difference (ms of frame time)", log_y=True)
+
+
 def level_contrasts(st):
     b = st.blocks[st.blocks["usable"]]
     rows = []
@@ -453,7 +461,7 @@ def fig_order(st):
             continue
         for d in ("down", "up"):
             h = g[g["direction"] == d]
-            ax.scatter(h["blockOrdinal"] + {"manual": -0.12, "scroll": 0, "auto": 0.12}[lv], h["weberPct"], s=12,
+            ax.scatter(h["blockOrdinal"] + {"manual": -0.12, "scroll": 0, "auto": 0.12, "shockwave": 0.2}[lv], h["weberPct"], s=12,
                        marker=LEVEL_MARKER[lv], facecolor=mfc(lv, d), edgecolor=LEVEL_COLOR[lv], lw=0.7)
         means = g.groupby("blockOrdinal")["weberPct"].mean()
         ax.plot(means.index, means.values, color=LEVEL_COLOR[lv], lw=1.0, alpha=0.8)
@@ -575,21 +583,24 @@ def staircase_page(st, pid):
     for ax, (bi, g) in zip(axes.flat, blocks):
         lv, d, base = g["levelType"].iloc[0], g["direction"].iloc[0], int(g["baseFps"].iloc[0])
         t = np.arange(1, len(g) + 1)
-        if "threshDiffFps" in g and g["threshDiffFps"].notna().any():
-            ax.fill_between(t, g["threshDiffFps"] - g["sd"], g["threshDiffFps"] + g["sd"], color=LEVEL_COLOR[lv],
+        # A block is drawn in the unit its QUEST+ ran in, since that is the unit of its sd.
+        in_ms = "diffMs" in g and g["diffMs"].notna().any()
+        stim, thresh, unit = ("diffMs", "threshDiffMs", "ms") if in_ms else ("diffFps", "threshDiffFps", "fps")
+        if thresh in g and g[thresh].notna().any():
+            ax.fill_between(t, g[thresh] - g["sd"], g[thresh] + g["sd"], color=LEVEL_COLOR[lv],
                             alpha=0.15, lw=0)
-            ax.plot(t, g["threshDiffFps"], color=LEVEL_COLOR[lv], lw=1.1)
+            ax.plot(t, g[thresh], color=LEVEL_COLOR[lv], lw=1.1)
         hit = g["isHit"].to_numpy() == 1
-        ax.plot(t, g["diffFps"], color=J.INK_2, lw=0.6)
-        ax.scatter(t[hit], g["diffFps"].to_numpy()[hit], s=12, marker="o", color=J.OUTCOME_COLOR["hit"], zorder=3,
+        ax.plot(t, g[stim], color=J.INK_2, lw=0.6)
+        ax.scatter(t[hit], g[stim].to_numpy()[hit], s=12, marker="o", color=J.OUTCOME_COLOR["hit"], zorder=3,
                    lw=0, label="hit")
-        ax.scatter(t[~hit], g["diffFps"].to_numpy()[~hit], s=12, marker="x", color=J.INK, zorder=3, lw=0.9,
+        ax.scatter(t[~hit], g[stim].to_numpy()[~hit], s=12, marker="x", color=J.INK, zorder=3, lw=0.9,
                    label="miss / ran out")
         b = st.blocks[(st.blocks["pid"] == pid) & (st.blocks["blockIndex"] == bi)]
         end = b["endReason"].iloc[0] if len(b) else ""
         ax.set_title(f"{base} fps {ARROW[d]} · {LEVEL_LABEL[lv]} · {end}", fontsize=J.FS_SMALL + 0.5)
         ax.set_xlabel("Trial")
-        ax.set_ylabel("Difference (fps)")
+        ax.set_ylabel(f"Difference ({unit})")
         grid_y(ax)
     hs = [Line2D([], [], marker="o", ls="", color=J.OUTCOME_COLOR["hit"], label="hit"),
           Line2D([], [], marker="x", ls="", color=J.INK, label="miss / ran out"),
@@ -600,6 +611,12 @@ def staircase_page(st, pid):
 
 
 # ================================================================== figures: behaviour
+
+# The outcomes of these levels, on top of the ones the frame-rate study's figure knows.
+OUTCOME_ORDER = J.OUTCOME_ORDER + [("detected", "Detected"), ("early", "Too early"), ("late", "Too late"),
+                                   ("timeout", "Chances missed")]
+OUTCOME_COLOR = {**J.OUTCOME_COLOR, "detected": "#1baf7a", "early": "#eda100", "late": "#3d3c39", "timeout": "#bdbcb4"}
+
 
 @figure("L07_outcomes", "behaviour",
         "What every main round ended in, per condition: hit, missed shot, timed out, crossing limit (counts in the "
@@ -615,20 +632,21 @@ def fig_outcomes(st):
         g = s[(s["levelType"] == lv) & (s["baseFps"] == base) & (s["direction"] == d)]
         left = 0.0
         y = len(conds) - 1 - i
-        for key, lab in J.OUTCOME_ORDER:
+        for key, lab in OUTCOME_ORDER:
             k = int((g["result"] == key).sum())
             if not k:
                 continue
             w = k / len(g)
-            ax.barh(y, w, left=left, color=J.OUTCOME_COLOR[key], edgecolor="white", lw=1.0, height=0.7)
+            ax.barh(y, w, left=left, color=OUTCOME_COLOR[key], edgecolor="white", lw=1.0, height=0.7)
             if w > 0.08:
                 ax.text(left + w / 2, y, str(k), ha="center", va="center", fontsize=J.FS_SMALL,
-                        color="white" if key in ("hit", "miss") else J.INK)
+                        color="white" if key in ("hit", "miss", "detected", "late") else J.INK)
             left += w
     ax.set_yticks(range(len(conds)), [cond_label(lv, b_, d) for lv, b_, d in conds[::-1]])
     ax.set_xlim(0, 1)
     ax.set_xlabel("Share of rounds")
-    top_legend(fig, [Patch(color=J.OUTCOME_COLOR[k], label=lab) for k, lab in J.OUTCOME_ORDER], 2)
+    top_legend(fig, [Patch(color=OUTCOME_COLOR[k], label=lab) for k, lab in OUTCOME_ORDER
+                         if (s["result"] == k).any()], 2)
     return fig
 
 

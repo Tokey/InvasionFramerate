@@ -14,6 +14,8 @@ namespace JndUfo
         Flat = 2,
         /// <summary>A soft band at the quad's rim: shockwave rings.</summary>
         Ring = 3,
+        /// <summary>A pressure wave: a crisp edge at the quad's rim, light falling away behind it.</summary>
+        Wave = 4,
     }
 
     /// <summary>
@@ -37,6 +39,7 @@ namespace JndUfo
         public static readonly int ShapeId     = Shader.PropertyToID("_Shape");
         public static readonly int SoftnessId  = Shader.PropertyToID("_Softness");
         public static readonly int RingWidthId = Shader.PropertyToID("_RingWidth");
+        public static readonly int RingEdgeId  = Shader.PropertyToID("_RingEdge");
 
         /// <summary>
         /// A new additive material. <paramref name="color"/> may be HDR — anything above 1 blooms.
@@ -74,5 +77,9 @@ namespace JndUfo
         /// <summary>A colour scaled in brightness, alpha untouched — for driving HDR intensity.</summary>
         public static Color Scaled(Color c, float intensity) =>
             new Color(c.r * intensity, c.g * intensity, c.b * intensity, c.a);
+
+        /// <summary>A colour scaled in brightness with an explicit alpha.</summary>
+        public static Color Scaled(Color c, float intensity, float alpha) =>
+            new Color(c.r * intensity, c.g * intensity, c.b * intensity, alpha);
     }
 }

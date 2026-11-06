@@ -4,647 +4,870 @@ using UnityEngine.Rendering;
 namespace JndUfo
 {
     /// <summary>
-    /// The laser shot, drawn as light. A white-hot bolt strikes from the muzzle to the ground in a
-    /// few hundredths of a second with a bright pulse of energy racing down it; the muzzle flashes;
-    /// where it lands a flash, a shockwave ring and a fountain of teal sparks go up, orange embers
-    /// are thrown out of the city, and the city around the hit is lit warm for half a second. Then
-    /// the bolt narrows to a thread and goes out.
+    /// Draws the UFO's weapon fire:
+    /// - <see cref="Play"/> (Laser blocks: <c>manual</c>, <c>scroll</c>, <c>auto</c>): a two-layer
+    ///   additive beam from the muzzle straight down to the ground, a muzzle flash, a ground
+    ///   scorch + expanding shock ring, and a burst of hot sparks and rising embers at the impact X.
+    /// - <see cref="PlayShockwave"/> (Shockwave blocks: <c>shockwave</c>): a pressure wave blasting out of the UFO in a
+    ///   full circle: a crisp white-hot front with violet light falling away behind it, a slower, softer second front, a
+    ///   flash at the ship, a ripple close around it, and, where the wave meets the ground, two bright fronts racing apart
+    ///   along the city's foot, kicking up sparks and embers as they pass. A press that lands nothing (too early, too
+    ///   late) only fizzles at the muzzle.
     ///
-    /// <code>
-    /// Timeline, unscaled seconds from the shot (the Inspector defaults):
-    ///   0       muzzle flash pops (out by 0.09); the bolt leaves the muzzle; the pulse sets off
-    ///   0.035   the bolt strikes the ground: impact flash (0.16), city glow (0.55), shockwave
-    ///           ring (0.38), sparks (live 0.3-0.75) and embers (0.6-1.3); the bolt's afterglow
-    ///           begins, narrowing and fading over 0.26
-    ///   0.07    the pulse has run into the ground
-    ///   ~0.3    the bolt is out
-    ///   ~1.3    the last ember is out; every renderer off until the next shot
-    /// </code>
-    ///
-    /// Fast and contained on purpose. The hit should land with some weight and then get out of the
-    /// way of the reveal, and nothing in it flashes the whole screen: it plays on every round of an
-    /// hour-long session.
-    ///
-    /// It fires on a SHOT and knows only the two points it is handed — never where the tower is or
-    /// which side of it the shot fell — so it cannot become a cue to the boundary; and by the time
-    /// any of it is on screen the round has already been answered.
-    ///
-    /// Everything lives under one root-level object, "ShotFx", not under the ship. The muzzle's
-    /// scale chain is wildly non-uniform and would skew anything parented into it; the shot must
-    /// stay where it was fired while the ship flies on; and UfoController.SetHidden, which switches
-    /// off every renderer under the ship for the reset, must not cut a shot off half way. Every
-    /// part is drawn at the depth of the two points it is given — the play plane.
-    ///
-    /// Built once in Awake and reused for every shot. A new shot restarts the timeline cleanly;
-    /// sparks already in the air finish their flight. Nothing allocates per frame or per shot, and
-    /// between shots every renderer is off, so it costs nothing while idle.
+    /// Built once in <see cref="Awake"/>; nothing allocates per frame or per shot, and all timing
+    /// runs on <see cref="Time.unscaledDeltaTime"/> so the blast looks identical at any frame rate.
     /// </summary>
     public class ShotFx : MonoBehaviour
     {
-        [Header("Colour")]
-        [Tooltip("Take the laser colour from the ship's livery (UfoController.liveryTint), as the " +
-                 "sight does, so the hull, the sight and the shot are one teal. Read once, at start.")]
-        public bool matchLivery = true;
+        [Header("Palette")]
+        [Tooltip("Take the laser colour from UfoController.liveryTint on the parent UFO.")]
+        public bool matchUfoLivery = true;
         public Color laserColor = new Color(0.35f, 1f, 0.85f, 1f);
-        [Tooltip("How far the hottest light — the bolt's core, the flashes, a spark's first instant — " +
-                 "is pushed from the laser colour toward white.")]
-        [Range(0f, 1f)] public float whiteHot = 0.6f;
+        [Tooltip("Warm secondary tint for the ground scorch and rising embers on laser shots.")]
+        public Color scorchColor = new Color(1.00f, 0.58f, 0.22f, 1f);
+        [Tooltip("Primary electric-violet tint for the shockwave cannon discharge.")]
+        public Color shockwaveColor = new Color(0.22f, 0.03f, 0.98f, 1f);
+        [Tooltip("Secondary indigo-violet tint for the shockwave trailing wake and skyline embers.")]
+        public Color shockwaveWakeColor = new Color(0.14f, 0.01f, 0.78f, 1f);
 
-        [Header("Bolt")]
-        [Tooltip("Seconds for the bolt to cross from the muzzle to the ground. Short enough to be " +
-                 "instant to the hand, long enough to read as a bolt rather than a line that was " +
-                 "simply there. The impact starts when it arrives.")]
-        [Min(0f)] public float strikeSec = 0.035f;
-        [Tooltip("Width of the white-hot core, world units. Its light falls off linearly to the " +
-                 "edges, so it reads about half as wide.")]
-        [Min(0.001f)] public float coreWidth = 0.1f;
-        [Tooltip("HDR brightness of the core. Well above 1: this is the part that blooms.")]
-        [Min(0f)] public float coreIntensity = 6f;
-        [Tooltip("Width of the coloured glow around the core, world units.")]
-        [Min(0.001f)] public float glowWidth = 0.4f;
-        [Min(0f)] public float glowIntensity = 2.2f;
-        [Tooltip("Seconds the bolt takes to die once it has struck: it narrows and fades, the glow " +
-                 "going a little ahead of the core.")]
-        [Min(0.01f)] public float afterglowSec = 0.26f;
-        [Tooltip("Width the bolt has narrowed to by the end of the afterglow, as a fraction of full.")]
-        [Range(0f, 1f)] public float afterglowEndWidth = 0.25f;
+        [Header("Beam  (world units / seconds)")]
+        public float beamCoreWidth = 0.26f;
+        public float beamGlowWidth = 1.35f;
+        public float beamDuration  = 0.28f;
+        [Tooltip("Peak HDR multiplier on the inner core (>1 drives URP Bloom).")]
+        public float coreIntensity = 4.2f;
+        [Tooltip("Peak HDR multiplier on the outer halo.")]
+        public float glowIntensity = 2.0f;
 
-        [Header("Energy Pulse")]
-        [Tooltip("Seconds for a bright dash to race down the bolt from the muzzle into the ground, " +
-                 "chasing the strike. It never runs ahead of the bolt.")]
-        [Min(0.01f)] public float pulseSec = 0.07f;
-        [Tooltip("Length of the dash as a fraction of the bolt.")]
-        [Range(0.02f, 0.5f)] public float pulseLength = 0.2f;
-        [Tooltip("Width of the dash, world units.")]
-        [Min(0.001f)] public float pulseWidth = 0.22f;
-        [Min(0f)] public float pulseIntensity = 7f;
+        [Header("Impact Ring & Flashes")]
+        public float muzzleFlashSize = 1.6f;
+        public float impactFlashSize = 3.2f;
+        public float ringStartSize   = 0.7f;
+        public float ringEndSize     = 6.8f;
+        public float ringDuration    = 0.48f;
 
-        [Header("Muzzle Flash")]
-        [Tooltip("Diameter of the flash at the muzzle, world units.")]
-        [Min(0f)] public float muzzleFlashSize = 0.9f;
-        [Min(0.01f)] public float muzzleFlashSec = 0.09f;
-        [Min(0f)] public float muzzleFlashIntensity = 4f;
+        [Header("Shockwave Discharge  (full-screen radial wave)")]
+        [Tooltip("Duration of the expanding shockwave wavefront across the city (seconds).")]
+        public float shockwaveDuration = 0.85f;
+        [Tooltip("Outer radius the shockwave wavefront reaches (world units; ~58 spans the full 16:9 view).")]
+        public float shockwaveMaxRadius = 58f;
 
-        [Header("Impact")]
-        [Tooltip("Diameter of the white-hot flash where the bolt strikes, world units. It is centred " +
-                 "on the ground line, so the rooftops in front show only its upper half.")]
-        [Min(0f)] public float impactFlashSize = 2.4f;
-        [Min(0.01f)] public float impactFlashSec = 0.16f;
-        [Min(0f)] public float impactFlashIntensity = 5f;
-        [Tooltip("The city lit up by the hit: a larger, dimmer, warmer glow that outlasts the flash.")]
-        public Color cityGlowColor = new Color(1f, 0.6f, 0.3f, 1f);
-        [Tooltip("Diameter of the city glow, world units.")]
-        [Min(0f)] public float cityGlowSize = 5f;
-        [Min(0.01f)] public float cityGlowSec = 0.55f;
-        [Min(0f)] public float cityGlowIntensity = 0.6f;
-        [Tooltip("Radius the shockwave ring spreads to, world units. Its band starts broad and soft " +
-                 "and tightens to a thin edge as it goes.")]
-        [Min(0f)] public float shockwaveRadius = 2.6f;
-        [Min(0.01f)] public float shockwaveSec = 0.38f;
-        [Min(0f)] public float shockwaveIntensity = 2.5f;
+        [Header("Sparks & Embers")]
+        [Range(4, 32)] public int sparkCount = 32;
+        [Range(4, 32)] public int emberCount = 28;
+        public float sparkSpeed    = 22f;
+        public float sparkGravity  = 30f;
+        public float sparkLifetime = 0.55f;
+        public float emberLifetime = 0.95f;
 
-        [Header("Sparks")]
-        [Tooltip("Teal-white sparks thrown up out of the impact, drawn out into streaks along their " +
-                 "flight.")]
-        [Range(0, 48)] public int sparkCount = 26;
-        [Tooltip("Full opening angle of the cone they fly up into, degrees.")]
-        [Range(0f, 180f)] public float sparkCone = 70f;
-        [Tooltip("Launch speed, world units per second.")]
-        [Min(0f)] public float sparkSpeedMin = 4f;
-        [Min(0f)] public float sparkSpeedMax = 11f;
-        [Tooltip("Lifetime, seconds.")]
-        [Min(0.01f)] public float sparkLifeMin = 0.3f;
-        [Min(0.01f)] public float sparkLifeMax = 0.75f;
-        [Tooltip("Width, world units.")]
-        [Min(0.001f)] public float sparkSizeMin = 0.05f;
-        [Min(0.001f)] public float sparkSizeMax = 0.09f;
-        [Tooltip("Multiplier on Physics.gravity.")]
-        public float sparkGravity = 1.2f;
-        [Tooltip("How far each spark is drawn out along its velocity, as seconds of travel.")]
-        [Min(0f)] public float sparkStretch = 0.035f;
-        [Tooltip("HDR brightness of the sparks.")]
-        [Min(0f)] public float sparkIntensity = 4f;
+        [Header("Point Light")]
+        public bool  flashLight     = true;
+        public float lightIntensity = 6f;
+        public float lightRange     = 14f;
 
-        [Header("Embers")]
-        [Tooltip("Embers and debris kicked out of the city: slower, longer-lived, cooling from " +
-                 "orange to red.")]
-        [Range(0, 24)] public int emberCount = 10;
-        public Color emberColor = new Color(1f, 0.5f, 0.12f, 1f);
-        public Color emberCoolColor = new Color(0.8f, 0.1f, 0.03f, 1f);
-        [Tooltip("Full opening angle of the cone they are thrown into, degrees.")]
-        [Range(0f, 180f)] public float emberCone = 100f;
-        [Tooltip("Launch speed, world units per second.")]
-        [Min(0f)] public float emberSpeedMin = 2f;
-        [Min(0f)] public float emberSpeedMax = 6f;
-        [Tooltip("Lifetime, seconds.")]
-        [Min(0.01f)] public float emberLifeMin = 0.6f;
-        [Min(0.01f)] public float emberLifeMax = 1.3f;
-        [Tooltip("Diameter, world units.")]
-        [Min(0.001f)] public float emberSizeMin = 0.06f;
-        [Min(0.001f)] public float emberSizeMax = 0.11f;
-        [Tooltip("Multiplier on Physics.gravity.")]
-        public float emberGravity = 1f;
-        [Tooltip("HDR brightness of the embers.")]
-        [Min(0f)] public float emberIntensity = 2.5f;
-
-        // ── Private ──────────────────────────────────────────────────────────
-
-        // Particle pools, bounded: past the cap Emit drops particles rather than growing the pool,
-        // so even fire at the cooldown's limit cannot allocate.
-        const int SparkPool = 96;
-        // Points along the pulse, every tenth of it: a line takes its colour from its gradient at its points
-        // only, and the comet's bright head sits at 0.8 of its length, where two end points would miss it.
-        const int PulsePoints = 11;
-        const int EmberPool = 64;
-
-        // Seconds the city glow takes to come up. A five-unit wash cut in at full strength in one
-        // frame reads as the screen flashing; this softens its edge without delaying it.
-        const float CityRiseSec = 0.04f;
-
-        // Breadth of the shockwave's band at its start and end, as a fraction of its radius.
-        const float RingWidthStart = 0.4f;
-        const float RingWidthEnd   = 0.08f;
-
-        GameObject             _root;
-        Mesh                   _quad;
-        LineRenderer           _core, _glow, _pulse;
-        Renderer               _muzzleFlash, _impactFlash, _cityGlow, _ring;
-        ParticleSystem         _sparks, _embers;
-        ParticleSystemRenderer _sparkRenderer, _emberRenderer;
-        Material               _coreMat, _glowMat, _pulseMat, _muzzleMat, _impactMat, _cityMat,
-                               _ringMat, _sparkMat, _emberMat;
+        const int MaxSparks      = 32;
+        const int MaxEmbers      = 32;
+        const float SwEase       = 2.35f;   // the wave's radius: Rmax*(1 - (1 - t)^SwEase)
 
         UfoController _ufo;
 
-        // Spark and ember directions, speeds, lifetimes and sizes are drawn from here — never from
-        // UnityEngine.Random, whose sequence the experiment's own randomisation comes from: a few
-        // dozen extra draws per shot would move every tower that followed.
-        readonly System.Random    _rng = new System.Random(0x5EED);
-        ParticleSystem.EmitParams _emit;
+        // Beam (two additive LineRenderers: crisp core + wide halo)
+        LineRenderer _coreLine;
+        LineRenderer _glowLine;
+        Material     _coreMat;
+        Material     _glowMat;
 
-        Vector3 _from, _to;      // this shot's muzzle and impact points
-        double  _startTime;      // unscaled time it was fired
-        double  _endTime;        // unscaled time the last of it — particles included — is out
+        // Billboards (camera-facing Quads with procedural radial textures)
+        Transform _muzzleFlash;
+        Transform _impactFlash;
+        Transform _scorchFlash;
+        Transform _ring;
+        Transform _swEchoRing;
+        Renderer  _muzzleR, _impactR, _scorchR, _ringR, _swEchoRingR;
+        Material  _muzzleMat, _impactMat, _scorchMat, _ringMat, _swEchoRingMat;
+
+        // The shockwave: wave fronts on the Wave shape, a flash, and the fronts along the ground.
+        Transform _swFront, _swWake, _swFlash, _swWash, _swSkimL, _swSkimR;
+        Renderer  _swFrontR, _swWakeR, _swFlashR, _swWashR, _swSkimLR, _swSkimRR;
+        Material  _swFrontMat, _swWakeMat, _swFlashMat, _swWashMat, _swSkimMat;
+        bool      _swFull;
+
+        // Sparks (short velocity-aligned LineRenderers)
+        LineRenderer[] _sparks;
+        Material[]     _sparkMats;
+        Vector3[]      _sparkPos;
+        Vector3[]      _sparkVel;
+        float[]        _sparkDelay;
+        float[]        _sparkLife;
+        bool[]         _sparkIsCore;
+
+        // Embers (small rising glowing dots)
+        Transform[] _embers;
+        Renderer[]  _emberR;
+        Material[]  _emberMats;
+        Vector3[]   _emberPos;
+        Vector3[]   _emberVel;
+        float[]     _emberDelay;
+        float[]     _emberLife;
+        float[]     _emberSize;
+        float[]     _emberPhase;
+
+        Light _light;
+
         bool    _playing;
-        bool    _burst;          // this shot's sparks and embers are out
+        bool    _shockwaveMode;
+        float   _elapsed;
+        float   _totalDuration;
+        Vector3 _muzzlePos;
+        Vector3 _impactPos;
+        float   _groundY;
 
-        Color Hot => Color.Lerp(laserColor, Color.white, whiteHot);
-
-        /// <summary>
-        /// Fires the effect: a bolt from <paramref name="muzzle"/> striking <paramref name="impact"/>.
-        /// Restarts cleanly if a shot is already playing — its light is cut and the new one starts
-        /// from the top; sparks already in the air finish their flight.
-        /// </summary>
-        public void Play(Vector3 muzzle, Vector3 impact)
-        {
-            if (!isActiveAndEnabled || _root == null) return;
-
-            _from      = muzzle;
-            _to        = impact;
-            _startTime = Time.unscaledTimeAsDouble;
-            _endTime   = _startTime + LightSec();
-            _burst     = false;
-            _playing   = true;
-
-            // Drawn now as well as from LateUpdate, so a shot fired from anywhere in the frame —
-            // even after this component's LateUpdate has run — is on screen this frame.
-            Evaluate(0f);
-        }
+        readonly System.Random _rng = new System.Random(7331);
 
         void Awake()
         {
-            _ufo  = GetComponentInParent<UfoController>();
-            _root = new GameObject("ShotFx");
-            _quad = BuildQuad();
-
-            // Draw order among these is irrelevant — it is all additive light — so the hierarchy
-            // simply reads in timeline order. The core's straight-ramp falloff (softness 1) keeps
-            // it crisp; the glows pull their light into the middle.
-            _muzzleFlash = MakeQuad("MuzzleFlash", GlowShape.Dot, 2f, out _muzzleMat);
-            _glow        = MakeLine("BoltGlow", 1.8f, out _glowMat);
-            _core        = MakeLine("BoltCore", 1f,   out _coreMat);
-            _pulse       = MakeLine("Pulse",    1.2f, out _pulseMat);
-            _pulse.positionCount = PulsePoints;
-            _impactFlash = MakeQuad("ImpactFlash", GlowShape.Dot,  2.2f, out _impactMat);
-            _cityGlow    = MakeQuad("CityGlow",    GlowShape.Dot,  1.3f, out _cityMat);
-            _ring        = MakeQuad("Shockwave",   GlowShape.Ring, 1f,   out _ringMat);
-            _sparks      = MakeParticles("Sparks", SparkPool, 0x5A4Bu, 1.2f, 0.35f,
-                                         out _sparkMat, out _sparkRenderer);
-            _embers      = MakeParticles("Embers", EmberPool, 0xE3B5u, 1.6f, 0.5f,
-                                         out _emberMat, out _emberRenderer);
-
-            // Sparks are streaks drawn out along their flight; embers stay round.
-            _sparkRenderer.renderMode          = ParticleSystemRenderMode.Stretch;
-            _sparkRenderer.lengthScale         = 1f;
-            _sparkRenderer.cameraVelocityScale = 0f;
-            _emberRenderer.renderMode          = ParticleSystemRenderMode.Billboard;
-
-            // The pulse is a comet: a fading tail behind a bright head. Its line runs from the
-            // muzzle side to the ground side, so the head is the far end.
-            var comet = new Gradient();
-            comet.SetKeys(
-                new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(Color.white, 1f) },
-                new[] { new GradientAlphaKey(0f, 0f), new GradientAlphaKey(1f, 0.8f),
-                        new GradientAlphaKey(0.3f, 1f) });
-            _pulse.colorGradient = comet;
+            _ufo = GetComponentInParent<UfoController>();
+            BuildMaterialsAndMeshes();
+            SetAllEnabled(false);
         }
 
-        // Not Awake: the livery colour is on a component that may not have run its own Awake yet.
-        // The particles' colours are baked into their lifetime gradients here, once; everything
-        // else reads its colour from the fields as it draws, so those follow Inspector edits live.
         void Start()
         {
-            if (matchLivery && _ufo != null) laserColor = _ufo.liveryTint;
-
-            SetLifetimeColours(_sparks, Hot, laserColor);
-            SetLifetimeColours(_embers, emberColor, emberCoolColor);
+            if (matchUfoLivery && _ufo != null && _ufo.tintHull)
+                laserColor = _ufo.liveryTint;
         }
 
-        void OnDisable()
+        public void SyncLivery(Color color)
         {
-            if (_playing) Idle();
+            if (matchUfoLivery) laserColor = color;
         }
 
         void OnDestroy()
         {
-            Release(_root);
-            Release(_quad);
-            Release(_coreMat);
-            Release(_glowMat);
-            Release(_pulseMat);
-            Release(_muzzleMat);
-            Release(_impactMat);
-            Release(_cityMat);
-            Release(_ringMat);
-            Release(_sparkMat);
-            Release(_emberMat);
+            DestroyObj(_coreLine    != null ? _coreLine.gameObject    : null);
+            DestroyObj(_glowLine    != null ? _glowLine.gameObject    : null);
+            DestroyObj(_muzzleFlash != null ? _muzzleFlash.gameObject : null);
+            DestroyObj(_impactFlash != null ? _impactFlash.gameObject : null);
+            DestroyObj(_scorchFlash != null ? _scorchFlash.gameObject : null);
+            DestroyObj(_ring        != null ? _ring.gameObject        : null);
+            DestroyObj(_swEchoRing  != null ? _swEchoRing.gameObject  : null);
+            DestroyObj(_light       != null ? _light.gameObject       : null);
+
+            foreach (Transform t in new[] { _swFront, _swWake, _swFlash, _swWash, _swSkimL, _swSkimR })
+                if (t != null) Destroy(t.gameObject);
+
+            if (_sparks != null)
+                for (int i = 0; i < _sparks.Length; i++)
+                    if (_sparks[i] != null) Destroy(_sparks[i].gameObject);
+
+            if (_embers != null)
+                for (int i = 0; i < _embers.Length; i++)
+                    if (_embers[i] != null) Destroy(_embers[i].gameObject);
+
+            DestroyObj(_coreMat);
+            DestroyObj(_glowMat);
+            DestroyObj(_swFrontMat);
+            DestroyObj(_swWakeMat);
+            DestroyObj(_swFlashMat);
+            DestroyObj(_swWashMat);
+            DestroyObj(_swSkimMat);
+            DestroyObj(_muzzleMat);
+            DestroyObj(_impactMat);
+            DestroyObj(_scorchMat);
+            DestroyObj(_ringMat);
+            DestroyObj(_swEchoRingMat);
+
+            if (_sparkMats != null)
+                for (int i = 0; i < _sparkMats.Length; i++) DestroyObj(_sparkMats[i]);
+            if (_emberMats != null)
+                for (int i = 0; i < _emberMats.Length; i++) DestroyObj(_emberMats[i]);
         }
 
-        // ── Per frame ────────────────────────────────────────────────────────
+        static void DestroyObj(Object o) { if (o != null) Destroy(o); }
+
+        // ── Construction ─────────────────────────────────────────────────────
+
+        void BuildMaterialsAndMeshes()
+        {
+            _coreMat       = GlowMaterial.Create(GlowShape.Line, Color.white,        3.0f, "ShotBeamCore");
+            _glowMat       = GlowMaterial.Create(GlowShape.Line, laserColor,         1.4f, "ShotBeamGlow");
+            _muzzleMat     = GlowMaterial.Create(GlowShape.Dot,  Color.white,        2.2f, "ShotMuzzleFlash");
+            _impactMat     = GlowMaterial.Create(GlowShape.Dot,  laserColor,         2.0f, "ShotImpactFlash");
+            _scorchMat     = GlowMaterial.Create(GlowShape.Dot,  scorchColor,        1.5f, "ShotScorch");
+            _ringMat       = GlowMaterial.Create(GlowShape.Ring, laserColor,         2.5f, "ShotRing");
+            _swEchoRingMat = GlowMaterial.Create(GlowShape.Wave, shockwaveWakeColor, 1.6f, "ShotSwRipple");
+            _swFrontMat    = GlowMaterial.Create(GlowShape.Wave, Color.white,        2.4f, "ShotSwFront");
+            _swWakeMat     = GlowMaterial.Create(GlowShape.Wave, shockwaveWakeColor, 2.2f, "ShotSwWake");
+            _swFlashMat    = GlowMaterial.Create(GlowShape.Dot,  shockwaveColor,     2.0f, "ShotSwFlash");
+            _swWashMat     = GlowMaterial.Create(GlowShape.Dot,  shockwaveColor,     1.5f, "ShotSwWash");
+            _swSkimMat     = GlowMaterial.Create(GlowShape.Dot,  Color.white,        1.3f, "ShotSwSkim");
+
+            _glowLine = MakeLine("ShotBeamGlow", _glowMat, 2);
+            _coreLine = MakeLine("ShotBeamCore", _coreMat, 2);
+
+            _muzzleFlash = MakeQuad("ShotMuzzleFlash", _muzzleMat, out _muzzleR);
+            _impactFlash = MakeQuad("ShotImpactFlash", _impactMat, out _impactR);
+            _scorchFlash = MakeQuad("ShotScorch",      _scorchMat, out _scorchR);
+            _ring        = MakeQuad("ShotRing",        _ringMat,   out _ringR);
+            _swEchoRing  = MakeQuad("ShotSwEchoRing",  _swEchoRingMat, out _swEchoRingR);
+
+            _swWake  = MakeQuad("ShotSwWake",  _swWakeMat,  out _swWakeR);
+            _swFront = MakeQuad("ShotSwFront", _swFrontMat, out _swFrontR);
+            _swFlash = MakeQuad("ShotSwFlash", _swFlashMat, out _swFlashR);
+            _swWash  = MakeQuad("ShotSwWash",  _swWashMat,  out _swWashR);
+            _swSkimL = MakeQuad("ShotSwSkimL", _swSkimMat,  out _swSkimLR);
+            _swSkimR = MakeQuad("ShotSwSkimR", _swSkimMat,  out _swSkimRR);
+
+            // Sparks
+            _sparks      = new LineRenderer[MaxSparks];
+            _sparkMats   = new Material[MaxSparks];
+            _sparkPos    = new Vector3[MaxSparks];
+            _sparkVel    = new Vector3[MaxSparks];
+            _sparkDelay  = new float[MaxSparks];
+            _sparkLife   = new float[MaxSparks];
+            _sparkIsCore = new bool[MaxSparks];
+            for (int i = 0; i < MaxSparks; i++)
+            {
+                _sparkMats[i] = GlowMaterial.Create(GlowShape.Line, Color.white, 2.5f, "ShotSpark");
+                var lr = MakeLine($"ShotSpark_{i}", _sparkMats[i], 2);
+                lr.widthCurve = new AnimationCurve(new Keyframe(0f, 1f), new Keyframe(1f, 0.15f));
+                _sparks[i] = lr;
+            }
+
+            // Embers
+            _embers     = new Transform[MaxEmbers];
+            _emberR     = new Renderer[MaxEmbers];
+            _emberMats  = new Material[MaxEmbers];
+            _emberPos   = new Vector3[MaxEmbers];
+            _emberVel   = new Vector3[MaxEmbers];
+            _emberDelay = new float[MaxEmbers];
+            _emberLife  = new float[MaxEmbers];
+            _emberSize  = new float[MaxEmbers];
+            _emberPhase = new float[MaxEmbers];
+            for (int i = 0; i < MaxEmbers; i++)
+            {
+                _emberMats[i] = GlowMaterial.Create(GlowShape.Dot, scorchColor, 1.8f, "ShotEmber");
+                _embers[i]    = MakeQuad($"ShotEmber_{i}", _emberMats[i], out _emberR[i]);
+            }
+
+            // Point light
+            var lightGo = new GameObject("ShotLight");
+            _light         = lightGo.AddComponent<Light>();
+            _light.type    = LightType.Point;
+            _light.shadows = LightShadows.None;
+            _light.range   = lightRange;
+        }
+
+        static LineRenderer MakeLine(string goName, Material mat, int positions)
+        {
+            var go = new GameObject(goName);
+            var lr = go.AddComponent<LineRenderer>();
+            lr.useWorldSpace              = true;
+            lr.alignment                  = LineAlignment.View;
+            lr.textureMode                = LineTextureMode.Stretch;
+            lr.numCapVertices             = 4;
+            lr.numCornerVertices          = 2;
+            lr.positionCount              = positions;
+            lr.shadowCastingMode          = ShadowCastingMode.Off;
+            lr.receiveShadows             = false;
+            lr.lightProbeUsage            = LightProbeUsage.Off;
+            lr.reflectionProbeUsage       = ReflectionProbeUsage.Off;
+            lr.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+            lr.sharedMaterial             = mat;
+            return lr;
+        }
+
+        static Transform MakeQuad(string goName, Material mat, out Renderer rend)
+        {
+            var go  = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            go.name = goName;
+            var col = go.GetComponent<Collider>();
+            if (col != null) Destroy(col);
+
+            rend = go.GetComponent<Renderer>();
+            rend.sharedMaterial             = mat;
+            rend.shadowCastingMode          = ShadowCastingMode.Off;
+            rend.receiveShadows             = false;
+            rend.lightProbeUsage            = LightProbeUsage.Off;
+            rend.reflectionProbeUsage       = ReflectionProbeUsage.Off;
+            rend.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
+            return go.transform;
+        }
+
+        // ── Triggering: Laser Shot ───────────────────────────────────────────
+
+        /// <summary>Fires the vertical laser bolt from <paramref name="muzzle"/> to <paramref name="impact"/>.</summary>
+        public void Play(Vector3 muzzle, Vector3 impact)
+        {
+            if (matchUfoLivery && _ufo != null && _ufo.tintHull)
+                laserColor = _ufo.liveryTint;
+
+            SetAllEnabled(false);
+
+            _shockwaveMode = false;
+            _muzzlePos     = muzzle;
+            _impactPos     = impact;
+            _groundY       = impact.y;
+            _elapsed       = 0f;
+            _totalDuration = Mathf.Max(beamDuration, Mathf.Max(ringDuration,
+                             Mathf.Max(sparkLifetime, emberLifetime)));
+            _playing       = true;
+
+            _coreLine.SetPosition(0, muzzle);
+            _coreLine.SetPosition(1, impact);
+            _glowLine.SetPosition(0, muzzle);
+            _glowLine.SetPosition(1, impact);
+
+            CameraRig rig = CameraRig.Instance;
+            Vector3 right = rig != null ? rig.Right : Vector3.right;
+            Vector3 up    = Vector3.up;
+
+            int nSparks = Mathf.Clamp(sparkCount, 0, MaxSparks);
+            for (int i = 0; i < nSparks; i++)
+            {
+                float angle = Mathf.Lerp(-72f, 72f, (i + Rf(0.15f, 0.85f)) / Mathf.Max(1, nSparks))
+                              * Mathf.Deg2Rad;
+                Vector3 dir = right * Mathf.Sin(angle) + up * Mathf.Cos(angle);
+                float spd   = sparkSpeed * Rf(0.55f, 1.35f);
+
+                _sparkPos[i]    = impact + up * 0.08f + right * Rf(-0.18f, 0.18f);
+                _sparkVel[i]    = dir * spd;
+                _sparkDelay[i]  = 0f;
+                _sparkLife[i]   = sparkLifetime * Rf(0.55f, 1.10f);
+                _sparkIsCore[i] = (i & 1) == 0;
+            }
+
+            int nEmbers = Mathf.Clamp(emberCount, 0, MaxEmbers);
+            for (int i = 0; i < nEmbers; i++)
+            {
+                _emberPos[i]   = impact + right * Rf(-1.1f, 1.1f) + up * Rf(0.05f, 0.45f);
+                _emberVel[i]   = right * Rf(-1.8f, 1.8f) + up * Rf(2.2f, 5.8f);
+                _emberDelay[i] = 0f;
+                _emberLife[i]  = emberLifetime * Rf(0.65f, 1.15f);
+                _emberSize[i]  = Rf(0.22f, 0.52f);
+                _emberPhase[i] = Rf(0f, Mathf.PI * 2f);
+            }
+
+            if (_light != null && flashLight)
+            {
+                _light.transform.position = Vector3.Lerp(muzzle, impact, 0.72f) + Vector3.back * 1.2f;
+                _light.color     = laserColor;
+                _light.range     = lightRange;
+                _light.intensity = lightIntensity;
+                _light.enabled   = true;
+            }
+
+            _coreLine.enabled = true;
+            _glowLine.enabled = true;
+            _muzzleR.enabled  = true;
+            _impactR.enabled  = true;
+            _scorchR.enabled  = true;
+            _ringR.enabled    = true;
+            for (int i = 0; i < nSparks; i++) _sparks[i].enabled = true;
+            for (int i = 0; i < nEmbers; i++) _emberR[i].enabled = true;
+
+            StepLaser(0f);
+        }
+
+        // ── Triggering: Shockwave Discharge ──────────────────────────────────
+
+        /// <summary>
+        /// Fires the shockwave from <paramref name="muzzle"/>. Plays ONLY when the participant pulls the trigger on a
+        /// shockwave block. <paramref name="full"/> is the blast proper; without it the press landed nothing and the
+        /// weapon only fizzles at the muzzle, leaving the view clear.
+        /// </summary>
+        public void PlayShockwave(Vector3 muzzle, float groundY, bool full = true)
+        {
+            SetAllEnabled(false);
+
+            _shockwaveMode = true;
+            _swFull        = full;
+            _muzzlePos     = muzzle;
+            _groundY       = groundY;
+            _impactPos     = new Vector3(muzzle.x, groundY, muzzle.z);
+            _elapsed       = 0f;
+            _totalDuration = full ? Mathf.Max(shockwaveDuration + 0.35f, emberLifetime + 0.35f) : 0.4f;
+            _playing       = true;
+
+            _muzzleR.enabled     = true;
+            _swEchoRingR.enabled = true;
+
+            if (!full)
+            {
+                StepShockwave(0f);
+                return;
+            }
+
+            CameraRig rig   = CameraRig.Instance;
+            Vector3   right = rig != null ? rig.Right : Vector3.right;
+            Vector3   up    = Vector3.up;
+
+            // The visible width at the UFO's plane, so sparks and embers span the screen around the camera.
+            float halfW = 24f;
+            float centerX = muzzle.x;
+            if (rig != null)
+            {
+                Vector2 ext = rig.ViewHalfExtentsAtZ(muzzle.z);
+                halfW   = Mathf.Max(18f, ext.x * 0.96f);
+                centerX = rig.RestX;
+            }
+
+            float dy = Mathf.Max(0.5f, muzzle.y - groundY);
+
+            // Sparks kick up across the skyline at the moment the wave reaches them.
+            int nSparks = Mathf.Clamp(sparkCount, 0, MaxSparks);
+            for (int i = 0; i < nSparks; i++)
+            {
+                float u  = (i + Rf(0.15f, 0.85f)) / Mathf.Max(1, nSparks);
+                float x  = Mathf.Lerp(centerX - halfW, centerX + halfW, u);
+                float dx = x - muzzle.x;
+
+                // Tilted outward, away from the ship, as the wave pushes past.
+                float outwardSign = dx >= 0f ? 1f : -1f;
+                float angle = (outwardSign * Rf(8f, 52f)) * Mathf.Deg2Rad;
+                Vector3 dir = right * Mathf.Sin(angle) + up * Mathf.Cos(angle);
+
+                _sparkPos[i]    = new Vector3(x, groundY + Rf(0.05f, 0.45f), muzzle.z);
+                _sparkVel[i]    = dir * (sparkSpeed * Rf(0.75f, 1.45f));
+                _sparkDelay[i]  = ArrivalSec(Mathf.Sqrt(dx * dx + dy * dy));
+                _sparkLife[i]   = sparkLifetime * Rf(0.70f, 1.25f);
+                _sparkIsCore[i] = (i & 1) == 0;
+                _sparks[i].enabled = true;
+            }
+
+            // Embers rise after it.
+            int nEmbers = Mathf.Clamp(emberCount, 0, MaxEmbers);
+            for (int i = 0; i < nEmbers; i++)
+            {
+                float u  = (i + Rf(0.1f, 0.9f)) / Mathf.Max(1, nEmbers);
+                float x  = Mathf.Lerp(centerX - halfW * 0.92f, centerX + halfW * 0.92f, u);
+                float dx = x - muzzle.x;
+
+                _emberPos[i]   = new Vector3(x, groundY + Rf(0.1f, 1.8f), muzzle.z);
+                _emberVel[i]   = right * (Mathf.Sign(dx) * Rf(0.6f, 3.2f)) + up * Rf(3.0f, 7.5f);
+                _emberDelay[i] = ArrivalSec(Mathf.Sqrt(dx * dx + dy * dy));
+                _emberLife[i]  = emberLifetime * Rf(0.80f, 1.30f);
+                _emberSize[i]  = Rf(0.32f, 0.72f);
+                _emberPhase[i] = Rf(0f, Mathf.PI * 2f);
+                _emberR[i].enabled = true;
+            }
+
+            if (_light != null && flashLight)
+            {
+                _light.transform.position = muzzle + Vector3.back * 1.5f;
+                _light.color     = shockwaveColor;
+                _light.range     = lightRange * 2.6f;
+                _light.intensity = lightIntensity * 2.8f;
+                _light.enabled   = true;
+            }
+
+            _swFrontR.enabled = true;
+            _swWakeR.enabled  = true;
+            _swFlashR.enabled = true;
+            _swWashR.enabled  = true;
+            _swSkimLR.enabled = true;
+            _swSkimRR.enabled = true;
+
+            StepShockwave(0f);
+        }
+
+        // When the front reaches a distance from the ship, seconds: the inverse of its radius over time.
+        float ArrivalSec(float dist)
+        {
+            float r = Mathf.Clamp01(dist / Mathf.Max(1f, shockwaveMaxRadius));
+            return shockwaveDuration * (1f - Mathf.Pow(1f - r, 1f / SwEase));
+        }
+
+        // ── Per-frame update ─────────────────────────────────────────────────
 
         void LateUpdate()
         {
             if (!_playing) return;
-            if (_root == null) { _playing = false; return; }
 
-            double now = Time.unscaledTimeAsDouble;
-            if (now >= _endTime) Idle();
-            else                 Evaluate((float)(now - _startTime));
-        }
+            float dt = Time.unscaledDeltaTime;
+            _elapsed += dt;
 
-        // The whole shot, `t` seconds after it was fired. A function of t alone (bar the one-off
-        // burst), so it plays the same at any frame rate — frames only sample it.
-        void Evaluate(float t)
-        {
-            Color hot   = Hot;
-            float reach = strikeSec > 0f ? Mathf.Clamp01(t / strikeSec) : 1f;
-            float since = t - strikeSec;   // since the bolt struck; negative until it has
-
-            DrawBolt(reach, since, hot);
-            DrawPulse(t, reach, hot);
-            DrawFlash(_muzzleFlash, _muzzleMat, _from, t, muzzleFlashSec, muzzleFlashSize,
-                      0.7f, 0f, GlowMaterial.Scaled(hot, muzzleFlashIntensity), 2f);
-
-            if (since >= 0f && !_burst) Burst(t);
-
-            DrawFlash(_impactFlash, _impactMat, _to, since, impactFlashSec, impactFlashSize,
-                      0.55f, 0f, GlowMaterial.Scaled(hot, impactFlashIntensity), 2f);
-            DrawFlash(_cityGlow, _cityMat, _to, since, cityGlowSec, cityGlowSize,
-                      0.8f, CityRiseSec, GlowMaterial.Scaled(cityGlowColor, cityGlowIntensity), 1.6f);
-            DrawShockwave(since);
-        }
-
-        // The bolt: grows from the muzzle to the ground over strikeSec, then narrows and fades.
-        void DrawBolt(float reach, float since, Color hot)
-        {
-            float k = since > 0f ? since / afterglowSec : 0f;
-            if (reach < 1e-3f || k >= 1f)
+            if (_elapsed >= _totalDuration)
             {
-                _core.enabled = false;
-                _glow.enabled = false;
+                _playing = false;
+                SetAllEnabled(false);
                 return;
             }
 
-            Vector3 head = Vector3.LerpUnclamped(_from, _to, reach);
-            _core.SetPosition(0, _from);
-            _core.SetPosition(1, head);
-            _glow.SetPosition(0, _from);
-            _glow.SetPosition(1, head);
-
-            // Narrows fast and then settles; the glow fades ahead of the core, so the bolt's last
-            // moments are a thin white-hot thread rather than a smear.
-            float width = Mathf.Lerp(1f, afterglowEndWidth, EaseOut(k));
-            _core.widthMultiplier = coreWidth * width;
-            _glow.widthMultiplier = glowWidth * width;
-
-            Color core = GlowMaterial.Scaled(hot, coreIntensity);
-            core.a = Mathf.Pow(1f - k, 1.4f);
-            GlowMaterial.SetColor(_coreMat, core);
-
-            Color glow = GlowMaterial.Scaled(laserColor, glowIntensity);
-            glow.a = Mathf.Pow(1f - k, 2.2f);
-            GlowMaterial.SetColor(_glowMat, glow);
-
-            _core.enabled = true;
-            _glow.enabled = true;
+            if (_shockwaveMode) StepShockwave(dt);
+            else                StepLaser(dt);
         }
 
-        // The energy pulse: a dash running from the muzzle into the ground. It enters and leaves
-        // whole, and is clipped to the bolt so it never runs ahead of it.
-        void DrawPulse(float t, float reach, Color hot)
+        void StepLaser(float dt)
         {
-            float half = pulseLength * 0.5f;
-            float c    = Mathf.Lerp(-half, 1f + half, t / pulseSec);
-            float t0   = Mathf.Clamp(c - half, 0f, reach);
-            float t1   = Mathf.Clamp(c + half, 0f, reach);
-            if (t >= pulseSec || t1 - t0 < 1e-3f)
+            Camera cam = CameraRig.Instance != null ? CameraRig.Instance.ActiveCamera : Camera.main;
+            Vector3 toCam = cam != null
+                ? (cam.transform.position - _impactPos).normalized
+                : Vector3.back;
+            Quaternion faceCam = cam != null
+                ? Quaternion.LookRotation(-toCam, cam.transform.up)
+                : Quaternion.identity;
+
+            // 1. Beam
+            float bt = Mathf.Clamp01(_elapsed / Mathf.Max(0.001f, beamDuration));
+            if (bt < 1f)
             {
-                _pulse.enabled = false;
-                return;
+                float punch = bt < 0.14f
+                    ? Mathf.Lerp(0.55f, 1.28f, bt / 0.14f)
+                    : Mathf.Pow(1f - (bt - 0.14f) / 0.86f, 1.55f);
+
+                float fade = Mathf.Pow(1f - bt, 1.25f);
+
+                _coreLine.widthMultiplier = beamCoreWidth * punch;
+                _glowLine.widthMultiplier = beamGlowWidth * (0.65f + 0.55f * punch);
+
+                Color coreTint = Color.Lerp(Color.white, laserColor, Mathf.SmoothStep(0f, 1f, bt * 1.2f));
+                GlowMaterial.SetColor(_coreMat, GlowMaterial.Scaled(coreTint, coreIntensity * fade, fade));
+                GlowMaterial.SetColor(_glowMat, GlowMaterial.Scaled(laserColor, glowIntensity * fade, fade * 0.9f));
+            }
+            else
+            {
+                _coreLine.enabled = false;
+                _glowLine.enabled = false;
             }
 
-            for (int i = 0; i < PulsePoints; i++)
-                _pulse.SetPosition(i, Vector3.LerpUnclamped(_from, _to, Mathf.Lerp(t0, t1, i / (PulsePoints - 1f))));
-            _pulse.widthMultiplier = pulseWidth;
-
-            Color p = GlowMaterial.Scaled(Color.Lerp(hot, Color.white, 0.5f), pulseIntensity);
-            p.a = 1f;   // the comet gradient shapes it
-            GlowMaterial.SetColor(_pulseMat, p);
-            _pulse.enabled = true;
-        }
-
-        // A camera-facing glow that pops at local time 0 and is out by `sec`: it swells from
-        // `swellFrom` of its size to full while its light falls away, after an optional rise.
-        // Off outside that window.
-        static void DrawFlash(Renderer r, Material m, Vector3 at, float local, float sec, float size,
-                              float swellFrom, float riseSec, Color hdr, float fadePower)
-        {
-            float k = sec > 0f ? local / sec : 1f;
-            if (local < 0f || k >= 1f || size <= 0f)
+            // 2. Muzzle flash
+            float mt = Mathf.Clamp01(_elapsed / (beamDuration * 0.65f));
+            if (mt < 1f)
             {
-                r.enabled = false;
-                return;
+                float mf = Mathf.Pow(1f - mt, 1.7f);
+                PoseQuad(_muzzleFlash, _muzzlePos + toCam * 0.12f, faceCam,
+                         muzzleFlashSize * (0.7f + 0.55f * (1f - mt)));
+                Color mc = Color.Lerp(Color.white, laserColor, mt * 0.7f);
+                GlowMaterial.SetColor(_muzzleMat, GlowMaterial.Scaled(mc, coreIntensity * 0.9f * mf, mf));
+            }
+            else _muzzleR.enabled = false;
+
+            // 3. Impact flash + warm scorch
+            float it = Mathf.Clamp01(_elapsed / (ringDuration * 0.85f));
+            if (it < 1f)
+            {
+                float f = Mathf.Pow(1f - it, 1.5f);
+                PoseQuad(_impactFlash, _impactPos + toCam * 0.14f, faceCam,
+                         impactFlashSize * (0.55f + 0.75f * Mathf.Sqrt(it)));
+                Color ic = Color.Lerp(Color.white, laserColor, Mathf.SmoothStep(0f, 1f, it));
+                GlowMaterial.SetColor(_impactMat, GlowMaterial.Scaled(ic, glowIntensity * 1.4f * f, f));
+            }
+            else _impactR.enabled = false;
+
+            float st = Mathf.Clamp01(_elapsed / ringDuration);
+            if (st < 1f)
+            {
+                float sf = Mathf.Pow(1f - st, 1.2f) * 0.75f;
+                PoseQuad(_scorchFlash, _impactPos + toCam * 0.10f, faceCam,
+                         impactFlashSize * 0.95f * (0.7f + 0.4f * st));
+                GlowMaterial.SetColor(_scorchMat, GlowMaterial.Scaled(scorchColor, 1.5f * sf, sf));
+            }
+            else _scorchR.enabled = false;
+
+            // 4. Expanding shockwave ring
+            if (st < 1f)
+            {
+                float ease = 1f - Mathf.Pow(1f - st, 2.6f);
+                float size = Mathf.Lerp(ringStartSize, ringEndSize, ease);
+                float rf   = Mathf.Pow(1f - st, 1.35f);
+                PoseQuad(_ring, _impactPos + toCam * 0.16f, faceCam, size);
+                GlowMaterial.SetColor(_ringMat, GlowMaterial.Scaled(laserColor, glowIntensity * 1.2f * rf, rf));
+            }
+            else _ringR.enabled = false;
+
+            // 5. Sparks
+            int nSparks = Mathf.Clamp(sparkCount, 0, MaxSparks);
+            Vector3 grav = Vector3.down * sparkGravity;
+            for (int i = 0; i < nSparks; i++)
+            {
+                if (!_sparks[i].enabled) continue;
+                float lt = _elapsed / _sparkLife[i];
+                if (lt >= 1f) { _sparks[i].enabled = false; continue; }
+
+                _sparkVel[i] += grav * dt;
+                _sparkPos[i] += _sparkVel[i] * dt;
+                if (_sparkPos[i].y < _impactPos.y)
+                {
+                    _sparkPos[i].y = _impactPos.y;
+                    _sparkVel[i].y = Mathf.Abs(_sparkVel[i].y) * 0.35f;
+                    _sparkVel[i].x *= 0.7f;
+                }
+
+                float sf   = Mathf.Pow(1f - lt, 1.3f);
+                float tail = Mathf.Clamp(_sparkVel[i].magnitude * 0.032f, 0.14f, 0.65f) * (1f - lt * 0.5f);
+                Vector3 dir = _sparkVel[i].sqrMagnitude > 1e-4f ? _sparkVel[i].normalized : Vector3.up;
+
+                _sparks[i].widthMultiplier = 0.09f * (0.4f + 0.6f * sf);
+                _sparks[i].SetPosition(0, _sparkPos[i]);
+                _sparks[i].SetPosition(1, _sparkPos[i] - dir * tail);
+
+                Color baseCol = _sparkIsCore[i] ? Color.Lerp(Color.white, laserColor, lt)
+                                                : Color.Lerp(laserColor, scorchColor, lt);
+                GlowMaterial.SetColor(_sparkMats[i], GlowMaterial.Scaled(baseCol, 2.8f * sf, sf));
             }
 
-            float swell = size * Mathf.Lerp(swellFrom, 1f, EaseOut(k));
-            float light = Mathf.Pow(1f - k, fadePower);
-            if (riseSec > 0f) light *= Mathf.Clamp01(local / riseSec);
-
-            Transform tr = r.transform;
-            tr.position   = at;
-            tr.localScale = new Vector3(swell, swell, 1f);
-
-            hdr.a = light;
-            GlowMaterial.SetColor(m, hdr);
-            r.enabled = true;
-        }
-
-        // The shockwave: a ring bursting out from the impact and coasting to its full radius, its
-        // band tightening from broad and soft to a thin bright edge as it fades.
-        void DrawShockwave(float since)
-        {
-            float k = since / shockwaveSec;
-            if (since < 0f || k >= 1f)
+            // 6. Embers
+            int nEmbers = Mathf.Clamp(emberCount, 0, MaxEmbers);
+            Vector3 right = CameraRig.Instance != null ? CameraRig.Instance.Right : Vector3.right;
+            for (int i = 0; i < nEmbers; i++)
             {
-                _ring.enabled = false;
-                return;
+                if (!_emberR[i].enabled) continue;
+                float lt = _elapsed / _emberLife[i];
+                if (lt >= 1f) { _emberR[i].enabled = false; continue; }
+
+                float sway = Mathf.Sin(_elapsed * 7f + _emberPhase[i]) * 1.4f;
+                _emberPos[i] += (_emberVel[i] + right * sway) * dt;
+                _emberVel[i] *= Mathf.Exp(-1.6f * dt);
+
+                float ef = Mathf.Sin(lt * Mathf.PI) * (1f - lt * 0.3f);
+                float sz = _emberSize[i] * (0.6f + 0.5f * ef);
+                PoseQuad(_embers[i], _emberPos[i] + toCam * 0.12f, faceCam, sz);
+
+                Color ec = Color.Lerp(laserColor, scorchColor, Mathf.SmoothStep(0.15f, 0.85f, lt));
+                GlowMaterial.SetColor(_emberMats[i], GlowMaterial.Scaled(ec, 2.2f * ef, ef));
             }
 
-            float radius = shockwaveRadius * (1f - (1f - k) * (1f - k) * (1f - k));
-            if (radius < 1e-3f)
+            // 7. Point light
+            if (_light != null && _light.enabled)
             {
-                _ring.enabled = false;
-                return;
-            }
-
-            Transform tr = _ring.transform;
-            tr.position   = _to;
-            tr.localScale = new Vector3(radius * 2f, radius * 2f, 1f);
-
-            _ringMat.SetFloat(GlowMaterial.RingWidthId, Mathf.Lerp(RingWidthStart, RingWidthEnd, k));
-            Color c = GlowMaterial.Scaled(Color.Lerp(laserColor, Color.white, 0.5f), shockwaveIntensity);
-            c.a = Mathf.Pow(1f - k, 1.5f);
-            GlowMaterial.SetColor(_ringMat, c);
-            _ring.enabled = true;
-        }
-
-        // The sparks and embers: once per shot, on the frame the bolt reaches the ground. The
-        // physics and brightness are re-read here, so they can be tuned live between shots.
-        void Burst(float t)
-        {
-            _burst = true;
-
-            var sparkMain = _sparks.main;
-            sparkMain.gravityModifier    = sparkGravity;
-            _sparkRenderer.velocityScale = sparkStretch;
-            GlowMaterial.SetColor(_sparkMat, Grey(sparkIntensity));
-            Spray(_sparks, sparkCount, sparkCone, sparkSpeedMin, sparkSpeedMax,
-                  sparkLifeMin, sparkLifeMax, sparkSizeMin, sparkSizeMax);
-
-            var emberMain = _embers.main;
-            emberMain.gravityModifier = emberGravity;
-            GlowMaterial.SetColor(_emberMat, Grey(emberIntensity));
-            Spray(_embers, emberCount, emberCone, emberSpeedMin, emberSpeedMax,
-                  emberLifeMin, emberLifeMax, emberSizeMin, emberSizeMax);
-
-            _sparkRenderer.enabled = true;
-            _emberRenderer.enabled = true;
-
-            // The particles outlive the light: the shot is not over until the last of them is.
-            float life = Mathf.Max(Mathf.Max(sparkLifeMin, sparkLifeMax),
-                                   Mathf.Max(emberLifeMin, emberLifeMax));
-            double last = _startTime + t + life;
-            if (last > _endTime) _endTime = last;
-        }
-
-        // Launches `count` particles from the impact point up and out through a cone around +Y,
-        // one EmitParams at a time so every random number comes from _rng.
-        void Spray(ParticleSystem ps, int count, float coneDeg, float speedMin, float speedMax,
-                   float lifeMin, float lifeMax, float sizeMin, float sizeMax)
-        {
-            if (count <= 0) return;
-            ps.Play();
-
-            // Uniform over the cone's cap: cos θ uniform between the rim's and 1. Upward only —
-            // the rooftops in front hide everything below the ground line anyway.
-            float cosRim = Mathf.Cos(coneDeg * 0.5f * Mathf.Deg2Rad);
-            for (int i = 0; i < count; i++)
-            {
-                float cosT = Mathf.Lerp(cosRim, 1f, Next());
-                float sinT = Mathf.Sqrt(Mathf.Max(0f, 1f - cosT * cosT));
-                float az   = Next() * (2f * Mathf.PI);
-
-                _emit.position      = _to;
-                _emit.velocity      = new Vector3(sinT * Mathf.Cos(az), cosT, sinT * Mathf.Sin(az))
-                                      * Mathf.Lerp(speedMin, speedMax, Next());
-                _emit.startLifetime = Mathf.Lerp(lifeMin, lifeMax, Next());
-                _emit.startSize     = Mathf.Lerp(sizeMin, sizeMax, Next());
-                ps.Emit(_emit, 1);
+                float lt = Mathf.Clamp01(_elapsed / (beamDuration * 1.15f));
+                if (lt >= 1f) _light.enabled = false;
+                else          _light.intensity = lightIntensity * Mathf.Pow(1f - lt, 1.8f);
             }
         }
 
-        // Everything off: the shot has played out, or this component was switched off mid-shot.
-        void Idle()
+        void StepShockwave(float dt)
         {
-            _playing = false;
-            if (_root == null) return;   // torn down with the scene ahead of this component
+            CameraRig rig = CameraRig.Instance;
+            Camera    cam = rig != null ? rig.ActiveCamera : Camera.main;
+            Vector3   right = rig != null ? rig.Right : Vector3.right;
+            Vector3   up    = Vector3.up;
 
-            _core.enabled          = false;
-            _glow.enabled          = false;
-            _pulse.enabled         = false;
-            _muzzleFlash.enabled   = false;
-            _impactFlash.enabled   = false;
-            _cityGlow.enabled      = false;
-            _ring.enabled          = false;
-            _sparkRenderer.enabled = false;
-            _emberRenderer.enabled = false;
+            // The muzzle stays with the ship for the first instant, so the pulse feels attached to it as it flies,
+            // and blends into world space as it expands.
+            Vector3 liveMuzzle = _muzzlePos;
+            if (_ufo != null)
+                liveMuzzle = Vector3.Lerp(_ufo.transform.position + new Vector3(0f, -0.35f, 0f), _muzzlePos,
+                                          Mathf.Clamp01(_elapsed / 0.22f));
 
-            // Stopped as well as emptied, so neither system ticks between shots; Spray plays them
-            // again.
-            _sparks.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-            _embers.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-        }
+            Vector3 toCam = cam != null
+                ? (cam.transform.position - liveMuzzle).normalized
+                : Vector3.back;
+            Quaternion faceCam = cam != null
+                ? Quaternion.LookRotation(-toCam, cam.transform.up)
+                : Quaternion.identity;
 
-        // How long the light lasts — everything but the particles, which extend it at the burst.
-        float LightSec() =>
-            Mathf.Max(Mathf.Max(muzzleFlashSec, pulseSec),
-                      strikeSec + Mathf.Max(Mathf.Max(afterglowSec, impactFlashSec),
-                                            Mathf.Max(cityGlowSec, shockwaveSec)));
+            Color bright = Color.Lerp(shockwaveColor, Color.white, 0.38f);
 
-        float Next() => (float)_rng.NextDouble();
-
-        static float EaseOut(float k) => 1f - (1f - k) * (1f - k);
-
-        static Color Grey(float v) => new Color(v, v, v, 1f);
-
-        // ── Construction ─────────────────────────────────────────────────────
-
-        // One unit quad in the XY plane, shared by every flash. The camera never rotates, so a quad
-        // facing −Z faces it wherever it is put; its UVs span 0–1 for the glow shader's shapes.
-        static Mesh BuildQuad()
-        {
-            var m = new Mesh { name = "ShotFxQuad", hideFlags = HideFlags.DontSave };
-            m.vertices = new[]
+            // 1. The core at the muzzle: white-hot and gone in a blink. Small and dull for a fizzle.
+            float coreSec = _swFull ? 0.20f : 0.16f;
+            float mt = Mathf.Clamp01(_elapsed / coreSec);
+            if (mt < 1f)
             {
-                new Vector3(-0.5f, -0.5f, 0f), new Vector3(0.5f, -0.5f, 0f),
-                new Vector3(-0.5f,  0.5f, 0f), new Vector3(0.5f,  0.5f, 0f),
-            };
-            m.uv = new[]
+                float mf = Mathf.Pow(1f - mt, 1.5f);
+                PoseQuad(_muzzleFlash, liveMuzzle + toCam * 0.15f, faceCam,
+                         (_swFull ? 6.5f : 2.2f) * (0.55f + 0.6f * Mathf.Sqrt(mt)));
+                Color mc = Color.Lerp(Color.white, bright, mt);
+                GlowMaterial.SetColor(_muzzleMat, GlowMaterial.Scaled(mc, (_swFull ? coreIntensity * 1.4f : 1.3f) * mf, mf));
+            }
+            else _muzzleR.enabled = false;
+
+            // 2. A ripple close around the ship, crisp and quick.
+            float rippleSec = _swFull ? 0.42f : 0.30f;
+            float pt = Mathf.Clamp01(_elapsed / rippleSec);
+            if (pt < 1f)
             {
-                new Vector2(0f, 0f), new Vector2(1f, 0f),
-                new Vector2(0f, 1f), new Vector2(1f, 1f),
-            };
-            m.triangles = new[] { 0, 2, 1, 2, 3, 1 };
-            m.RecalculateBounds();
-            return m;
+                float ease = 1f - Mathf.Pow(1f - pt, 2.2f);
+                float rad  = Mathf.Lerp(0.8f, _swFull ? 15f : 2.8f, ease);
+                float rf   = Mathf.Pow(1f - pt, 1.3f);
+                PoseWave(_swEchoRing, _swEchoRingMat, liveMuzzle + toCam * 0.13f, faceCam, rad, 0.08f, _swFull ? 0.9f : 0.5f);
+                GlowMaterial.SetColor(_swEchoRingMat, GlowMaterial.Scaled(bright, (_swFull ? glowIntensity * 0.9f : 1.0f) * rf, rf));
+            }
+            else _swEchoRingR.enabled = false;
+
+            if (!_swFull) return;
+
+            // 3. The fronts, in a full circle about the ship: the crisp one, then a softer one catching up behind it.
+            float wt = Mathf.Clamp01(_elapsed / Mathf.Max(0.05f, shockwaveDuration));
+            float radius = Mathf.Lerp(0.8f, shockwaveMaxRadius, 1f - Mathf.Pow(1f - wt, SwEase));
+            if (wt < 1f)
+            {
+                float fade = Mathf.Pow(1f - wt, 0.9f);
+                PoseWave(_swFront, _swFrontMat, liveMuzzle + toCam * 0.16f, faceCam, radius, 0.14f, 3.2f);
+                Color front = Color.Lerp(Color.white, bright, Mathf.SmoothStep(0f, 0.3f, wt));
+                GlowMaterial.SetColor(_swFrontMat, GlowMaterial.Scaled(front, 2.1f * fade, fade));
+
+                float wakeT = Mathf.Clamp01(wt * 0.94f);
+                float wakeR = Mathf.Lerp(0.6f, shockwaveMaxRadius * 0.86f, 1f - Mathf.Pow(1f - wakeT, 2.0f));
+                float wf    = Mathf.Sin(Mathf.Min(1f, wt * 1.25f + 0.08f) * Mathf.PI) * (1f - wt * 0.5f);
+                PoseWave(_swWake, _swWakeMat, liveMuzzle + toCam * 0.10f, faceCam, wakeR, 0.9f, 15f);
+                GlowMaterial.SetColor(_swWakeMat, GlowMaterial.Scaled(shockwaveColor, glowIntensity * 1.1f * wf, 0.8f * wf));
+            }
+            else
+            {
+                _swFrontR.enabled = false;
+                _swWakeR.enabled  = false;
+            }
+
+            // 4. The flash: the whole sky lit for an instant.
+            float ft = Mathf.Clamp01(_elapsed / 0.24f);
+            if (ft < 1f)
+            {
+                float ff = Mathf.Pow(1f - ft, 1.7f);
+                PoseQuad(_swFlash, liveMuzzle + toCam * 0.05f, faceCam, Mathf.Lerp(12f, 38f, Mathf.Sqrt(ft)));
+                GlowMaterial.SetColor(_swFlashMat, GlowMaterial.Scaled(bright, 1.5f * ff, 0.75f * ff));
+            }
+            else _swFlashR.enabled = false;
+
+            // 5. Where the wave meets the ground, two fronts race apart along the city's foot, a pool of light between.
+            float gy    = _groundY + 0.5f;
+            float below = liveMuzzle.y - gy;
+            float gf    = Mathf.Pow(Mathf.Max(0f, 1f - wt), 1.1f);
+            if (wt < 1f && radius > below)
+            {
+                float   dx   = Mathf.Sqrt(radius * radius - below * below);
+                Vector3 mid  = new Vector3(liveMuzzle.x, gy, liveMuzzle.z) + toCam * 0.16f;
+                PoseQuadXY(_swSkimL, mid - right * dx, faceCam, 9f, 1.5f);
+                PoseQuadXY(_swSkimR, mid + right * dx, faceCam, 9f, 1.5f);
+                PoseQuadXY(_swWash,  mid, faceCam, 2f * dx + 8f, 4.5f);
+                GlowMaterial.SetColor(_swSkimMat, GlowMaterial.Scaled(Color.Lerp(Color.white, bright, wt), 3.6f * gf, gf));
+                GlowMaterial.SetColor(_swWashMat, GlowMaterial.Scaled(shockwaveColor, 1.25f * gf, 0.8f * gf));
+            }
+            else
+            {
+                GlowMaterial.SetColor(_swSkimMat, Color.clear);
+                GlowMaterial.SetColor(_swWashMat, Color.clear);
+            }
+
+            // 6. Sparks kicked up across the skyline as the wave passes
+            int nSparks = Mathf.Clamp(sparkCount, 0, MaxSparks);
+            Vector3 grav = Vector3.down * (sparkGravity * 0.75f);
+            for (int i = 0; i < nSparks; i++)
+            {
+                if (!_sparks[i].enabled) continue;
+                float localElapsed = _elapsed - _sparkDelay[i];
+                if (localElapsed < 0f)
+                {
+                    _sparks[i].widthMultiplier = 0f;
+                    continue;
+                }
+
+                float lt = localElapsed / _sparkLife[i];
+                if (lt >= 1f) { _sparks[i].enabled = false; continue; }
+
+                _sparkVel[i] += grav * dt;
+                _sparkPos[i] += _sparkVel[i] * dt;
+                if (_sparkPos[i].y < _groundY)
+                {
+                    _sparkPos[i].y = _groundY;
+                    _sparkVel[i].y = Mathf.Abs(_sparkVel[i].y) * 0.4f;
+                    _sparkVel[i].x *= 0.75f;
+                }
+
+                float sf   = Mathf.Pow(1f - lt, 1.25f);
+                float tail = Mathf.Clamp(_sparkVel[i].magnitude * 0.036f, 0.18f, 0.78f) * (1f - lt * 0.45f);
+                Vector3 dir = _sparkVel[i].sqrMagnitude > 1e-4f ? _sparkVel[i].normalized : Vector3.up;
+
+                _sparks[i].widthMultiplier = 0.10f * (0.45f + 0.65f * sf);
+                _sparks[i].SetPosition(0, _sparkPos[i]);
+                _sparks[i].SetPosition(1, _sparkPos[i] - dir * tail);
+
+                Color baseCol = _sparkIsCore[i]
+                    ? Color.Lerp(Color.white, shockwaveColor, lt)
+                    : Color.Lerp(shockwaveColor, shockwaveWakeColor, lt);
+                GlowMaterial.SetColor(_sparkMats[i], GlowMaterial.Scaled(baseCol, 3.0f * sf, sf));
+            }
+
+            // 7. Embers rising after it
+            int nEmbers = Mathf.Clamp(emberCount, 0, MaxEmbers);
+            for (int i = 0; i < nEmbers; i++)
+            {
+                if (!_emberR[i].enabled) continue;
+                float localElapsed = _elapsed - _emberDelay[i];
+                if (localElapsed < 0f)
+                {
+                    GlowMaterial.SetColor(_emberMats[i], Color.clear);
+                    continue;
+                }
+
+                float lt = localElapsed / _emberLife[i];
+                if (lt >= 1f) { _emberR[i].enabled = false; continue; }
+
+                float sway = Mathf.Sin(_elapsed * 6.5f + _emberPhase[i]) * 1.5f;
+                _emberPos[i] += (_emberVel[i] + right * sway) * dt;
+                _emberVel[i] *= Mathf.Exp(-1.4f * dt);
+
+                float ef = Mathf.Sin(lt * Mathf.PI) * (1f - lt * 0.25f);
+                float sz = _emberSize[i] * (0.65f + 0.55f * ef);
+                PoseQuad(_embers[i], _emberPos[i] + toCam * 0.12f, faceCam, sz);
+
+                Color ec = Color.Lerp(shockwaveColor, shockwaveWakeColor, Mathf.SmoothStep(0.15f, 0.85f, lt));
+                GlowMaterial.SetColor(_emberMats[i], GlowMaterial.Scaled(ec, 2.3f * ef, ef));
+            }
+
+            // 8. The light
+            if (_light != null && _light.enabled)
+            {
+                float lt = Mathf.Clamp01(_elapsed / (shockwaveDuration * 0.95f));
+                if (lt >= 1f) _light.enabled = false;
+                else
+                {
+                    _light.transform.position = Vector3.Lerp(liveMuzzle, _impactPos + Vector3.up * 2.5f, lt) + Vector3.back * 1.8f;
+                    _light.intensity = lightIntensity * 1.35f * Mathf.Pow(1f - lt, 1.55f);
+                }
+            }
         }
 
-        Renderer MakeQuad(string goName, GlowShape shape, float softness, out Material mat)
+        // A wave quad: its radius in world units, its crisp edge and the light behind it held at a world width as it grows.
+        static void PoseWave(Transform t, Material m, Vector3 pos, Quaternion rot, float radius, float edge, float wake)
         {
-            var go = new GameObject(goName);
-            go.transform.SetParent(_root.transform, false);
-            go.AddComponent<MeshFilter>().sharedMesh = _quad;
-
-            var mr = go.AddComponent<MeshRenderer>();
-            mat = GlowMaterial.Create(shape, Color.white, softness, "Shot" + goName);
-            mr.sharedMaterial = mat;
-            NoLighting(mr);
-            mr.enabled = false;
-            return mr;
+            PoseQuad(t, pos, rot, 2f * radius);
+            float r = Mathf.Max(0.01f, radius);
+            m.SetFloat(GlowMaterial.RingEdgeId,  Mathf.Clamp(edge / r, 0.001f, 0.5f));
+            m.SetFloat(GlowMaterial.RingWidthId, Mathf.Clamp(wake / r, 0.02f, 1f));
         }
 
-        // A world-space two-point line. Square ends: the muzzle and impact flashes cover them.
-        // Stretch maps U along the line and V across it, which is what the Line shape reads.
-        LineRenderer MakeLine(string goName, float softness, out Material mat)
+        static void PoseQuadXY(Transform t, Vector3 pos, Quaternion rot, float sizeX, float sizeY)
         {
-            var go = new GameObject(goName);
-            go.transform.SetParent(_root.transform, false);
-
-            var lr = go.AddComponent<LineRenderer>();
-            lr.useWorldSpace     = true;
-            lr.positionCount     = 2;
-            lr.numCapVertices    = 0;
-            lr.numCornerVertices = 0;
-            lr.alignment         = LineAlignment.View;
-            lr.textureMode       = LineTextureMode.Stretch;
-            NoLighting(lr);
-
-            mat = GlowMaterial.Create(GlowShape.Line, Color.white, softness, "Shot" + goName);
-            lr.sharedMaterial = mat;
-            lr.enabled        = false;
-            return lr;
+            t.position   = pos;
+            t.rotation   = rot;
+            t.localScale = new Vector3(sizeX, sizeY, 1f);
         }
 
-        ParticleSystem MakeParticles(string goName, int pool, uint seed, float softness, float shrinkTo,
-                                     out Material mat, out ParticleSystemRenderer pr)
+        static void PoseQuad(Transform t, Vector3 pos, Quaternion rot, float size)
         {
-            var go = new GameObject(goName);
-            go.transform.SetParent(_root.transform, false);
-
-            var ps = go.AddComponent<ParticleSystem>();
-            // A fresh system starts playing with stock settings; stop and clear it before it can.
-            ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-
-            // A fixed seed of its own, so nothing in it ever draws on a shared random sequence.
-            ps.useAutoRandomSeed = false;
-            ps.randomSeed        = seed;
-
-            var main = ps.main;
-            main.playOnAwake     = false;
-            main.loop            = false;
-            main.duration        = 1f;
-            main.maxParticles    = pool;
-            main.simulationSpace = ParticleSystemSimulationSpace.World;
-            main.useUnscaledTime = true;
-            main.cullingMode     = ParticleSystemCullingMode.AlwaysSimulate;
-            main.startColor      = Color.white;
-
-            // Every particle is placed and launched by hand (Spray): no emitter, no shape.
-            var emission = ps.emission;
-            emission.enabled = false;
-            var shape = ps.shape;
-            shape.enabled = false;
-
-            var size = ps.sizeOverLifetime;
-            size.enabled = true;
-            size.size    = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 1f, 1f, shrinkTo));
-
-            mat = GlowMaterial.Create(GlowShape.Dot, Color.white, softness, "Shot" + goName);
-            pr  = go.GetComponent<ParticleSystemRenderer>();
-            pr.sharedMaterial = mat;
-            NoLighting(pr);
-            pr.enabled = false;
-            return ps;
+            t.position   = pos;
+            t.rotation   = rot;
+            t.localScale = new Vector3(size, size, 1f);
         }
 
-        // Hot to cool over the first part of a particle's life, then holding while it fades out.
-        static void SetLifetimeColours(ParticleSystem ps, Color hot, Color cool)
+        void SetAllEnabled(bool on)
         {
-            var g = new Gradient();
-            g.SetKeys(
-                new[] { new GradientColorKey(hot, 0f), new GradientColorKey(cool, 0.4f),
-                        new GradientColorKey(cool, 1f) },
-                new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0.8f, 0.5f),
-                        new GradientAlphaKey(0f, 1f) });
+            if (_coreLine    != null) _coreLine.enabled    = on;
+            if (_glowLine    != null) _glowLine.enabled    = on;
+            if (_swFrontR    != null) _swFrontR.enabled    = on;
+            if (_swWakeR     != null) _swWakeR.enabled     = on;
+            if (_swFlashR    != null) _swFlashR.enabled    = on;
+            if (_swWashR     != null) _swWashR.enabled     = on;
+            if (_swSkimLR    != null) _swSkimLR.enabled    = on;
+            if (_swSkimRR    != null) _swSkimRR.enabled    = on;
+            if (_muzzleR     != null) _muzzleR.enabled     = on;
+            if (_impactR     != null) _impactR.enabled     = on;
+            if (_scorchR     != null) _scorchR.enabled     = on;
+            if (_ringR       != null) _ringR.enabled       = on;
+            if (_swEchoRingR != null) _swEchoRingR.enabled = on;
+            if (_light       != null) _light.enabled       = on;
 
-            var col = ps.colorOverLifetime;
-            col.enabled = true;
-            col.color   = new ParticleSystem.MinMaxGradient(g);
+            if (_sparks != null)
+                for (int i = 0; i < _sparks.Length; i++)
+                    if (_sparks[i] != null) _sparks[i].enabled = on;
+
+            if (_emberR != null)
+                for (int i = 0; i < _emberR.Length; i++)
+                    if (_emberR[i] != null) _emberR[i].enabled = on;
         }
 
-        // Glow is its own light: no shadows, probes or motion vectors.
-        static void NoLighting(Renderer r)
-        {
-            r.shadowCastingMode          = ShadowCastingMode.Off;
-            r.receiveShadows             = false;
-            r.lightProbeUsage            = LightProbeUsage.Off;
-            r.reflectionProbeUsage       = ReflectionProbeUsage.Off;
-            r.motionVectorGenerationMode = MotionVectorGenerationMode.ForceNoMotion;
-        }
-
-        static void Release(Object o)
-        {
-            if (o != null) Destroy(o);
-        }
+        float Rf(float min, float max) => min + (float)_rng.NextDouble() * (max - min);
     }
 }

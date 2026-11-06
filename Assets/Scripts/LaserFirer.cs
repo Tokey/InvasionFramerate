@@ -63,6 +63,13 @@ namespace JndUfo
 
         public event Action<Vector3, bool> OnShotFired;
 
+        /// <summary>A press of the fire button that fired nothing: during the cooldown, the early lockout, or with
+        /// firing off. Every press goes in the ShotLog with the state it met (ExperimentDirector.RecordIgnoredPress).</summary>
+        public event Action<TrialOutcome> OnPressIgnored;
+
+        /// <summary>What made the last press: 1 the mouse, 2 the fire key.</summary>
+        public int LastPressDevice { get; private set; }
+
         /// <summary>Where the pointer glow sits this frame, 0 at pulseMin and 1 at pulseMax:
         /// <see cref="steadyLevel"/> while it holds steady, its pulse with <see cref="pulsePointer"/>
         /// on. Published so the sight can breathe on the same clock.</summary>
@@ -72,6 +79,8 @@ namespace JndUfo
         /// fireFlashDecay exactly as the pointer's own flash does.</summary>
         public float FireFlash01 { get; private set; }
 
+        public float groundY => _tower != null ? _tower.groundY : 0f;
+
         float     _lastFireTime  = -999f;
         float     _cooldown      = 0.25f;
         bool      _firingEnabled = true;
@@ -80,6 +89,7 @@ namespace JndUfo
         float     _legacyBeamAge = -1f;   // seconds the legacy beam has been up; < 0 while it is down
 
         TowerManager          _tower;
+        UfoFlair              _flair;
         MaterialPropertyBlock _propBlock;
         MaterialPropertyBlock _beamPropBlock;
 
@@ -97,6 +107,13 @@ namespace JndUfo
         /// </summary>
         public bool FiringEnabled => _firingEnabled;
 
+        bool IsShockwave =>
+            (GameManager.Instance != null && GameManager.Instance.perturbation != null &&
+             GameManager.Instance.perturbation.CurrentConfig != null &&
+             GameManager.Instance.perturbation.CurrentConfig.IsShockwave) ||
+            (ExperimentDirector.Instance != null && ExperimentDirector.Instance.Config != null &&
+             ExperimentDirector.Instance.Config.IsShockwave);
+
         void Awake()
         {
             if (firePoint == null)
@@ -107,24 +124,19 @@ namespace JndUfo
                 firePoint = fp;
             }
 
-            // The ground line a downward miss lands on: the same line the sight ends on.
             _tower = FindAnyObjectByType<TowerManager>();
+            _flair = GetComponentInParent<UfoFlair>();
 
-            // Built up front: creating the sight's renderers on the first frame they are needed would
-            // land as a long frame. It lives here, on the muzzle, so hiding the ship between rounds
-            // takes it with it (UfoController.SetHidden walks the children).
             if (sight == null) sight = GetComponent<WeaponSight>();
             if (sight == null) sight = gameObject.AddComponent<WeaponSight>();
+            sight.firePoint = firePoint;
 
-            // Built up front for the same reason. Its renderers live at the scene root rather than
-            // here (see ShotFx), so a shot stays where it was fired and the reset cannot cut it off.
             if (shotFx == null) shotFx = GetComponent<ShotFx>();
             if (shotFx == null) shotFx = gameObject.AddComponent<ShotFx>();
 
             _propBlock     = new MaterialPropertyBlock();
             _beamPropBlock = new MaterialPropertyBlock();
 
-            // Cache emission colour from the material — hue never changes, only intensity is animated
             if (pointerRenderer != null)
             {
                 var mat = pointerRenderer.sharedMaterial;
@@ -142,10 +154,26 @@ namespace JndUfo
             AnimatePointer();
             StepLegacyBeam();
 
-            if (!_firingEnabled) return;
-            bool wantsFire = (fireOnLeftClick && Mouse.current  != null && Mouse.current.leftButton.wasPressedThisFrame)
-                          || (Keyboard.current != null && Keyboard.current[altFireKey].wasPressedThisFrame);
-            if (!wantsFire || Time.time - _lastFireTime < _cooldown) return;
+            bool byMouse = fireOnLeftClick && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
+            bool byKey   = Keyboard.current != null && Keyboard.current[altFireKey].wasPressedThisFrame;
+            if (!byMouse && !byKey) return;
+            LastPressDevice = byMouse ? 1 : 2;
+
+            if (!_firingEnabled)
+            {
+                OnPressIgnored?.Invoke(TrialOutcome.PressNotLive);
+                return;
+            }
+            if (Time.unscaledTime - _lastFireTime < _cooldown)
+            {
+                OnPressIgnored?.Invoke(TrialOutcome.PressCooldown);
+                return;
+            }
+            if (ShockwaveController.Instance != null && ShockwaveController.Instance.ShouldSwallowFire())
+            {
+                OnPressIgnored?.Invoke(TrialOutcome.PressLockout);
+                return;
+            }
 
             Fire();
         }
@@ -161,8 +189,6 @@ namespace JndUfo
                                                   * Time.unscaledDeltaTime);
             float intensity = Mathf.Max(pulse, _flashCurrent);
 
-            // Published before the early-out below: the sight reads these even when the scene has
-            // no pointer renderer to glow.
             PointerPulse01 = phase;
             FireFlash01    = fireFlashIntensity > 0f ? Mathf.Clamp01(_flashCurrent / fireFlashIntensity) : 0f;
 
@@ -175,10 +201,8 @@ namespace JndUfo
 
         public void Fire()
         {
-            _lastFireTime = Time.time;
+            _lastFireTime = Time.unscaledTime;
             _flashCurrent = fireFlashIntensity;
-            // AnimatePointer already ran this frame, so publish the flash now rather than let the
-            // sight see it a frame after the shot appears.
             FireFlash01   = 1f;
 
             Vector3 origin = firePoint.position;
@@ -193,27 +217,41 @@ namespace JndUfo
             }
             else if (dir.y < 0f && _tower != null && origin.y > _tower.groundY)
             {
-                // A miss heading down lands on the ground line, where the sight showed it would,
-                // instead of stopping in mid-air beamLength below the ship. Only y moves: x and z
-                // are what the round is scored and logged on, and they stay exactly where the fire
-                // direction put them — the muzzle's own x and z for this scene's straight-down shot.
                 endPt.y = _tower.groundY;
             }
 
-            // The shot's visuals, then the muzzle sound, then the shot itself — so the sound leads
-            // the impact sounds that GameManager triggers off the same shot.
-            if (shotFx != null)       shotFx.Play(origin, endPt);
-            if (beamRenderer != null) ShowLegacyBeam(origin, endPt);
+            bool shockwave = IsShockwave;
+            // The blast goes off only for a press inside the response window; any other press just fizzles.
+            bool blast = shockwave && (ShockwaveController.Instance == null || ShockwaveController.Instance.WindowOpen);
+            if (shockwave)
+            {
+                if (sight  != null) sight.NotifyFired();
+                if (shotFx != null) shotFx.PlayShockwave(origin, groundY, blast);
+                if (_flair != null) _flair.Kick(blast ? 3.2f : 1.0f);
+                if (blast)
+                {
+                    if (CameraRig.Instance != null) CameraRig.Instance.ShakeShockwave(origin);
+                    UIManager ui = GameManager.Instance != null ? GameManager.Instance.uiManager : null;
+                    if (ui != null) ui.TriggerShockwaveFlash();
+                }
+            }
+            else
+            {
+                if (shotFx       != null) shotFx.Play(origin, endPt);
+                if (beamRenderer != null) ShowLegacyBeam(origin, endPt);
+            }
 
-            if (AudioManager.Instance != null) AudioManager.Instance.PlayLaserFire();
+            if (AudioManager.Instance != null)
+            {
+                if (blast) AudioManager.Instance.PlayExplosion();
+                else       AudioManager.Instance.PlayLaserFire();
+            }
 
             OnShotFired?.Invoke(endPt, hit);
         }
 
         // ── Legacy beam ──────────────────────────────────────────────────────
 
-        // Spans the muzzle → impact at full length, holds, and fades its emission out over
-        // beamDuration. Unity's Cylinder is two units tall along its Y, so scale.y = length / 2.
         void ShowLegacyBeam(Vector3 from, Vector3 to)
         {
             Vector3   span = to - from;
@@ -229,14 +267,13 @@ namespace JndUfo
             TintLegacyBeam(1f);
         }
 
-        // Stepped from Update rather than run as a coroutine, which would allocate on every shot.
         void StepLegacyBeam()
         {
             if (_legacyBeamAge < 0f) return;
             if (beamRenderer == null) { _legacyBeamAge = -1f; return; }
 
             _legacyBeamAge += Time.unscaledDeltaTime;
-            float t = 1f - Mathf.Clamp01(_legacyBeamAge / Mathf.Max(0.01f, beamDuration)); // 1 → 0
+            float t = 1f - Mathf.Clamp01(_legacyBeamAge / Mathf.Max(0.01f, beamDuration));
             if (t <= 0f)
             {
                 beamRenderer.enabled = false;

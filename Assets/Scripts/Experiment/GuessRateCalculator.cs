@@ -149,7 +149,7 @@ namespace JndUfo
             }
             guessRate = Mathf.Clamp01((float)(sum / steps));
 
-            float turn = path.mode == AutoPathMode.Linear ? path.TurnRadius(width) : 0f;
+            float turn = path.mode == AutoPathMode.Linear ? path.TurnDepth(width) : 0f;
             var sb = new StringBuilder();
             sb.AppendLine($"[GuessRate] Auto level (row {block.blockIndex}): chance-level hit rate of a blind click:");
             sb.AppendLine($"    Sweep            : {xa:0.000} .. {xa + width:0.000}   ({block.autoSweep:0.##} of the width, " +
@@ -162,7 +162,7 @@ namespace JndUfo
                 sb.AppendLine("    !!! The sweep does not reach every place the tower can be dealt: a boundary there " +
                               "is never crossed. Widen autoSweep.");
             else if (path.mode == AutoPathMode.Linear && (tMin < xa + turn || tMax > xa + width - turn))
-                sb.AppendLine("    (the tower can stand where the ship turns, where it is slower than autoSpeed)");
+                sb.AppendLine("    (the tower can stand where the ship turns: its speed is the same there, but not all of it along X)");
             else if (path.mode == AutoPathMode.Sine)
                 sb.AppendLine("    (sine path: the ship crosses a boundary near the middle faster than one near an edge)");
 

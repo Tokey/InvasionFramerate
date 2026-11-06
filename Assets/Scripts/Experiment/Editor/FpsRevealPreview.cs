@@ -22,7 +22,7 @@ namespace JndUfo
     /// lines at ±5.5 world units. The fog is gone at that moment of the reveal, so there is none.
     ///
     /// The tower positions run past the game's own range on purpose: TowerManager places the tower
-    /// in the middle 80% of the view (0.10–0.90) and never outside 0.05–0.95; 0.03 and 0.97 check
+    /// in the middle 60% of the view (0.20–0.80) and never outside 0.05–0.95; 0.03 and 0.97 check
     /// that the reveal still degrades gracefully beyond that. The moments are the ones a
     /// participant sees: the reveal is paced for the study's hold (see <see cref="HoldSec"/>), and
     /// the last moment is just before it fades.

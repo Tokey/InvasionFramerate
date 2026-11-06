@@ -79,7 +79,9 @@ ShotLog, per row
   roundNumber: +1 per row; practice restarts at 1 per practice phase; main continues across
       blocks without gaps
   totalScore is the running sum of hitPoints / missPoints within a phase
-  main diffFps on the QUEST+ grid [minDiffFps, maxDiffFps] step diffStepFps
+  main diffFps on the QUEST+ grid [minDiffFps, maxDiffFps] step diffStepFps; with cfg_diffStepMs,
+      alteredFps is a cap of the ms grid [minDiffMs, maxDiffMs] step diffStepMs and
+      diffMs == |1000/alteredFps - 1000/baseFps|
   side == Right iff hitX >= towerX (shots, |missDistX| > 1e-3)
   identity: baseFps/direction/frameLimiter == cfg_*; latinOrder[blockOrdinal] == blockIndex;
       v3+ practice: blockIndex 0, blockOrdinal 0, blank cfg_*
@@ -128,7 +130,8 @@ SessionLog vs ShotLog / PlayerLog, per main block (matched on blockOrdinal)
   avgRoundDurationSec, avgCrossingsPerRound, shotsWithoutCrossing, avgSinceLastCrossingSec,
   avg/median/sd/max miss distance, staircaseTrials == countedByStaircase rows, lastDiffFps,
   jndDiffFps / sd / slopeEstimate / lapseEstimate == the last round's posterior,
-  jndAlteredFps == base -/+ jnd, jndFrameTimeDiffMs == |1000/alt - 1000/base|,
+  jndAlteredFps == base -/+ jnd, jndFrameTimeDiffMs == |1000/alt - 1000/base|, and with ms columns
+  lastDiffMs and jndFrameTimeDiffMs == the last round's diffMs and threshDiffMs,
   frameCount, liveFrames, baseSideFrames, alteredSideFrames, baseSideMeasuredFps,
   baseFrameTimeSdMs, alteredFrameTimeErrPct, alteredFrameTimeSdMs, slowFrames,
   maxLiveFrameTimeMs, playDurationSec, totalMousePathPx, avgMouseSpeedPxPerSec,
@@ -181,9 +184,12 @@ NAN_TOKENS = {"nan", "NaN", "NAN", "-nan", "+nan", "Infinity", "-Infinity", "+In
               "inf", "-inf", "+inf", "Inf", "-Inf", "\u221e", "-\u221e"}
 
 BOOL_COLS = {"isHit", "playerFired", "countedByStaircase", "crossed", "leftButtonDown",
-             "leftButtonPressed", "fireKeyDown", "shotFired"}
+             "leftButtonPressed", "fireKeyDown", "shotFired", "shockwaveFastPhase", "shockwaveWindow"}
 
-TEXT_COLS = {"runId", "latinOrder", "direction", "frameLimiter", "levelType", "phase",
+# Presses that fired nothing: logged with their state, but no response and no part of a round's checks.
+IGNORED_PRESSES = {"cooldown", "lockout", "notLive"}
+TEXT_COLS = {"inputDevice", "changeDir", "ftDirection", "changeTimesSec",
+             "runId", "latinOrder", "direction", "frameLimiter", "levelType", "phase",
              "phaseStartIso", "alteredSide", "side", "outcome", "pacedBy", "endReason",
              "resolution", "startIso", "endIso", "jndRangeEdge"}
 
@@ -191,18 +197,20 @@ INT_COLS = {"sessionId", "blockIndex", "blockOrdinal", "latinRow", "baseFps", "r
             "diffFps", "alteredFps", "lateFrames", "crossings", "frameIndex", "targetFps",
             "staircaseTrials", "trials", "shotsFired", "hits", "roundsExpired",
             "roundsCrossingCapped", "shotsWithoutCrossing", "frameCount", "liveFrames",
-            "baseSideFrames", "alteredSideFrames", "slowFrames"}
+            "baseSideFrames", "alteredSideFrames", "slowFrames", "shockwaveFlips",
+            "shockwaveEvent"}   # shockwaveFlips in logs written before the rename
 
 ENUMS = {
     "phase": {"practice", "main"},
-    "outcome": {"shot", "expired", "crossingCap"},
-    "side": {"Left", "Right"},
+    "outcome": {"shot", "expired", "crossingCap", "detected", "early", "late", "timeout",
+                "cooldown", "lockout", "notLive"},
+    "side": {"Left", "Right", ""},
     "alteredSide": {"Left", "Right", ""},
     "pacedBy": {"", "base", "altered"},
     "direction": {"down", "up"},
     "frameLimiter": {"precise", "unity"},
-    "levelType": {"manual", "scroll", "auto"},
-    "endReason": {"converged", "maxTrials", "abandoned"},
+    "levelType": {"manual", "scroll", "auto", "shockwave"},
+    "endReason": {"converged", "maxTrials", "abandoned", "roundCap"},
     "jndRangeEdge": {"", "top", "bottom"},
 }
 
@@ -565,7 +573,8 @@ class Phase:
         self.key = key                  # (phase, phaseStartIso)
         self.kind = key[0]
         self.order = order
-        self.shots = []                 # ShotLog dict rows
+        self.shots = []                 # ShotLog rows that closed a round (older logs: every row)
+        self.presses = []               # every ShotLog row: each press, fired or not, and each round that ran out
         self.f0 = None                  # PlayerLog index range [f0, f1)
         self.f1 = None
         self.level = None
@@ -692,7 +701,10 @@ def build_phases(S):
 
     if S.shot is not None and "phase" in S.shot.cols:
         for r in S.shot.rows:
-            get((r.get("phase"), r.get("phaseStartIso", ""))).shots.append(r)
+            ph = get((r.get("phase"), r.get("phaseStartIso", "")))
+            ph.presses.append(r)
+            if r.get("roundEnded", "1") != "0" and r.get("outcome") not in IGNORED_PRESSES:
+                ph.shots.append(r)
     fr = S.frames
     if fr is not None and fr.n and fr.has("phase"):
         ph, iso = fr.c["phase"], fr.c.get("phaseStartIso") or [""] * fr.n
@@ -810,6 +822,23 @@ def cfg_val(r, name):
     return r.get("cfg_" + name, "")
 
 
+_MS_GRID_CAPS = {}
+
+
+def ms_grid_caps(base, direction, lo, hi, step):
+    """The caps StudyConfig.DiffGridMs presents: the whole number nearest each step's frame time."""
+    key = (base, direction, lo, hi, step)
+    if key not in _MS_GRID_CAPS:
+        caps = set()
+        # A range that is no whole number of steps ends on a shorter last step, exactly at hi.
+        for d in [lo + k * step for k in range(int((hi - lo) / step + 1e-4) + 1)] + [hi]:
+            ms = 1000.0 / base + (-d if direction == "up" else d)
+            if ms > 0:
+                caps.add(max(1, int(round(1000.0 / ms))))
+        _MS_GRID_CAPS[key] = caps - {base}
+    return _MS_GRID_CAPS[key]
+
+
 def practice_points(S, p):
     """hit/miss points a practice phase was scored with: v3+ practice runs in the first main
     block's setup, whose cfg the practice rows leave blank."""
@@ -856,9 +885,10 @@ def check_shot_rows(S):
             rn = inum(r.get("roundNumber"))
 
             # outcome vs playerFired and the blanks a round that ran out leaves
-            if outcome == "shot" and not fired:
-                F.fail("shot.outcome", name, [L], "outcome=shot but playerFired=0")
-            if outcome in ("expired", "crossingCap"):
+            is_sw = r.get("levelType") == "shockwave"
+            if outcome in ("shot", "detected", "early", "late") and not fired:
+                F.fail("shot.outcome", name, [L], "outcome=%s but playerFired=0" % outcome)
+            if outcome in ("expired", "crossingCap", "timeout"):
                 if fired:
                     F.fail("shot.outcome", name, [L], "outcome=%s but playerFired=1" % outcome)
                 filled = [c for c in ("hitX", "missDistX", "firedAtSec", "sinceLastCrossingSec")
@@ -869,12 +899,13 @@ def check_shot_rows(S):
                 if hit:
                     F.fail("shot.outcome", name, [L], "outcome=%s with isHit=1" % outcome)
             if fired:
-                missing = [c for c in ("hitX", "missDistX", "firedAtSec") if c in cols and r.get(c, "") == ""]
+                req = ("hitX", "firedAtSec") if is_sw else ("hitX", "missDistX", "firedAtSec")
+                missing = [c for c in req if c in cols and r.get(c, "") == ""]
                 if missing:
                     F.fail("shot.outcome", name, [L], "a shot with blank %s" % "/".join(missing))
 
             # isHit and the miss distance
-            if fired and miss is not None:
+            if fired and miss is not None and outcome != "early":   # a laser shot before any crossing is never scored
                 if hit and abs(miss) > R + TOL["edge"]:
                     F.fail("shot.isHit", name, [L], "isHit=1 but |missDistX|=%s > closeRadius %s"
                            % (fmt(abs(miss)), fmt(R)))
@@ -905,7 +936,8 @@ def check_shot_rows(S):
                         F.fail("shot.alteredFps", name, [L], "alteredFps=%d but baseFps %d %s diffFps %d = %d"
                                % (alt, base, "+" if direction == "up" else "-", diff, want))
             if r.get("alteredSide", "") == "":
-                F.fail("shot.alteredSide", name, [L], "blank alteredSide (the round had no split open?)")
+                if not is_sw:   # a shockwave block alternates in time: it has no altered side
+                    F.fail("shot.alteredSide", name, [L], "blank alteredSide (the round had no split open?)")
 
             # QUEST+ bookkeeping
             counted = r.get("countedByStaircase")
@@ -1034,10 +1066,14 @@ def check_shot_rows(S):
             mp = fnum(cfg_val(r, "missPoints")) if not practice else missp
             if ts is not None and hp is not None and mp is not None:
                 before = fnum(prev.get("totalScore")) if prev is not None else 0.0
-                if before is not None and abs(ts - (before + (hp if hit else mp))) > 1e-2:
+                # TOO LATE presses earlier in this round cost a miss each, on rows of their own.
+                late = inum(r.get("latePresses")) or 0
+                if before is not None: before += mp * (late - (1 if outcome == "late" else 0))
+                # A laser shot before any crossing scores nothing (a shockwave early that ends its round costs a miss).
+                pts = 0.0 if (outcome == "early" and not is_sw) else (hp if hit else mp)
+                if before is not None and abs(ts - (before + pts)) > 1e-2:
                     F.fail("shot.score", name, [L], "totalScore %s after %s (%s) from %s; expected %s" % (
-                        fmt(ts), "a hit" if hit else "a miss", fmt(hp if hit else mp), fmt(before),
-                        fmt(before + (hp if hit else mp))))
+                        fmt(ts), "a hit" if hit else "a miss", fmt(pts), fmt(before), fmt(before + pts)))
 
             # identity and grid
             if not practice or gen in ("v1", "v2"):
@@ -1045,6 +1081,19 @@ def check_shot_rows(S):
                     cv = cfg_val(r, c)
                     if cv != "" and r.get(c, "") != "" and cv != r.get(c):
                         F.fail("id.cfg", name, [L], "%s=%s but cfg_%s=%s" % (c, r.get(c), c, cv))
+            ms = fnum(r.get("diffMs"))
+            if ms is not None and base and alt:
+                want_ms = abs(1000.0 / alt - 1000.0 / base)
+                if abs(ms - want_ms) > 1.5e-3:
+                    F.fail("shot.grid", name, [L], "diffMs %s but %d vs %d fps is %s ms"
+                           % (fmt(ms, 3), base, alt, fmt(want_ms, 3)))
+            step_ms = fnum(cfg_val(r, "diffStepMs"))
+            if not practice and step_ms and alt:
+                lo_ms, hi_ms = fnum(cfg_val(r, "minDiffMs")), fnum(cfg_val(r, "maxDiffMs"))
+                if lo_ms is not None and hi_ms is not None and alt not in ms_grid_caps(
+                        base, r.get("direction") or cfg_val(r, "direction"), lo_ms, hi_ms, step_ms):
+                    F.fail("shot.grid", name, [L], "alteredFps %d is not a cap of the grid %s-%s ms step %s"
+                           % (alt, fmt(lo_ms, 3), fmt(hi_ms, 3), fmt(step_ms, 3)))
             if not practice and diff is not None:
                 lo, hi = inum(cfg_val(r, "minDiffFps")), inum(cfg_val(r, "maxDiffFps"))
                 step = inum(cfg_val(r, "diffStepFps"))
@@ -1180,6 +1229,12 @@ def check_frames(S):
             continue
         # paced / alteredSide per round (the GO frame and the response frame are the exceptions)
         shot_by_round = {inum(r.get("roundNumber")): r for r in p.shots}
+        # A shockwave round can present a new difference after a counted TOO LATE: all it presented, per round.
+        diffs_by_round, alts_by_round = {}, {}
+        for r in p.presses:
+            if r.get("outcome") in IGNORED_PRESSES: continue
+            diffs_by_round.setdefault(inum(r.get("roundNumber")), set()).add(inum(r.get("diffFps")))
+            alts_by_round.setdefault(inum(r.get("roundNumber")), set()).add(inum(r.get("alteredFps")))
         segs = round_segments(fr, f0, f1)
         for r_no, spans in segs.items():
             idx = [i for a, b in spans for i in range(a, b)]
@@ -1207,14 +1262,15 @@ def check_frames(S):
             sr = shot_by_round.get(r_no)
             if sr is not None and live:
                 d_shot = inum(sr.get("diffFps"))
-                bad = [i for i in live if diff is not None and diff[i] != d_shot]
+                bad = [i for i in live if diff is not None and diff[i] != d_shot and
+                       diff[i] not in diffs_by_round.get(r_no, ())]
                 if bad:
                     F.fail("frame.stimulus", name, [L[i] for i in bad], "%s round %s: frames carry diffFps %s, "
                            "the ShotLog row (row %d) %s" % (p.label, r_no, diff[bad[0]], sr["_line"], d_shot))
                 # alteredSide vs the ShotLog's (scroll: turned per boundary copy)
                 s_alt, s_tx = sr.get("alteredSide"), fnum(sr.get("towerX"))
                 bad = []
-                for i in live:
+                for i in (live if s_alt else ()):   # a shockwave block has no altered side in its shot rows
                     want = s_alt
                     if scroll and S.period and tx[i] is not None and s_tx is not None:
                         k = int(round((tx[i] - s_tx) / S.period))
@@ -1232,7 +1288,8 @@ def check_frames(S):
                 s_base, s_alt_fps = inum(sr.get("baseFps")), inum(sr.get("alteredFps"))
                 if tgt is not None:
                     bad = [i for i in idx if paced[i] == "base" and tgt[i] != s_base] + \
-                          [i for i in idx if paced[i] == "altered" and tgt[i] != s_alt_fps]
+                          [i for i in idx if paced[i] == "altered" and tgt[i] != s_alt_fps and
+                           tgt[i] not in alts_by_round.get(r_no, ())]
                     if bad:
                         F.fail("frame.target", name, [L[i] for i in sorted(bad)], "%s round %s: targetFps %s "
                                "on a pacedBy=%s frame; the round's base/altered caps are %s/%s"
@@ -1294,8 +1351,8 @@ def check_frames(S):
                 F.warn("frame.target", name, [L[i] for i in bad], "%s: %d idle frame(s) (pacedBy blank) with "
                        "targetFps %s != baseFps %s" % (p.label, len(bad), tgt[bad[0]], base[bad[0]]))
 
-        # side vs position
-        if side is not None and ux is not None and tx is not None:
+        # side vs position (spatial levels only; shockwave has no tower boundary)
+        if side is not None and ux is not None and tx is not None and p.level != "shockwave":
             bad = []
             for i in range(f0, f1):
                 if ux[i] is None or tx[i] is None:
@@ -1358,18 +1415,22 @@ def check_cross(S):
             continue
         f0, f1 = p.f0, p.f1
         frames_fired = [i for i in range(f0, f1) if sf[i] == 1]
-        if len(frames_fired) != len(p.shots):
+        responses = [r for r in p.presses if r.get("outcome") not in IGNORED_PRESSES]
+        if len(frames_fired) != len(responses):
             F.fail("cross.shotFrames", fr.name, [L[i] for i in frames_fired], "%s: %d shotFired frame(s) but %d "
                    "ShotLog row(s) (every response - a shot or a round that ran out - flags its frame)"
-                   % (p.label, len(frames_fired), len(p.shots)))
+                   % (p.label, len(frames_fired), len(responses)))
         by_round = {}
         for i in frames_fired:
             by_round.setdefault(rn[i], []).append(i)
         segs = round_segments(fr, f0, f1)
         for k, r in enumerate(p.shots):
             r_no = inum(r.get("roundNumber"))
-            fi = by_round.get(r_no, [])
             st = fnum(r.get("timeSinceStartSec"))
+            fi = by_round.get(r_no, [])
+            # A round can have several responses now (early, late): this row's is the one at its own time.
+            if len(fi) > 1 and st is not None:
+                fi = [i for i in fi if t[i] is not None and abs(t[i] - st) <= TOL["frameTime"]] or fi
             if len(fi) != 1:
                 near = [i for i in frames_fired if st is not None and t[i] is not None and abs(t[i] - st) <= TOL["frameTime"]]
                 F.fail("cross.shotFrames", T.name, [r["_line"]], "%s round %s: %d shotFired frame(s) carry this "
@@ -1395,8 +1456,8 @@ def check_cross(S):
                                                                                 fmt(ux[i - 1]), fmt(ux[i])))
             if not fired and shx is not None and shx[i] is not None and abs(shx[i]) > 1e-9 and k == 0:
                 pass
-            # side of a round that ran out: the UFO's X at the response
-            if not fired and ux is not None and "side" in T.cols and i > f0:
+            # side of a round that ran out: the UFO's X at the response (spatial levels only)
+            if not fired and ux is not None and "side" in T.cols and i > f0 and p.level != "shockwave":
                 tw = fnum(r.get("towerX"))
                 x = ux[i - 1]
                 if tw is not None and x is not None and abs(x - tw) > 1e-3:
@@ -1432,8 +1493,8 @@ def check_cross(S):
                     if t[j] is not None and (last < t[j] - TOL["time4"] or (nxt is not None and last > nxt + TOL["time4"])):
                         F.fail("cross.crossTime", T.name, [r["_line"], L[j]], "%s round %s: lastCrossingAtSec %s is "
                                "outside its crossed frame [%s, %s)" % (p.label, r_no, fmt(last), fmt(t[j], 5), fmt(nxt, 5)))
-            # measured fps
-            if paced is not None and dt is not None:
+            # measured fps. A row after a TOO LATE describes only its own attempt, not the whole round's frames.
+            if paced is not None and dt is not None and not (inum(r.get("latePresses")) or 0):
                 res = {}
                 for kind in ("base", "altered"):
                     sel = [dt[j] for j in idx if paced[j] == kind and dt[j] is not None]
@@ -1535,7 +1596,7 @@ def check_session_log(S):
                     p.label, col, fmt(have, 4), fmt(want if want is None else float(want), 4), why))
 
         if shots:
-            fired = [s for s in shots if s.get("playerFired") == "1"]
+            fired = [s for s in p.presses if s.get("playerFired") == "1"]
             hits = [s for s in shots if s.get("isHit") == "1"]
             n = len(shots)
             cmp("trials", n, 0)
@@ -1543,13 +1604,14 @@ def check_session_log(S):
             cmp("hits", len(hits), 0)
             cmp("accuracy", len(hits) / n, 6e-5)
             cmp("score", fnum(shots[-1].get("totalScore")), 6e-3)
-            cmp("roundsExpired", sum(1 for s in shots if s.get("outcome") == "expired"), 0)
+            cmp("roundsExpired", sum(1 for s in shots if s.get("outcome") in ("expired", "timeout")), 0)
             cmp("roundsCrossingCapped", sum(1 for s in shots if s.get("outcome") == "crossingCap"), 0)
             durs = [fnum(s.get("roundDurationSec")) for s in shots if fnum(s.get("roundDurationSec")) is not None]
             cmp("avgRoundDurationSec", mean(durs), 6e-4)
             crs = [inum(s.get("crossings")) or 0 for s in shots]
             cmp("avgCrossingsPerRound", mean(crs), 6e-4)
-            cmp("shotsWithoutCrossing", sum(1 for s in fired if (inum(s.get("crossings")) or 0) == 0), 0)
+            cmp("shotsWithoutCrossing", sum(1 for s in shots if s.get("playerFired") == "1" and
+                                            (inum(s.get("crossings")) or 0) == 0), 0)
             since = [fnum(s.get("sinceLastCrossingSec")) for s in shots if fnum(s.get("sinceLastCrossingSec")) is not None]
             cmp("avgSinceLastCrossingSec", mean(since), 1.5e-4)
             miss = [abs(fnum(s.get("missDistX"))) for s in shots if fnum(s.get("missDistX")) is not None]
@@ -1560,9 +1622,12 @@ def check_session_log(S):
             cmp("medianMissDistX", statistics.median(miss) if miss else None, 1.5e-4)
             cmp("sdMissDistX", sample_sd(miss), 3e-4)
             cmp("maxMissDistX", max(miss) if miss else None, 1.5e-4)
-            cmp("staircaseTrials", sum(1 for s in shots if s.get("countedByStaircase") == "1"), 0)
+            cmp("staircaseTrials", sum(1 for s in p.presses if s.get("countedByStaircase") == "1"), 0)
             cmp("lastDiffFps", fnum(shots[-1].get("diffFps")), 0)
-            for col, scol, tol in (("jndDiffFps", "threshDiffFps", 1.5e-3), ("sd", "sd", 1.5e-3),
+            if "diffMs" in S.shot.cols:
+                cmp("lastDiffMs", fnum(shots[-1].get("diffMs")), 1.5e-3)
+            for col, scol, tol in (("jndDiffFps", "threshDiffFps", 1.5e-3), ("jndFrameTimeDiffMs", "threshDiffMs", 1.5e-3),
+                                   ("sd", "sd", 1.5e-3),
                                    ("slopeEstimate", "slopeEstimate", 1.5e-3), ("lapseEstimate", "lapseEstimate", 1.5e-4)):
                 if scol in S.shot.cols:
                     cmp(col, fnum(shots[-1].get(scol)), tol, " (the last round's posterior)")
@@ -1619,9 +1684,12 @@ def check_session_log(S):
         if base is not None:
             mxd = fnum(cfg_val(r, "maxDiffFps"))
             top = base + mxd if direction == "up" and mxd is not None else base
+            mxm = fnum(cfg_val(r, "maxDiffMs"))
+            if direction == "up" and mxm is not None and 1000.0 / base > mxm:
+                top = 1000.0 / (1000.0 / base - mxm)
         if hz and top and top > hz + 1:
             F.warn("deliv.display", name, [L], "%s shows up to %s fps on a %s Hz display: frames above the refresh "
-                   "rate never reach the screen as separate images" % (p.label, fmt(top, 0), fmt(hz, 2)))
+                   "rate never reach the screen as separate images" % (p.label, "%.0f" % top, fmt(hz, 2)))
         bm = g("baseSideMeasuredFps")
         if base and bm is not None and bm < 0.97 * base:
             F.warn("deliv.base", name, [L], "%s: baseSideMeasuredFps %s against a %s fps cap - the machine did not "
@@ -1817,7 +1885,7 @@ def main(argv=None):
     ap.add_argument("--data", default=None, help="Data folder (sessions under DATA/Logs) or a folder of session folders")
     ap.add_argument("--all", action="store_true", help="every session under --data, one summary line each")
     ap.add_argument("--verbose", action="store_true", help="print every message")
-    ap.add_argument("--level-type", choices=("manual", "scroll", "auto"), default=None,
+    ap.add_argument("--level-type", choices=("manual", "scroll", "auto", "shockwave"), default=None,
                     help="level to assume for logs without a levelType column (default: infer)")
     args = ap.parse_args(argv)
 

@@ -7,6 +7,7 @@
 //          1  Line  falloff across uv.y — the width of a LineRenderer/TrailRenderer
 //          2  Flat  no falloff (a whole mesh lit evenly, e.g. the revealed tower)
 //          3  Ring  a soft band at the quad's rim (shockwave rings)
+//          4  Wave  a pressure wave: a crisp edge at the rim, light falling away behind it
 //
 // _Color is HDR: anything above 1 is picked up by the scene's bloom. Vertex colour multiplies it,
 // so particle colour-over-lifetime and line gradients work as usual; vertex alpha scales the light.
@@ -21,6 +22,7 @@ Shader "JndUfo/Glow"
         _Shape ("Shape (0 dot, 1 line, 2 flat, 3 ring)", Float) = 0
         _Softness ("Softness (falloff exponent)", Float) = 1.5
         _RingWidth ("Ring Width (fraction of radius)", Float) = 0.25
+        _RingEdge ("Wave Edge (fraction of radius)", Float) = 0.01
     }
 
     SubShader
@@ -46,6 +48,7 @@ Shader "JndUfo/Glow"
             half  _Shape;
             half  _Softness;
             half  _RingWidth;
+            float _RingEdge;
 
             struct appdata
             {
@@ -86,10 +89,15 @@ Shader "JndUfo/Glow"
                 {
                     a = 1.0;
                 }
-                else
+                else if (_Shape < 3.5)
                 {
                     half w = max(_RingWidth, 0.001);
                     a = saturate(1.0 - abs(length(p) - (1.0 - w)) / w);
+                }
+                else
+                {
+                    float d = 1.0 - length(p);
+                    a = saturate(d / max(_RingEdge, 0.0005)) * saturate(1.0 - d / max(_RingWidth, 0.001));
                 }
 
                 a = pow(a, max(_Softness, 0.01));

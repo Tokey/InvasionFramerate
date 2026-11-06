@@ -659,8 +659,8 @@ Examples (frame-rate study)
   -- threshold per block, as a difference and as the altered side's frame rate
   SELECT b.sessionId, b.blockIndex, b.baseFps, b.direction, b.blockOrdinal,
          s.endReason, s.staircaseTrials,
-         ROUND(s.jndDiffFps, 1) AS jndDiffFps, ROUND(s.jndAlteredFps, 1) AS jndAlteredFps,
-         ROUND(s.sd, 2) AS sd
+         ROUND(s.jndFrameTimeDiffMs, 2) AS jndMs, ROUND(s.jndDiffFps, 1) AS jndDiffFps,
+         ROUND(s.jndAlteredFps, 1) AS jndAlteredFps, ROUND(s.sd, 2) AS sdMs
   FROM session_log s JOIN block b ON b.block_id = s.block_id
   ORDER BY b.sessionId, b.blockOrdinal;
 
@@ -685,7 +685,7 @@ Examples (frame-rate study)
 
   -- threshold per level type, base rate and direction (the conditions of a mixed config)
   SELECT b.levelType, b.direction, s.baseFps, COUNT(*) AS blocks,
-         ROUND(AVG(s.jndDiffFps), 1) AS meanJndDiffFps, ROUND(AVG(s.sd), 2) AS meanSd
+         ROUND(AVG(s.jndFrameTimeDiffMs), 2) AS meanJndMs, ROUND(AVG(s.sd), 2) AS meanSdMs
   FROM session_log s JOIN block b ON b.block_id = s.block_id
   WHERE s.endReason != 'abandoned'
   GROUP BY b.levelType, b.direction, s.baseFps ORDER BY b.levelType, b.direction, s.baseFps;

@@ -26,7 +26,28 @@ namespace JndUfo
         public float Score                { get; private set; }
         public float Accuracy => Trials > 0 ? (float)Hits / Trials : 0f;
 
-        /// <summary>Δ of the last round logged (fps).</summary>
+        /// <summary>Shockwave presses and run-outs, and presses that fired nothing, this block.</summary>
+        public int   Detections { get; private set; }
+        public int   EarlyFires { get; private set; }
+        public int   LateFires  { get; private set; }
+        public int   Timeouts   { get; private set; }
+        public int   LockoutPresses  { get; private set; }
+        public int   CooldownPresses { get; private set; }
+        public int   NotLivePresses  { get; private set; }
+        /// <summary>Rounds that ended without reaching QUEST+: a shot fired before the frame rate had changed.</summary>
+        public int   RoundsNotCounted { get; private set; }
+
+        // Hits' times from the last change of frame rate to the shot.
+        readonly List<float> _reaction = new List<float>(128);
+        public float AvgReactionSec    => Mean(_reaction);
+        public float SdReactionSec     => StdDev(_reaction);
+        public float MedianReactionSec => Median(_reaction);
+        public float MinReactionSec    => _reaction.Count > 0 ? Mathf.Min(_reaction.ToArray()) : float.NaN;
+        public float MaxReactionSec    => _reaction.Count > 0 ? Mathf.Max(_reaction.ToArray()) : float.NaN;
+        public float ShotsPerMinute    => ElapsedSeconds > 1f ? ShotsFired * 60f / ElapsedSeconds : float.NaN;
+
+        /// <summary>Δ of the last round logged, in frame time (ms) and in frame rate (fps).</summary>
+        public float LastDiffMs  { get; private set; } = float.NaN;
         public float LastDiffFps { get; private set; } = float.NaN;
 
         readonly List<float> _roundDurations = new List<float>(128);
@@ -122,6 +143,28 @@ namespace JndUfo
         double  _baseSec;
         Welford _baseErr, _alteredErr, _alteredRel;
 
+        // Frame-time histograms of the live frames, 0.05 ms a bin up to 200 ms, for the percentiles without keeping frames.
+        const float HistBinMs = 0.05f;
+        readonly int[] _histAll = new int[4000], _histBase = new int[4000], _histAltered = new int[4000];
+        public float P95FrameTimeMs        => Percentile(_histAll, 0.95f);
+        public float P99FrameTimeMs        => Percentile(_histAll, 0.99f);
+        public float BaseP99FrameTimeMs    => Percentile(_histBase, 0.99f);
+        public float AlteredP99FrameTimeMs => Percentile(_histAltered, 0.99f);
+
+        static float Percentile(int[] h, float q)
+        {
+            long n = 0;
+            for (int i = 0; i < h.Length; i++) n += h[i];
+            if (n == 0) return float.NaN;
+            long want = (long)System.Math.Ceiling(q * n), seen = 0;
+            for (int i = 0; i < h.Length; i++)
+            {
+                seen += h[i];
+                if (seen >= want) return (i + 0.5f) * HistBinMs;
+            }
+            return h.Length * HistBinMs;
+        }
+
         // ── Feed ─────────────────────────────────────────────────────────────
 
         public void AddTick(in TickSample t)
@@ -147,6 +190,11 @@ namespace JndUfo
             if (dtMs > MaxLiveFrameTimeMs) MaxLiveFrameTimeMs = dtMs;
             if (dtMs > 1.5f * periodMs)    SlowFrames++;
 
+            int bin = Mathf.Clamp((int)(dtMs / HistBinMs), 0, _histAll.Length - 1);
+            _histAll[bin]++;
+            if (t.pacedBy == PerturbationController.Pace.Base) _histBase[bin]++;
+            else                                               _histAltered[bin]++;
+
             if (t.pacedBy == PerturbationController.Pace.Base)
             {
                 _baseErr.Add(err);
@@ -164,21 +212,39 @@ namespace JndUfo
 
         public void AddShot(in ShotSample s)
         {
-            Trials++;
+            switch (s.outcome)
+            {
+                // A press that fired nothing changes nothing; it is only counted.
+                case TrialOutcome.PressLockout:  LockoutPresses++;  return;
+                case TrialOutcome.PressCooldown: CooldownPresses++; return;
+                case TrialOutcome.PressNotLive:  NotLivePresses++;  return;
+                case TrialOutcome.Detected: Detections++; break;
+                case TrialOutcome.Early:    EarlyFires++; break;
+                case TrialOutcome.Late:     LateFires++;  break;
+                case TrialOutcome.Timeout:  Timeouts++;   break;
+            }
+
             if (s.playerFired) ShotsFired++;
             if (s.isHit) Hits++;
             Score       = s.totalScore;
+            LastDiffMs  = s.diffMs;
             LastDiffFps = s.diffFps;
 
-            if (s.outcome == TrialOutcome.Expired)     RoundsExpired++;
-            if (s.outcome == TrialOutcome.CrossingCap) RoundsCrossingCapped++;
+            if (s.isHit && !float.IsNaN(s.sinceLastCrossingSec)) _reaction.Add(s.sinceLastCrossingSec);
 
-            if (!float.IsNaN(s.roundDurationSec)) _roundDurations.Add(s.roundDurationSec);
-            _crossings.Add(Mathf.Max(0, s.crossings));
-            if (s.playerFired && s.crossings == 0) ShotsWithoutCrossing++;
-            if (!float.IsNaN(s.sinceLastCrossingSec)) _sinceCrossing.Add(s.sinceLastCrossingSec);
-            if (!float.IsNaN(s.firstCrossingAtSec) && !float.IsNaN(s.trialStartSec))
-                _firstCrossing.Add(s.firstCrossingAtSec - s.trialStartSec);
+            if (s.roundEnded)
+            {
+                Trials++;
+                if (s.playerFired && s.crossings == 0) ShotsWithoutCrossing++;
+                if (!float.IsNaN(s.sinceLastCrossingSec)) _sinceCrossing.Add(s.sinceLastCrossingSec);
+                if (!s.countedByStaircase) RoundsNotCounted++;
+                if (s.outcome == TrialOutcome.Expired || s.outcome == TrialOutcome.Timeout) RoundsExpired++;
+                if (s.outcome == TrialOutcome.CrossingCap) RoundsCrossingCapped++;
+                if (!float.IsNaN(s.roundDurationSec)) _roundDurations.Add(s.roundDurationSec);
+                _crossings.Add(Mathf.Max(0, s.crossings));
+                if (!float.IsNaN(s.firstCrossingAtSec) && !float.IsNaN(s.trialStartSec))
+                    _firstCrossing.Add(s.firstCrossingAtSec - s.trialStartSec);
+            }
 
             if (s.playerFired && !float.IsNaN(s.ufoVelX))
             {

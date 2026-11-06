@@ -1,3 +1,5 @@
+> **This file is from the frame-time stutter study and is stale.** The current setup, config and logs are in the repo's README.md and Analysis/COLUMNS.md.
+
 # JND UFO — skeleton setup
 
 > **Outdated.** This page describes an early skeleton of the project. The study is now a

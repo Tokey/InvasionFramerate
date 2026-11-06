@@ -4,9 +4,9 @@ using UnityEngine;
 namespace JndUfo
 {
     /// <summary>
-    /// Scores each shot by horizontal distance from the tower base: full points within a short
-    /// radius, then a fixed miss penalty outside it. A round that ran out with no shot scores as a
-    /// miss.
+    /// Scores each shot by horizontal distance from the tower base (or by shockwave timing window):
+    /// full points for a hit, then a fixed miss penalty for a miss. A round that ran out with no
+    /// shot scores as a miss; a forgiven early shockwave press leaves the score and tally untouched.
     /// </summary>
     public class ScoreManager : MonoBehaviour
     {
@@ -16,13 +16,13 @@ namespace JndUfo
         [SerializeField, Min(0f)] float closeRadius = 1f;
         [SerializeField] float missPoints = -10f;
 
-        public float TotalScore { get; private set; }
-        public float LastShotScore { get; private set; }
+        public float TotalScore       { get; private set; }
+        public float LastShotScore    { get; private set; }
         public float LastShotDistance { get; private set; }
-        public int ShotCount { get; private set; }
-        public float HitPoints => hitPoints;
-        public float CloseRadius => closeRadius;
-        public float MissPoints => missPoints;
+        public int   ShotCount        { get; private set; }
+        public float HitPoints        => hitPoints;
+        public float CloseRadius      => closeRadius;
+        public float MissPoints       => missPoints;
 
         /// <summary>
         /// Responses this phase that landed, and responses that did not — the HUD's tally. Kept here
@@ -66,26 +66,35 @@ namespace JndUfo
             float pts = hit ? hitPoints : missPoints;
 
             LastShotScore = pts;
-            TotalScore += pts;
-            ShotCount += 1;
-            LastOutcome = TrialOutcome.Shot;
+            TotalScore   += pts;
+            ShotCount    += 1;
+            LastOutcome   = TrialOutcome.Shot;
             Tally(hit);
             OnScored?.Invoke(LastShotScore, TotalScore, dist);
             return pts;
         }
 
-        /// <summary>Scores a round that ended with no shot — always a miss. There is no landing point,
-        /// so there is no distance to record either.</summary>
-        public float ScoreOutcome(TrialOutcome outcome)
+        /// <summary>
+        /// Scores a shockwave or ran-out outcome. When <paramref name="countInTally"/> is false
+        /// (a forgiven TOO EARLY press), neither the score nor the HUD pip tally is changed.
+        /// </summary>
+        public float ScoreOutcome(TrialOutcome outcome, bool isHit = false, bool countInTally = true)
         {
             LastShotDistance = float.NaN;
-            LastShotScore    = missPoints;
-            TotalScore      += missPoints;
-            ShotCount       += 1;
-            LastOutcome      = outcome;
-            Tally(false);
+            if (!countInTally)
+            {
+                LastShotScore = 0f;
+                return 0f;
+            }
+
+            float pts = isHit ? hitPoints : missPoints;
+            LastShotScore = pts;
+            TotalScore   += pts;
+            ShotCount    += 1;
+            LastOutcome   = outcome;
+            Tally(isHit);
             OnScored?.Invoke(LastShotScore, TotalScore, float.NaN);
-            return missPoints;
+            return pts;
         }
 
         void Tally(bool hit)
@@ -97,16 +106,14 @@ namespace JndUfo
 
         public void ResetScore()
         {
-            TotalScore = 0f;
-            LastShotScore = 0f;
+            TotalScore       = 0f;
+            LastShotScore    = 0f;
             LastShotDistance = 0f;
-            ShotCount = 0;
-            Hits = 0;
-            Misses = 0;
-            LastWasHit = false;
-            LastOutcome = TrialOutcome.Shot;
-            // Announced like a shot, so the HUD drops to 0 with the reset — otherwise it kept showing
-            // the practice score under the main-run prompt until the first main shot.
+            ShotCount        = 0;
+            Hits             = 0;
+            Misses           = 0;
+            LastWasHit       = false;
+            LastOutcome      = TrialOutcome.Shot;
             OnScored?.Invoke(0f, 0f, 0f);
         }
     }

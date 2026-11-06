@@ -85,8 +85,13 @@ namespace JndUfo
         Vector3    _restPosition;
         Quaternion _restRotation;
         Vector3    _shakeOffset;
+        float      _shakeRoll;
         Coroutine  _shakeCoroutine;
         float      _originX;
+        /// <summary>How strong the hand-held wander is for the level being played: the autopilot levels have nothing of
+        /// the participant's hand in their motion, so the camera carries more of it. Set by GameManager.ApplyLevel.</summary>
+        public float HandheldLevelScale { get; set; } = 1f;
+        float      _handheldNow = 1f;
         float      _handheldWeight;   // eases the wander in at start and in and out when toggled
 
         // Parallax: the swing's spring state (x across, y up, each -1..1 of its range), its ease in and out,
@@ -224,8 +229,9 @@ namespace JndUfo
                 // reads its own row of the noise field, so none moves in step with another.
                 float t = Time.unscaledTime * handheldHz;
                 float w = _handheldWeight * _handheldWeight * (3f - 2f * _handheldWeight);
-                drift = new Vector3(Wander(t, 0.37f), Wander(t, 3.71f), 0f) * (handheldDrift * w);
-                float a = handheldTurn * w;
+                _handheldNow = Mathf.MoveTowards(_handheldNow, HandheldLevelScale, Time.unscaledDeltaTime);
+                drift = new Vector3(Wander(t, 0.37f), Wander(t, 3.71f), 0f) * (handheldDrift * w * _handheldNow);
+                float a = handheldTurn * w * _handheldNow;
                 turn  = Quaternion.Euler(Wander(t, 7.13f) * a, Wander(t, 11.9f) * a, Wander(t, 15.3f) * a * 0.5f);
             }
 
@@ -241,7 +247,9 @@ namespace JndUfo
             }
 
             transform.position = pivot + swing * (_restPosition - pivot) + _shakeOffset + drift;
-            transform.rotation = swing * _restRotation * turn;
+            transform.rotation = Mathf.Abs(_shakeRoll) > 0.0001f
+                ? swing * _restRotation * turn * Quaternion.Euler(0f, 0f, _shakeRoll)
+                : swing * _restRotation * turn;
         }
 
         bool WorldScroll => GameManager.Instance != null && GameManager.Instance.worldScroll && _ufo != null;
@@ -381,6 +389,18 @@ namespace JndUfo
         static float Wander(float t, float row) =>
             2.2f * (Mathf.PerlinNoise(t, row) - 0.5f) + 0.7f * (Mathf.PerlinNoise(t * 2.7f + 31.4f, row + 17.3f) - 0.5f);
 
+        [Header("Shockwave Shake  (the laser's shake, harder)")]
+        [Tooltip("The shockwave shakes the camera exactly the way the laser does - the same damped 9 Hz sine, the " +
+                 "same noise, the same decay and lean toward the blast - only harder. This multiplies the laser's " +
+                 "shakeMagnitude; the frequency is never raised, so a big shake still reads as a heavy jolt rather " +
+                 "than a buzz.")]
+        [Min(1f)] public float shockwaveShakeIntensity = 1.7f;
+        [Tooltip("Multiplies the laser's shakeDuration, so the bigger blast takes a little longer to ring down.")]
+        [Min(0.5f)] public float shockwaveShakeLength = 1.15f;
+        [Tooltip("Fraction of the shake, at its end, over which it is eased to exactly zero, so the camera " +
+                 "settles back onto its path rather than stepping there on the last frame.")]
+        [Range(0f, 0.6f)] public float shockwaveShakeSettle = 0.3f;
+
         // The laser's gritty impact: fast noise sampling, whatever blend the scene is tuned to.
         const float NoiseRate = 22f;
 
@@ -394,16 +414,34 @@ namespace JndUfo
         // Shake with direction derived from where the shot landed on screen.
         public void Shake(Vector3 hitWorldPos) => DoShake(hitWorldPos, true);
 
+        /// <summary>
+        /// The shockwave's shake: the laser's own shake (same 9 Hz damped sine, noise, decay and lean toward the
+        /// blast) at <see cref="shockwaveShakeIntensity"/> times its magnitude, a touch longer, and eased to zero at
+        /// the end. No roll and no faster frequency, so the camera keeps its flow.
+        /// </summary>
+        public void ShakeShockwave(Vector3 blastWorldPos)
+        {
+            if (_shakeCoroutine != null) StopCoroutine(_shakeCoroutine);
+            _shakeCoroutine = StartCoroutine(ShakeRoutine(shakeDuration * shockwaveShakeLength,
+                                                           shakeMagnitude * shockwaveShakeIntensity,
+                                                           shakeDecay, shakeFrequency, 0f, 0f, 0f,
+                                                           shakeNoiseBlend, NoiseRate,
+                                                           blastWorldPos, true, shockwaveShakeSettle));
+        }
+
         void DoShake(Vector3 hitWorldPos, bool useHitPos)
         {
             if (_shakeCoroutine != null) StopCoroutine(_shakeCoroutine);
             _shakeCoroutine = StartCoroutine(ShakeRoutine(shakeDuration, shakeMagnitude, shakeDecay,
-                                                           shakeFrequency, shakeNoiseBlend, NoiseRate,
-                                                           hitWorldPos, useHitPos));
+                                                           shakeFrequency, 0f, 0f, 0f,
+                                                           shakeNoiseBlend, NoiseRate,
+                                                           hitWorldPos, useHitPos, 0f));
         }
 
         IEnumerator ShakeRoutine(float duration, float magnitude, float decay, float frequency,
-                                  float noiseBlend, float noiseRate, Vector3 hitWorldPos, bool useHitPos)
+                                  float rollDegrees, float kick, float kickDecay,
+                                  float noiseBlend, float noiseRate, Vector3 hitWorldPos, bool useHitPos,
+                                  float settle)
         {
             // Compute lateral lean: how far the hit was from screen centre, mapped to [-1, 1].
             float lateral = 0f;
@@ -420,27 +458,50 @@ namespace JndUfo
             float   elapsed     = 0f;
             float   seedX       = (float)_shakeRng.NextDouble() * 100f;
             float   seedY       = (float)_shakeRng.NextDouble() * 100f;
+            float   seedR       = (float)_shakeRng.NextDouble() * 100f;
 
             while (elapsed < duration)
             {
                 elapsed += Time.unscaledDeltaTime;
 
-                // Shared decay envelope so both components ring down together.
+                // Shared decay envelope so both components ring down together. With a settle window it is
+                // also eased to exactly zero over the end of the shake, so the last frame does not step.
                 float env = magnitude * Mathf.Exp(-decay * elapsed);
+                if (settle > 0f)
+                {
+                    float s = Mathf.Clamp01((duration - elapsed) / Mathf.Max(1e-3f, settle * duration));
+                    env *= s * s * (3f - 2f * s);
+                }
 
                 // Structured component: damped sine along the impact direction.
                 Vector3 sine = dir * env * Mathf.Sin(angularFreq * elapsed);
 
                 // Organic component: Perlin noise scaled by the same envelope.
-                float nx    = (Mathf.PerlinNoise(seedX + elapsed * noiseRate, 0f) - 0.5f) * 2f * env * noiseBlend;
-                float ny    = (Mathf.PerlinNoise(0f, seedY + elapsed * noiseRate) - 0.5f) * 2f * env * noiseBlend;
+                float nx = (Mathf.PerlinNoise(seedX + elapsed * noiseRate, 0f) - 0.5f) * 2f * env * noiseBlend;
+                float ny = (Mathf.PerlinNoise(0f, seedY + elapsed * noiseRate) - 0.5f) * 2f * env * noiseBlend;
+                Vector3 noise = new Vector3(nx, ny, 0f);
 
-                _shakeOffset = sine + new Vector3(nx, ny, 0f);
+                // Initial impact kick impulse
+                Vector3 impulse = kick > 0f
+                    ? dir * (kick * Mathf.Exp(-kickDecay * elapsed))
+                    : Vector3.zero;
+
+                _shakeOffset = sine + noise + impulse;
+
+                // Heavy camera roll on shockwave
+                if (rollDegrees > 0f)
+                {
+                    float envN = magnitude > 0.0001f ? env / magnitude : 0f;
+                    float wob  = (Mathf.PerlinNoise(seedR + elapsed * 5.5f, 0f) - 0.5f) * 2f;
+                    _shakeRoll = rollDegrees * envN *
+                                 (Mathf.Sin(angularFreq * 0.45f * elapsed) * 0.65f + wob * 0.35f);
+                }
 
                 yield return null;
             }
 
             _shakeOffset    = Vector3.zero;
+            _shakeRoll      = 0f;
             _shakeCoroutine = null;
         }
 

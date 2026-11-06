@@ -4,7 +4,7 @@ A small Unity game I built to measure how big a **frame-rate difference** has to
 
 You fly a UFO with the mouse over a city at night. One of the towers standing in front of the skyline splits the city in two: on one side of it the game runs at one frame rate, on the other side at a different one. Any tower can be the one, and they all look alike, so the only way to find it is by the motion. Your job is to find where the motion changes and shoot that tower.
 
-Each block of the study is one of three [kinds of level](#level-types), set per row of the config: **manual** (you fly, the camera holds still), **scroll** (you fly, the city scrolls past under you) and **auto** (the UFO flies back and forth by itself on a gentle sine wave, and you only click when it is over the place where the frame rate changes).
+Each block of the study is one of the [kinds of level](#level-types), set per row of the config. The current study uses two: **manual laser** (you fly, and shoot the tower where the frame rate changes) and **shockwave** (the UFO flies an infinity sign by itself, the whole screen's frame rate changes at random moments, and you fire as soon as you notice). **Scroll** and **auto** levels are still in the game for other configs.
 
 > The previous version of this project measured frame-time **stutters** with two weapons (laser and shockwave). That study is in the git history up to commit `a61a84f`.
 
@@ -12,19 +12,24 @@ Each block of the study is one of three [kinds of level](#level-types), set per 
 
 ## How the study works
 
-- **One task.** The hidden tower is the boundary between two frame rates. One side of it runs at the block's **base** frame rate; the other runs at base − Δ or base + Δ. Which side gets the altered rate is drawn at random **every round**.
-- The participant flies back and forth across the tower, notices where the smoothness changes, and shoots there. **Landing the shot on the tower means they noticed the difference.** Missing, or not shooting before the round's time limit, means they didn't.
-- **QUEST+ picks Δ every round.** It goes bigger after a miss and smaller after a hit, and keeps going until it's sure about the threshold: the difference you'd locate about 2 times out of 3, not counting lucky guesses.
-- **After every round** the screen splits at the tower and shows each side's frame rate: the target as a big number, the rate actually delivered underneath.
-- **Three kinds of level** (`levelType`, per config row): **manual**, **scroll** and **auto**. They differ only in who flies the UFO and whether the world moves; the split, the shot, the scoring and QUEST+ are the same in all three. See [Level types](#level-types).
-- **Practice first, once per kind of level.** Five fixed rounds that span the whole range the study uses: 30 vs 60, 60 vs 500, 60 vs 144, 144 vs 500, 240 vs 500 fps (`Data/PracticeRounds.csv`), played before the first block of each level type the session's order brings, in that level. Practice never feeds QUEST+.
-- **Then the main blocks**, shown to the participant as **MAIN 1/5**, **MAIN 2/5**, … Each row of the config is one block, one QUEST+ run. The current config, set up for a **500 Hz** display, has five, all scroll levels: the two most common refresh rates and 500, roughly evenly spaced in frame time (16.7 → 6.9 → 2 ms), each searched down almost its whole range, and 60 and 144 searched up to 500:
-  - **60 fps down:** the altered side runs at 1–59 fps (Δ 1–59 in steps of 1).
-  - **144 fps down:** the altered side runs at 2–142 fps (Δ 2–142 in steps of 2).
-  - **500 fps down:** the altered side runs at 5–495 fps (Δ 5–495 in steps of 5).
-  - **60 fps up:** 65–500 fps (Δ 5–440 in steps of 5). **144 fps up:** 148–500 fps (Δ 4–356 in steps of 4).
-  - The file also carries the same five rows as **auto** levels, commented out, ready to switch on.
-- The block order changes from participant to participant. It comes from a Latin square, so no setting always goes first.
+Everything is set and calculated in **frame time** (FT). Frame rates are only how it is shown and capped.
+
+| Block | Base frame time | FT direction | Δ range (step 0.5 ms) | Altered frame time | As a frame rate |
+|---|---|---|---|---|---|
+| 500 fps | **2 ms** | **up**: frames get longer | 0.5 to 48 ms | 2.5 to 50 ms | 400 down to 20 fps |
+| 60 fps | **16.67 ms** | **down**: frames get shorter | 0.5 to 14.67 ms | 16.17 to exactly 2 ms | 62 up to 500 fps |
+
+Note the direction is the other way round from the frame rate: frame time going **up** is the frame rate going **down**.
+
+- **Why those limits.** 16.67 ms stops at 2 ms because that is one frame of the 500 Hz display. 2 ms stops at 50 ms because the largest pilot threshold in the levels now used was about 11 ms (18 in the scroll level), so 48 ms is well past anything a participant needs, and beyond about 22 ms whole-number frame rates are already further apart than a 0.5 ms step.
+- **Whole-number caps.** `Application.targetFrameRate` only takes whole numbers, so each Δ shows at the nearest whole frame rate. QUEST+ and the logs use the frame-time difference that rate really gives.
+- **QUEST+ picks Δ every round**, bigger after a miss and smaller after a hit, in milliseconds of frame time.
+- **Laser (manual):** a hidden tower splits the screen. One side runs at the base frame time, the other Δ away. Shooting the tower means they noticed.
+- **Shockwave:** the UFO flies itself, and the whole screen flips between the base and the altered frame time at random moments. A press inside the response window after a flip means they noticed.
+- **A shot fired before the frame rate has changed in that round never reaches QUEST+**, in either level: there was nothing to answer. The screen says TOO EARLY! in both. It is still logged, with `outcome` = `early`. It does not change `guessRate`. In a laser level it scores nothing, adds no tally pip, and ends the round, and the next round presents the same difference.
+- **After every round** the reveal shows each frame rate as a big number with its frame time underneath.
+- **Practice first**, once per kind of level, from `Data/PracticeRounds.csv`. Practice never feeds QUEST+.
+- **Then four main blocks**, MAIN 1/4 to MAIN 4/4, in Latin-square order.
 
 ## What you need
 
@@ -60,14 +65,14 @@ The Console prints `[Build] Copied ExperimentConfig.csv → ...` when the copy w
 
 ## Debug mode
 
-The **debug readout is ON** right now, for testing. It sits in the top-right corner and shows:
+The debug readout is set per row by the `showDebug` column (0 for every row now). It sits in the top-right corner and shows:
 
 ```
-FPS JND | MAIN 2/3 | scroll | base 144 down | diff 2-142 step 2 | precise limiter
-LIVE  diff 38: 144 vs 106 fps, altered on RIGHT   (L 144 | R 106)
-measured  L 143.9 | R 106.0   crossings 4   late 0
-now RIGHT @ 106 fps cap | spin 6.2 ms
-QUEST+ trial 6/50  threshold 21.4  SD 6.2  slope 2.40  lapse 0.021  prev diff 46
+FPS JND | MAIN 2/6 | scroll | base 60 up | diff 0.5-14.5 ms step 0.5 | precise limiter
+LIVE  diff 3.51 ms: 60 vs 76 fps, altered on RIGHT   (L 60 | R 76)
+measured  L 59.9 | R 76.0   crossings 4   late 0
+now RIGHT @ 76 fps cap | spin 12.3 ms
+QUEST+ trial 6/50  threshold 3.42 ms  SD 1.06  slope 2.40  lapse 0.021  prev diff 5.04
 round 7/15 s
 ```
 
@@ -75,7 +80,7 @@ round 7/15 s
 
 That's the block and its level type, the round's split (which side is altered and both target rates), what each side actually measured, which side the UFO is on and the cap in force, how much spare time the precise limiter had to wait out (`spin`, near 0 = the PC isn't keeping up; `late` = frames that overran), and the QUEST+ state.
 
-**Turn it off before running participants.** It spells out the very difference they're being asked to find. Select the `UI` object in the scene → `UIManager` → untick **Show Debug**.
+**Keep it off for participants.** It spells out the very difference they're being asked to find.
 
 There is also a live QUEST+ convergence plot (`GameManager` object → `StaircaseConvergencePlot` → **Show Plot**). It's off: it draws with IMGUI every frame, and in a frame-rate study that's not free.
 
@@ -84,7 +89,7 @@ To check the end-of-round reveal without playing, use **Tools ▸ JND ▸ Render
 ## Running a participant
 
 1. Start `Invasion.exe`.
-2. The session opens with the **PRACTICE** instruction screen. The participant presses **Space**, sees **GO!**, and plays the five practice rounds. Then each main block opens with its own screen (**MAIN 1/5**, **MAIN 2/5**, …) and **Space** starts it. The first time the order brings a new kind of level, its own **PRACTICE** comes first. Every screen's instructions are the ones for its level (`ExperimentDirector` → `manualInstruction` / `scrollInstruction` / `autoInstruction`).
+2. The session opens with the **PRACTICE** instruction screen. The participant presses **Space**, sees **GO!**, and plays the five practice rounds. Then each main block opens with its own screen (**MAIN 1/4**, **MAIN 2/4**, …) and **Space** starts it. The first time the order brings a new kind of level, its own **PRACTICE** comes first. Every screen's instructions are the ones for its level (`ExperimentDirector` → `manualInstruction` / `scrollInstruction` / `autoInstruction`).
 3. Controls: **mouse** to fly, **left click** (or **Space**) to fire. In an auto level the mouse flies nothing: **left click** (or **Space**) fires when the UFO is over the boundary.
 4. After the last block the game shows "Thank you", saves everything and closes itself.
 
@@ -92,7 +97,7 @@ Logs go to `Data/Logs/<sessionId>_<runId>/` next to the .exe:
 
 ```
 Data/Logs/3_GTZ3/
-  SessionLog_3_GTZ3.csv   one row per block (the threshold is here: jndDiffFps)
+  SessionLog_3_GTZ3.csv   one row per block (the threshold is here: jndFrameTimeDiffMs)
   ShotLog_3_GTZ3.csv      one row per round
   PlayerLog_3_GTZ3.csv    one row per frame
   SessionInfo_3_GTZ3.csv  what it ran on and with: build, machine, display, config hashes, scene settings
@@ -138,43 +143,28 @@ The row number is the setting's ID. The first row under the header is setting **
 
 **The row order is not the play order.** The play order comes from `LatinSquare.csv`.
 
-### The 6 conditions (rows)
+### The current config: 4 blocks
 
-| Row | levelType | baseFps | direction | Δ range (step) | Altered side runs at | stopSD |
-|---|---|---|---|---|---|---|
-| 1 | manual | 500 | down | 10–490 (10) | 10–490 fps | 5 |
-| 2 | manual | 60 | up | 10–440 (10) | 70–500 fps | 5 |
-| 3 | scroll | 500 | down | 10–490 (10) | 10–490 fps | 5 |
-| 4 | scroll | 60 | up | 10–440 (10) | 70–500 fps | 5 |
-| 5 | auto | 500 | down | 10–490 (10) | 10–490 fps | 5 |
-| 6 | auto | 60 | up | 10–440 (10) | 70–500 fps | 5 |
+| Row | Level | Base FT | FT direction | Δ range, ms (step) | threshCount | γ | stopSD, ms |
+|---|---|---|---|---|---|---|---|
+| 1 | shockwave | 2 | up | 0.5 to 48 (0.5) | 96 | 0.36 | 1 |
+| 2 | shockwave | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.36 | 1 |
+| 3 | manual laser | 2 | up | 0.5 to 48 (0.5) | 96 | 0.256 | 1 |
+| 4 | manual laser | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.256 | 1 |
 
-These 6 conditions compare 3 level types (`manual`, `scroll`, `auto`) across 2 directions (`500 down` and `60 up`). Run participants in groups of 6 for balanced counterbalancing.
+The other settings every row shares: `slope` 1 to 7 (10 values), `lapse` 0 to 0.06 (4 values), `maxTrials` 50, `minTrials` 8, `alteredSide` random, `frameLimiter` unity, `hitPoints` 100, `missPoints` -10.
 
-### The current config
+| Setting | Laser rows | Shockwave rows |
+|---|---|---|
+| Round limits | `maxCrossingsPerRound` 15, `roundTimeoutSec` 20 | none; `maxFlipsPerRound` 5 |
+| Timing | | `swFlipDelayMinSec` 1, `swFlipDelayMaxSec` 3.5, `swWindowSec` 0.9, `swMaxEarlyPerRound` 1 |
+| Flight | the mouse | `autoSpeed` 20, `autoPath` linear (the infinity sign), `autoSweep` 0.92, `autoTurnSec` 1, `autoHeight` 0.38, `autoBobAmp` 0.25, `autoBobHz` 1.1, `autoStart` random |
 
-This is what `Data/ExperimentConfig.csv` holds in this repo (comment lines left out):
+**About stopSD 1.** Simulated from the pilot, it saves about 9 of 33 minutes over running all 50 trials, with only a little more error in the threshold, and the same value and step suit both base frame times: see [the assessment](https://claude.ai/artifact/Q3XkNFLr6HtzycUfza9oja) (`Analysis/sd_from_pilot.py` reproduces it). It rests on one pilot participant, and the pilot has no shockwave block, so check it against the first real sessions.
 
-```
-levelType,baseFps,direction,maxDiffFps,minDiffFps,diffStepFps,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD,scrollFollow,autoSpeed,autoPath,autoSweep,autoTurnSec,autoHeight,autoBobAmp,autoBobHz,autoStart
-manual,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,,,,,,,
-manual,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,,,,,,,
-scroll,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,locked,,,,,,,,
-scroll,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,locked,,,,,,,,
-auto,500,down,490,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-auto,60,up,440,10,10,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.255,50,8,5,,12,linear,0.9,0.6,0.4,0.5,0.4,random
-```
+**guessRate for shockwave** is simply the window over the spread of the wait: 0.9 / (3.5 - 1) = **0.36**. Early presses are deliberately left out of it.
 
-and, commented out, the auto versions:
-
-```
-# auto,60,down,59,1,1,random,unity,15,20,100,-10,50,1,7,10,0,0.06,4,0.248,50,8,5,,8,linear,0.9,0.6,0.4,0.5,0.4,random
-  … the same for 144 down, 500 down, 60 up and 144 up
-```
-
-Their `roundTimeoutSec` is 20 rather than 15: at 8 units a second one sweep across the screen and back takes about 11 s, and a round should hold a few passes over the boundary. Their `guessRate` is the autopilot's own chance rate (see [Setting guessRate](#setting-guessrate)).
-
-> **Note:** if the file goes missing, the game writes its built-in fallback (`DefaultCsv()` in `Assets/Scripts/Experiment/StudyConfig.cs`): the same five scroll rows, without the comments and the auto examples. Keep a copy of the CSV rather than relying on it.
+> **Note:** if the file goes missing, the game writes these same four rows (`DefaultCsv()` in `StudyConfig.cs`). A config from before this one, with `baseFps` and `direction` (of the frame rate), still loads.
 
 ### Columns
 
@@ -182,32 +172,34 @@ Their `roundTimeoutSec` is 20 rather than 15: at 8 units a second one sweep acro
 
 | Column | What it does | Default |
 |---|---|---|
-| `levelType` | `manual`: the mouse flies the UFO and the camera holds still. `scroll`: the mouse flies it and the world scrolls past under it. `auto`: the UFO flies itself back and forth; the participant only clicks. | If the column is missing or blank: `scroll` when `GameManager` → **World Scroll** is ticked in the scene, else `manual` (how a config from before this column played). The Console says so. |
+| `levelType` | `manual`: the mouse flies the UFO. `scroll`: the mouse flies it while the world scrolls. `auto`: the UFO flies itself. `shockwave`: the UFO flies itself while frame rate alternates between `shockwaveFastFps` and `shockwaveSlowFps` after randomized delays. | If the column is missing or blank: `scroll` when `GameManager` → **World Scroll** is ticked in the scene, else `manual`. |
 | `scrollFollow` | Scroll levels: `locked` (the UFO always exactly mid-screen) or `handheld` (the camera follows it like a camera operator, see `GameManager` → **World Scroll Handheld Follow**). Blank leaves the Inspector's choice. | blank |
 
 **The autopilot** (auto levels only; leave them blank on other rows)
 
 | Column | What it does | Default |
 |---|---|---|
-| `autoSpeed` | How fast the UFO flies across, in world units a second (the view is about 47 wide at the play plane, the hit window 11). For `sine` it is the mean speed. | 8 |
-| `autoPath` | `linear`: one constant speed from end to end, with a smooth turn at each end, so the boundary is crossed at the same speed wherever it is. `sine`: the UFO's X follows a sine wave between the ends, fastest mid-screen, slowing into each end. | linear |
-| `autoSweep` | How much of the screen's width the sweep covers, centred: 0.9 runs the UFO's centre from 5% to 95% of the width. Keep it at least 0.8, the spawn band of the tower, or some boundaries are never crossed (the Console warns). | 0.9 |
-| `autoTurnSec` | `linear` only: how long a turn at either end takes, in seconds. The turn is a half sine, so the UFO slows into it and out of it instead of bouncing. | 0.6 |
-| `autoHeight` | Flight height inside the UFO's flight band: 0 = as low as it may go, 1 = as high. | 0.4 |
-| `autoBobAmp`, `autoBobHz` | The slight sine wave the UFO bobs on as it flies: its amplitude in world units (0.5 is about 20 px at 1080p) and its frequency. 0 flies level. | 0.5, 0.4 |
-| `autoStart` | Where each round's flight starts: `random`, a random point of the sweep, heading either way; `continue`, where the last round stopped. | random |
+| `autoSpeed` | How fast the UFO flies, in world units a second, at every point of the path (the view is about 47 wide at the play plane). For `sine` it is the mean speed. | 20 |
+| `autoPath` | `linear`: an infinity sign flown at one constant speed, lobes included. `sine`: level, the UFO's X following a sine wave, slowing to a stop at each end. | linear |
+| `autoSweep` | How much of the screen's width the path covers, centred. At 0.92 the ship stays in view through its turns. Keep it at least 0.6 in an auto level, the spawn band of the tower. | 0.92 |
+| `autoTurnSec` | `linear` only: seconds a lobe of the infinity sign takes. Speed × this sets the lobes' height: at 20 u/s and 1 s, about 4 units either side of the flight height. | 1 |
+| `autoHeight` | The infinity sign's middle inside the flight band: 0 = bottom, 1 = top. | 0.38 |
+| `autoBobAmp`, `autoBobHz` | The very slight sine wobble on top of the path: amplitude in world units and frequency. 0 flies clean. | 0.25, 1.1 |
+| `autoStart` | Where each later round's flight starts, with the ship hidden under the veil: `random`, a random point of the lap; `continue`, where the last round stopped. A phase's first round always starts from wherever the ship is, because it is in view. | random |
 
 **The stimulus**
 
 | Column | What it does | Default |
 |---|---|---|
-| `baseFps` | The reference frame rate. One side of the tower always runs at exactly this. Between rounds (the reveal, the reset, the prompts) the whole game runs at it too. | 60 / 144 / 500 |
-| `direction` | `down`: the altered side runs at `baseFps − Δ`. `up`: at `baseFps + Δ`. | down |
-| `maxDiffFps` | The biggest Δ QUEST+ may use, and the top of its threshold range. On a `down` row it's clamped so the altered side never drops below 1 fps. | 59 / 143 / 499 (used as 59 / 142 / 495) |
-| `minDiffFps` | The smallest Δ QUEST+ may use, and the bottom of its threshold range. | 1 / 2 / 5 |
-| `diffStepFps` | Spacing of the Δ values QUEST+ may use: `minDiffFps`, `minDiffFps + step`, … up to `maxDiffFps`, an exactly even grid. `maxDiffFps − minDiffFps` should be a multiple of it; if not, the game pulls `maxDiffFps` down onto the grid and says so. | 1 / 2 / 5 |
+| `baseFrameMs` | The reference frame time, ms: 2 is 500 fps, 16.667 is 60 fps. One side always runs at exactly this. Between rounds the whole game runs at it too. | 2 / 16.667 |
+| `ftDirection` | `up`: the altered frame time is Δ longer (a lower frame rate). `down`: Δ shorter (a higher one). | up / down |
+| `maxDiffMs` | The biggest Δ QUEST+ may use, in ms of frame time, and the top of its threshold range. It's clamped so the altered side stays at 1 fps or above on a `down` row, and keeps a frame time above zero on an `up` row. | 98 / 14.5 |
+| `minDiffMs` | The smallest Δ QUEST+ may use (ms), and the bottom of its threshold range. | 0.5 |
+| `diffStepMs` | Spacing of the Δ values QUEST+ may use (ms): `minDiffMs`, `minDiffMs + step`, … up to `maxDiffMs`. If `maxDiffMs − minDiffMs` is not a multiple of it, the last step is shorter, so the range still ends exactly at `maxDiffMs`. | 0.5 |
 | `alteredSide` | Which side of the tower is altered: `random` (drawn every round), `left` or `right`. | random |
 | `frameLimiter` | How the frame rate is enforced: `unity` or `precise`. See [The frame limiter](#the-frame-limiter). | unity |
+
+> **Whole-number frame rates.** `Application.targetFrameRate` only takes whole numbers, so each step shows the nearest whole fps, and QUEST+ and the logs use the frame-time difference that rate really gives (`diffMs`), not the nominal step. Above about 44 fps one fps is worth less than a step, so the steps stay close to even. Below that, steps start landing on the same rate, and those count once. That makes the slow end of the 500 fps rows sparser than the step: 75 different values out of 196 steps, even up to about 24 ms and up to 9 ms apart at the far end.
 
 **Round limits** (keep at least one of them above 0, or a round could run forever)
 
@@ -229,17 +221,17 @@ QUEST+ keeps a big table of possible answers for each participant and picks the 
 
 | Column | What it does | Default |
 |---|---|---|
-| `threshCount` | How many threshold values it considers, spread over the same range. | 50 |
+| `threshCount` | How many threshold values it considers, spread over the same range. Keep them no further apart than a step, `(maxDiffMs − minDiffMs) / diffStepMs + 1`; on a coarser grid the estimate snaps to the nearest value, and the Console warns. | 196 / 29 |
 | `slopeMin`, `slopeMax`, `slopeCount` | How sharply noticing goes from "never" to "always". | 1 – 7, 10 values |
 | `lapseMin`, `lapseMax`, `lapseCount` | How often people miss even huge differences (blinks, attention). | 0 – 0.06, 4 values |
-| `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | 0.235 |
+| `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | 0.256 |
 | `maxTrials` | Most main rounds in one block. | 50 |
 | `minTrials` | No early stop before this many rounds. | 8 |
-| `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in fps) is at or below this. About 9% / 7% / 4% of each row's Δ range. | 5 / 10 / 20 |
+| `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in ms) is at or below this. 0.5 is one step. In simulation a threshold around 3 ms stops after about 25–30 rounds, and one above about 6 ms usually runs to `maxTrials`. | 0.5 |
 
 A block ends when `stopSD` is reached (after `minTrials`) or when it hits `maxTrials`. The SessionLog saves which one happened as `endReason`: `converged` or `maxTrials`.
 
-> **Watch for estimates stuck at the edge of the range.** Someone who never finds the boundary piles QUEST+'s belief against the largest Δ. Its SD collapses there, so the block "converges" in under 20 rounds on a number that only means "somewhere above the range". The session log flags this as `jndRangeEdge = top` (or `bottom` at the other end), and the Console warns. Treat such a block's `jndDiffFps` as a bound, not a threshold.
+> **Watch for estimates stuck at the edge of the range.** Someone who never finds the boundary piles QUEST+'s belief against the largest Δ. Its SD collapses there, so the block "converges" in under 20 rounds on a number that only means "somewhere above the range". The session log flags this as `jndRangeEdge = top` (or `bottom` at the other end), and the Console warns. Treat such a block's threshold as a bound, not an estimate.
 
 ## PracticeRounds.csv
 
@@ -283,7 +275,7 @@ Both reach 500. The frame rate used to fall short because of the scene, not the 
 
 γ matters a lot. If it's wrong, the thresholds come out wrong.
 
-γ is the chance that a blind shot lands on the tower. At startup the game works it out from the screen and prints it in the Console (or in `Player.log` in a build), in a `[GuessRate]` block that ends with `>>> guessRate : <number>`. Use that number. It's about 0.235 on a 16:9 screen (the UFO can fly until its centre reaches either edge, so a shot can land anywhere across the view), and it changes with the screen shape, which is why the monitor should be 16:9. If a row's `guessRate` is far from it, the Console says so. The SessionLog records the value the screen implied for each block as `guessRateScreen`.
+γ is the chance that a blind shot lands on the tower. At startup the game works it out from the screen and prints it in the Console (or in `Player.log` in a build), in a `[GuessRate]` block that ends with `>>> guessRate : <number>`. Use that number. It's about 0.256 on a 16:9 screen (the UFO can fly until its centre reaches either edge, so a shot can land anywhere across the view), and it changes with the screen shape, which is why the monitor should be 16:9. If a row's `guessRate` is far from it, the Console says so. The SessionLog records the value the screen implied for each block as `guessRateScreen`.
 
 Manual and scroll levels share that one γ (a scroll round's boundary is dealt as far from the UFO, in mouse travel, as without the scroll). An **auto** level has its own, printed once per distinct autopilot setting: there a blind response is a click at a random moment, so it lands wherever the autopilot has the UFO then, and γ is the share of tower positions the UFO is over, averaged over one sweep there and back. At the defaults (`linear`, 8 units/s, `autoSweep` 0.9) it is **0.248** on 16:9. A narrower sweep raises it (the UFO spends more of its time over the towers' band): 0.267 at 0.8. A `sine` path lowers it, because the UFO lingers at the ends: 0.216.
 
@@ -312,14 +304,14 @@ These define the task itself, so they live in `Assets/Scripts/Experiment/StudyCo
 2. The participant flies back and forth and shoots where they think the tower is. In an auto level the UFO flies back and forth by itself and the participant clicks when it is over the place they think it is.
 3. **The reveal.** The tower standing on the boundary lights up green, its beam shoots up out of it, and its hit-zone lines spread out. The two frame rates slide out from behind the beam as a pair, one on each side of it, high in the sky between the beam and the hit-zone lines, so they read as one comparison across the boundary: `500 | 85`. The altered side's number rolls away from the base rate to where it ended up, and the rates actually measured on each side fade in underneath. Meanwhile each side of the screen slowly takes on its own colour, cool for the faster side and warm for the slower one. The colour starts fully transparent and is faint inside the hit zone, so the zone stays a clear window exactly as wide as the target. It is strongest just outside the zone lines and leaves the city clear.
 
-   It looks the same wherever the tower is. The hit zone is wide enough to hold a three-digit rate at full size, so the pair keeps its size and place beside the beam across most of the screen. Near an edge, where the screen cuts into the zone, both numbers shrink together to fit the narrower side and stay the same size. On a 16:9 screen, at the default spawn range (the middle 80% of the view), that's never below about 80%. Each side is clipped to its own side of the tower line, so nothing ever crosses it.
+   It looks the same wherever the tower is. The hit zone is wide enough to hold a three-digit rate at full size, so the pair keeps its size and place beside the beam across most of the screen. If the screen cuts into the zone, both numbers shrink together to fit the narrower side and stay the same size. On a 16:9 screen, at the default spawn range (the middle 60% of the view), the zone always fits on screen, so that doesn't happen. Each side is clipped to its own side of the tower line, so nothing ever crosses it.
 
    The pacing fits the hold. In the study's 2-second hold, the roll and the measured rates have landed within the first second, and the colour keeps deepening until just before it all fades.
 4. The scene resets under a veil (`SAVING…`, `READY…`). The logs are written first. Then the scene changes once: as the camera pans to its new view, the old row of towers dissolves into the new one, dealt around the next boundary, and the reveal's beam and glow fade out over the tower they marked. The new row has settled before GO! lifts the veil. Everything between rounds runs at the base frame rate.
 
 ## Level types
 
-Every row of the config picks one with `levelType`. The split, the shot, the hit window, the scoring, the reveal and QUEST+ are identical in all three; what changes is who flies the UFO and whether the world moves.
+Every row of the config picks one with `levelType`. Manual, scroll and auto retain the spatial tower task. Shockwave keeps the automatic flight but makes the response temporal: each randomized event toggles the configured fast/slow caps and opens the configured response window. The actual phase, cap and event values are written to `PlayerLog`.
 
 ### Manual
 
@@ -331,15 +323,27 @@ The mouse flies the UFO, and the camera follows it, so the UFO holds the middle 
 
 Whole-screen motion shows the frame rate far more than a UFO crossing a still scene, so don't compare scroll thresholds with the other levels' without saying so.
 
-### Auto
+### Auto and shockwave flight
 
-The UFO flies itself. It sweeps back and forth across the screen at a constant `autoSpeed` (by default from 5% to 95% of the width), turns round smoothly at each end, and bobs up and down on a slight sine wave as it goes (`autoBobAmp`, `autoBobHz`). The participant only fires: **left click** (or **Space**) when they see the UFO over the place where the frame rate changes. The shot lands where the UFO is at that moment and is scored exactly like a manual shot. The camera holds still and pans between rounds, as in a manual level.
+The UFO flies an **infinity sign** by itself, at one constant speed at every point of the lap, the turns included. So every frame moves it the same distance on screen, and a change of frame rate shows equally wherever the ship is: slowing into a turn is what would hide it. The heading eases through each lobe, so it never lurches, and the hull is drawn slightly bigger at the top of the path and smaller at the bottom, so it reads as flight in depth. A very slight sine wobble rides on top, and the camera's hand-held wander is 3.5 times stronger than in a level the participant flies.
 
-- **The same motion at every frame rate.** The path is a function of flight time alone, advanced by the real length of every frame, so the UFO is in exactly the same place at the same moment at any frame rate. The two sides of the boundary show one and the same motion, sampled at two rates.
-- **It flies only while a round is live**, from the end of GO! to the response. It stops where it fired and hovers there through the reveal. Each round it starts from a random point of the sweep, heading either way (`autoStart = random`), so where a round starts says nothing about the last one.
-- **Reaction time is now part of the aim.** At 8 units/s the UFO is about 4 units past the boundary half a second after crossing it: still inside the 5.5-unit hit radius. At 12 units/s it would be 6 units past, and a click that reacts to the crossing would miss. Participants also learn to wait for the next pass and click as the UFO arrives. The ShotLog's `ufoVelX`, `sinceLastCrossingSec` and `missDistX` tell those strategies apart, and the SessionLog's `avgMissAlongTravelX` sums them up per block: positive means the shots land past the tower in the direction of travel (late), negative before it (early).
-- The mouse is still logged; it just flies nothing. In an auto block, `mouseDelta*` measure fidgeting.
-- At startup the Console warns if a row's `autoSweep` doesn't reach every place the tower can be dealt (that boundary could never be crossed), or if its `roundTimeoutSec` is shorter than one sweep there and back.
+- **It never teleports in view.** When Space starts a phase, the ship takes off from where it is and melts onto the path over 0.8 s. Later rounds start at a random point of the lap, with the ship still hidden under the veil.
+- **The same motion at every frame rate.** The path is a function of flight time alone, so both frame rates show one motion, sampled at two rates.
+- **It flies only while a round is live**, and hovers where it fired through the reveal.
+
+### Shockwave
+
+No tower and no aiming. From GO! the UFO flies, and the whole screen's frame rate flips between the base and the altered rate after a random wait (`swFlipDelayMinSec` to `swFlipDelayMaxSec`, the same range before every flip). No visual or sound marks a flip. What a press does:
+
+| Press | Outcome | QUEST+ | The round |
+|---|---|---|---|
+| Inside `swWindowSec` after a flip | `detected`: the blast goes off | counted hit | ends |
+| After the window closed | `late` | counted miss | goes on: TRY AGAIN!, then QUEST+'s new Δ from the base rate |
+| Before any flip since GO! or TRY AGAIN! (within `swMaxEarlyPerRound`) | `early`, forgiven; 1 s lockout | **not counted** | goes on, wait redrawn |
+| Before any flip, past that | `early` | **not counted** | ends |
+| `maxFlipsPerRound` flips pass unanswered | `timeout` | counted miss | ends |
+
+If a counted miss finishes QUEST+, the round ends there. A press that lands nothing only fizzles at the muzzle, so the view stays clear. Because uncounted rounds do not advance QUEST+, a block also ends at 3 × `maxTrials` rounds (`endReason` = `roundCap`), so it cannot run for ever.
 
 ### Mixing levels in one session
 
@@ -361,13 +365,14 @@ Everything below is built at runtime by the scripts, so the scene file itself is
   The UFO moves by mouse deltas, which neither motion changes, so the UFO, the towers and every shot keep their world positions. The side of the boundary is measured along the camera's axes at rest, so the split, the score and the logs are unaffected.
 - **The towers** (`TowerField`). A dense row of towers drawn from the scene's tower models (`TowerManager` → `skylineBuildings`), all in one dark backlit material, their windows lit from inside and lived in: lamps of different colours drifting brighter and dimmer, televisions, people passing, lights going off and on, every tower by the same rules. **The boundary is always one of them, and any of them can be it**: every round the whole row is dealt again on a jittered lattice anchored on the boundary. The boundary tower gets a random model, height, angle and beacon from the same pool as every other tower, so nothing about how it looks or where it stands sets it apart. The scene's own `Tower` object is never drawn; it only marks the boundary's position for the split, the scoring and the logs.
 - **The ground fog is off** (`TowerManager` → `groundFog`). The fog fades in the reveal still run as timing: they drive the beam and the boundary tower's glow over the same durations as before, so the round's pacing is unchanged. `legacyHitPrefabs` (off) brings back the old particle-pack impact prefabs, one of which is a smoke cloud.
-- **The UFO** (`UfoFlair`, added by `UfoController`): a slow spin, a bank into its motion, a jelly squash-and-stretch, and light trails. It animates a rig of child objects only. The ship's own transform, which the split, the score and the logs read, is never touched, and the belly turret the shot fires from stays out of the rig. The ship is drawn 1.3 times its size in the scene (`UfoController` → `size`), its trails with it. It flies until its centre reaches either edge of the screen, so at the edge half of it is cut off and a shot can land anywhere across the view. `guessRate` assumes exactly that band. The edges are measured on the camera at rest, so the shake after a shot cannot carry the ship further out. The ceiling works the same way: a set `maxY` never takes the centre above the top of the screen. The floor (`minY` 2.4) keeps the ship's belly turret clear of the tallest tower and its beacon.
+- **The UFO** (`UfoFlair`, added by `UfoController`): a spin (one turn every 2 s, `spinDegreesPerSec` 180), a bank into its motion, a jelly squash-and-stretch, and light trails. It animates a rig of child objects only. The ship's own transform, which the split, the score and the logs read, is never touched, and the belly turret the shot fires from stays out of the rig. The ship is drawn 1.8 times its size in the scene (`UfoController` → `size`), its trails with it. It flies until its centre reaches either edge of the screen, so at the edge half of it is cut off and a shot can land anywhere across the view. `guessRate` assumes exactly that band. The edges are measured on the camera at rest, so the shake after a shot cannot carry the ship further out. The ceiling works the same way: a set `maxY` never takes the centre above the top of the screen. The floor (`minY` 2.85) keeps the ship's belly turret clear of the tallest tower and its beacon.
 - **The laser.** The sight (`WeaponSight`) is a soft line of light ending in a small dot on the ground line, which, like the impact point of a shot, is now down in the grass, the way the old fog hid it. It runs down through the tower row, so it is drawn 10 units nearer the camera along the lines of sight through it (`drawInFront`): exactly the same pixels, but in front of the towers, which would otherwise hide it under the first rooftop below the ship. The grass in front still covers its foot. It is quietly alive: a faint glint slides down it from the muzzle to the ground about once a second (`glintSweepSec` 1.2 s), and the dot swells and brightens a little as each one lands (`glintLanding`). Both run on the clock and know nothing about the boundary; `glint` off holds the sight still. The shot (`ShotFx`, added by `LaserFirer`) is a bolt that strikes the ground in 35 ms with an energy pulse racing down it, a muzzle flash, an impact flash, a shockwave ring, and teal sparks and orange embers. A shot that misses everything now ends on the ground line instead of in mid-air. Only the end point's height changed; the x and z it is scored and logged on are exactly as before.
 
 **Two things to keep in mind for the data.** Neither is a bug, but both change the stimulus compared with sessions run before this version.
 
 - Everything that moves on screen shows the frame rate. That includes the UFO's spin and trails, the glint running down the sight, the rain, the sparks, the beacons, the windows' lights and the figures passing them, the searchlights, the aurora, the twinkling stars, the swaying grass and motes, and the camera, and they show it wherever the UFO is. Every one of them updates on every frame (nothing runs on a fixed tick, and nothing uses physics), computed from the clock or stepped by the time that frame took, so each moves at the same speed at any frame rate and changes 500 times a second at 500 fps. A trail is laid down one point per frame, so on a slow side it is drawn in visibly fewer, longer segments. The **rain and the parallax swing are the strongest of these cues**. The rain falls across the whole screen all the time, fast, so at a low rate its streaks step visibly even while the UFO is still. The swing moves the whole picture behind and in front of the play plane whenever the UFO moves, and keeps easing for about a second after it stops, so on a slow side the whole city and the grass step visibly. Thresholds may come out lower than with the old, mostly static scene. Each effect can be switched off on its component (`Weather` → `kind` for the rain, `CameraRig` → `parallax` for the swing). Decide before collecting data, and keep the same settings for a whole study.
 - Because the boundary always stands on a tower, a participant who aims *at a tower* when guessing blind lands within the hit radius a little more often than a blind shot anywhere. The excess is about the tower spacing divided by the screen width: roughly +0.05 at the default spacing of 2.7 world units on a 46.8-unit-wide view. `guessRate` still assumes a blind shot anywhere. A denser row (`TowerField` → `spacing`) shrinks the excess.
+- The boundary is only dealt in the middle 60% of the view (`TowerManager` → `spawnWidthFraction`), so a participant who learns that and always fires mid-screen lands on it more often than `guessRate` assumes: 43% of the time, against 32% with the older 80% band. In simulation, someone doing that on every blind shot reads about 10–13% below their true threshold. The row of towers still fills the whole width, so the scenery doesn't show the band.
 
 ---
 
@@ -376,56 +381,16 @@ Everything below is built at runtime by the scripts, so the scene file itself is
 This file decides **which order** each participant plays the settings in.
 
 ```
-row,pos1,pos2,pos3,pos4,pos5
-1,1,2,5,3,4
-2,2,3,1,4,5
-3,3,4,2,5,1
-4,4,5,3,1,2
-5,5,1,4,2,3
-6,4,3,5,2,1
-7,5,4,1,3,2
-8,1,5,2,4,3
-9,2,1,3,5,4
-10,3,2,4,1,5
+row,pos1,pos2,pos3,pos4
+1,1,2,4,3
+2,2,3,1,4
+3,3,4,2,1
+4,4,1,3,2
 ```
 
-- Each line is one order. The numbers are **row numbers of ExperimentConfig.csv**: 1 = 60↓, 2 = 144↓, 3 = 500↓, 4 = 60↑, 5 = 144↑.
-- The first column (`row`) is just a label. The game skips it, but keep it there.
-- Lines starting with `#` are comments.
+The numbers are row numbers of ExperimentConfig.csv: 1 = shockwave 2 ms up, 2 = shockwave 16.67 ms down, 3 = laser 2 ms up, 4 = laser 16.67 ms down. Participant `N` uses square row `((N - 1) mod 4) + 1`, so run participants in groups of 4.
 
-### Who gets which order
-
-Participant `N` (their `sessionId`) uses this square row:
-
-```
-((N - 1) mod number_of_rows) + 1
-```
-
-With 10 rows, participants 1–10 get rows 1–10, participant 11 is back on row 1, and so on.
-
-| Square row | Participants | Order played |
-|---|---|---|
-| 1 | 1, 11, 21, … | 60↓ → 144↓ → 144↑ → 500↓ → 60↑ |
-| 2 | 2, 12, 22, … | 144↓ → 500↓ → 60↓ → 60↑ → 144↑ |
-| 3 | 3, 13, 23, … | 500↓ → 60↑ → 144↓ → 144↑ → 60↓ |
-| 4 | 4, 14, 24, … | 60↑ → 144↑ → 500↓ → 60↓ → 144↓ |
-| 5 | 5, 15, 25, … | 144↑ → 60↓ → 60↑ → 144↓ → 500↓ |
-| 6 | 6, 16, 26, … | 60↑ → 500↓ → 144↑ → 144↓ → 60↓ |
-| 7 | 7, 17, 27, … | 144↑ → 60↑ → 60↓ → 500↓ → 144↓ |
-| 8 | 8, 18, 28, … | 60↓ → 144↑ → 144↓ → 60↑ → 500↓ |
-| 9 | 9, 19, 29, … | 144↓ → 60↓ → 500↓ → 144↑ → 60↑ |
-| 10 | 10, 20, 30, … | 500↓ → 144↓ → 60↑ → 60↓ → 144↑ |
-
-Practice always runs once, before whichever block the square puts first.
-
-### Why this square
-
-It's a **Williams design**:
-
-- Every setting shows up in every position equally often, so no setting always goes first or last.
-- Every setting comes **right after** every other setting equally often, so "what you just played" is balanced too. A 500 fps block can change how the next block feels, and this spreads that effect evenly.
-
-With an odd number of settings (five) no single square can do both, so it's the 5×5 square plus its mirror image: **run participants in groups of 10** to keep things balanced.
+It is a **Williams design**: every setting takes every position once, and every setting comes right after every other setting once.
 
 ### Safety checks
 
@@ -462,7 +427,7 @@ Each session folder has three CSVs. All three start with the same identity colum
 | `baseFps` | The base frame rate: the block's, or in practice the round's (each practice pair has its own). |
 | `direction` | `down` or `up`. |
 | `frameLimiter` | `precise` or `unity`. |
-| `levelType` | `manual`, `scroll` or `auto`: the level the row was played in. On practice rows, the level being practised. A session has a practice phase per level type, so a practice phase is `phase` = practice plus its `levelType`. Logs from before this column existed don't have it. |
+| `levelType` | `manual`, `scroll`, `auto` or `shockwave`: the level the row was played in. On practice rows, the level being practised. |
 
 The SessionLog and ShotLog also end with `cfg_*`: a copy of every `ExperimentConfig.csv` column for the block. It's blank on practice rows, which don't come from a config row. The PlayerLog doesn't carry that copy; at hundreds of rows a second it would be most of the file, and `blockIndex` joins it to the config.
 
@@ -486,19 +451,19 @@ Covers the main run only, never practice.
 | `sessionDurationSec` | `endIso` − `startIso`, in seconds. |
 | `playDurationSec` | Length of the main run up to its last frame, in seconds. |
 | `endReason` | Why the block stopped: `converged` (reached `stopSD`), `maxTrials`, or `abandoned` (game closed mid-block). |
-| `jndDiffFps` | **The threshold.** QUEST+'s best estimate of Δ (posterior mean), in fps. |
-| `jndAlteredFps` | The same threshold as the altered side's frame rate: `baseFps ∓ jndDiffFps`. |
-| `jndFrameTimeDiffMs` | The same threshold as a frame-time difference: \|1000/`jndAlteredFps` − 1000/`baseFps`\|, in ms. |
-| `sd` | How unsure the estimate is (posterior SD, fps). Smaller is more sure. |
+| `jndFrameTimeDiffMs` | **The threshold.** QUEST+'s best estimate of Δ (posterior mean), in ms of frame time. |
+| `jndAlteredFps` | The same threshold as the altered side's frame rate: 1000 / (1000/`baseFps` ± `jndFrameTimeDiffMs`). |
+| `jndDiffFps` | The same threshold as a frame-rate difference: \|`jndAlteredFps` − `baseFps`\|. |
+| `sd` | How unsure the estimate is (posterior SD, ms). Smaller is more sure. |
 | `priorSd` | The same SD before the first round. |
-| `jndMedianDiffFps` | Median of the threshold posterior. |
-| `jndModeDiffFps` | Most likely threshold value on the grid. |
-| `jndCI95LoDiffFps` / `jndCI95HiDiffFps` | The threshold's 95% credible interval. |
+| `jndMedianDiffMs` | Median of the threshold posterior. `jndMedianDiffFps` is the same in fps, as with the next two. |
+| `jndModeDiffMs` | Most likely threshold value on the grid. |
+| `jndCI95LoDiffMs` / `jndCI95HiDiffMs` | The threshold's 95% credible interval. |
 | `jndRangeEdge` | `top` if the estimate is pressed against the largest Δ tested (the true threshold is probably above the range), `bottom` against the smallest, empty otherwise. See the warning under QUEST+ columns. |
 | `slopeEstimate` | Estimated slope of the psychometric curve. |
 | `lapseEstimate` | Estimated lapse rate (misses even on huge differences). |
 | `staircaseTrials` | Rounds QUEST+ actually used. Use this as the trial count. |
-| `lastDiffFps` | Δ of the last round. |
+| `lastDiffMs`, `lastDiffFps` | Δ of the last round, in ms and in fps. |
 | `trials` | Rounds logged: shots plus rounds that ran out. |
 | `shotsFired` | Rounds answered with a shot. |
 | `hits` | Rounds with `isHit` = 1. |
@@ -508,7 +473,7 @@ Covers the main run only, never practice.
 | `roundsCrossingCapped` | Rounds that hit `maxCrossingsPerRound` with no shot. |
 | `avgRoundDurationSec` | Mean time from GO! to the answer. |
 | `avgCrossingsPerRound` | Mean tower crossings per round: how much comparing they did. |
-| `shotsWithoutCrossing` | Shots fired without crossing the tower once that round. They only ever saw one side, so the shot had nothing to compare. |
+| `shotsWithoutCrossing` | Shots fired without crossing the tower once that round. They only ever saw one side, so the shot had nothing to compare. These are the laser's TOO EARLY! rows. |
 | `avgSinceLastCrossingSec` | Mean time from the last crossing to the shot. |
 | `avgMissDistX` | Mean \|shot X − tower X\| over all shots (world units). |
 | `avgMissDistXMissesOnly` | The same over misses only. |
@@ -535,16 +500,19 @@ Covers the main run only, never practice.
 | `medianSinceLastCrossingSec` | Median time from the last crossing to the shot. Less skewed than the mean by shots that waited for a later pass. |
 | `avgMissAlongTravelX` | Mean of `missDistX` × sign(`ufoVelX`) over shots fired on the move: + = the shots landed past the tower in the direction of travel (late), − = before reaching it (early). The auto level's reaction-time signature. |
 
-### ShotLog: one row per round
+### ShotLog: one row per press
 
-A round is answered by a shot, or ends with no shot when it runs out.
+**Every press of the fire button in an open phase has a row, with the state of the game at that instant**, including presses that fired nothing. So a round has as many rows as it had presses. `roundEnded` = 1 marks the row that closed it, and `countedByStaircase` = 1 marks those that reached QUEST+. `outcome` is `shot` (laser, after at least one crossing), `detected`, `early` (shockwave before the first flip, laser before the first crossing), `late`, `timeout`, `expired`, `crossingCap`, or, for a press that fired nothing, `cooldown` (inside the fire cooldown), `lockout` (after a forgiven early press) or `notLive` (firing off: reveal, reset, GO!, TRY AGAIN!).
+
+In a shockwave row, `crossings` and `lastCrossingAtSec` are the flips of the frame rate, and `alteredSide` and `side` are blank.
 
 | Column | What it is |
 |---|---|
 | `closeRadius` | Hit radius in world units (5.5). |
 | `roundNumber` | Round number. Main rounds keep counting across blocks; practice restarts at 1. |
 | `timeSinceStartSec` | Phase clock at the response. |
-| `diffFps` | **The stimulus:** Δ for this round, picked by QUEST+ (or the practice pair's difference). |
+| `diffMs` | **The stimulus:** Δ for this round in ms of frame time, picked by QUEST+ (or the practice pair's difference): \|1000/`alteredFps` − 1000/`baseFps`\|. |
+| `diffFps` | The same Δ as a frame-rate difference. |
 | `alteredFps` | The altered side's cap: `baseFps ∓ diffFps`. |
 | `alteredSide` | `Left` or `Right`: which side of the tower was altered. |
 | `measuredBaseFps` | The frame rate actually delivered on the base side this round. Blank if the UFO never went there. |
@@ -567,8 +535,9 @@ A round is answered by a shot, or ends with no shot when it runs out.
 | `towerX` | X position of the hidden tower. |
 | `ufoY` | UFO height at the response. |
 | `side` | `Left` or `Right`: which side of the tower the shot was fired from. |
-| `threshDiffFps` | QUEST+'s threshold estimate after this round (fps). Blank on practice rows, which never reach QUEST+. |
-| `sd` | SD of that estimate. |
+| `threshDiffMs` | QUEST+'s threshold estimate after this round (ms). Blank on practice rows, which never reach QUEST+. |
+| `threshDiffFps` | The same estimate as a frame-rate difference. |
+| `sd` | SD of that estimate (ms). |
 | `slopeEstimate`, `lapseEstimate` | Slope and lapse estimates after this round. |
 | `camX` | The camera's resting X at the response (no shake or swing). It moves only in a scroll level, where the camera follows the UFO. |
 | `ufoViewportX`, `towerViewportX` | Where the UFO (the shot) and the tower were across the screen at the response: 0 = left edge, 1 = right edge. |
@@ -576,6 +545,23 @@ A round is answered by a shot, or ends with no shot when it runs out.
 | `ufoXAtStart` | Where the UFO was when the round started (firing handed back after GO!). |
 | `firstCrossingAtSec` | When the round's first crossing happened (phase clock). Blank if none. |
 | `meanCrossingSpeed`, `lastCrossingSpeed` | The UFO's mean, and last, horizontal speed at this round's crossings (world units/s). Blank if none. |
+
+These describe the press and the state it met:
+
+| Column | What it is |
+|---|---|
+| `attemptInRound`, `roundEnded` | Which shot of the round this is, and whether this row closed it. |
+| `inputDevice`, `firingEnabled` | `mouse` or `key`; whether firing was on. |
+| `capFps`, `capFrameMs`, `pacedBy`, `windowOpen` | The cap pacing this frame, as a rate and a frame time, whose it was, and whether the shockwave window was open. |
+| `reactionSec`, `framesSinceLastChange` | **How long after the last frame-rate change the press came**, in seconds and in frames. |
+| `changeFromFps`, `changeToFps`, `changeFromMs`, `changeToMs`, `changeDeltaMs`, `changeDir` | **How much that change was**: the caps either side of it, as rates and frame times, the signed frame-time change (+ = longer), and `slower` or `faster`. |
+| `foreperiodSec`, `windowSec` | Shockwave: the random wait that ended in the last flip, and the response window. |
+| `changeTimesSec`, `changesSinceLastPress` | Every change so far this round (phase clock, `;`-separated), and how many since the last press. |
+| `changeUfoX`, `changeUfoY`, `ufoX` | Where the ship was at the change, and at the press. |
+| `earlyPresses`, `latePresses`, `lockoutPresses`, `cooldownPresses`, `notLivePresses` | Presses of each kind so far this round, this row included. |
+| `baseFrameMs`, `ftDirection`, `alteredFrameMs`, `measuredBaseMs`, `measuredAlteredMs` | The stimulus in frame time, nominal and as delivered since the attempt began. |
+
+The SessionLog adds `baseFrameMs`, `ftDirection`, `swDetections`, `earlyFires`, `swLateFires`, `swTimeouts`, `lockoutPresses`, `cooldownPresses`, `notLivePresses`, `roundsNotCounted`, reaction-time statistics (`avg`, `sd`, `median`, `min`, `max` `ReactionSec`, over hits), `shotsPerMinute`, and live frame-time percentiles (`p95FrameTimeMs`, `p99FrameTimeMs`, `baseP99FrameTimeMs`, `alteredP99FrameTimeMs`). `trials` counts rounds; `shotsFired` counts every shot. `direction` in the identity columns stays the direction of the frame **rate**, for the analysis scripts.
 
 ### PlayerLog: one row per frame
 
@@ -587,10 +573,11 @@ A round is answered by a shot, or ends with no shot when it runs out.
 | `unscaledDeltaMs` | How long this frame took (ms). |
 | `targetFps` | The cap that paced **this** frame: the one `unscaledDeltaMs` measures. |
 | `pacedBy` | Which side's cap that was: `base`, `altered`, or empty between rounds. |
-| `diffFps` | The round's Δ. Empty between rounds. |
+| `diffFps` | The round's Δ, as a frame-rate difference. Empty between rounds. |
 | `alteredSide` | The round's altered side. Empty between rounds. |
 | `side` | `Left` or `Right`: which side of the tower the UFO is on. |
 | `crossed` | 1 on the frame the UFO crossed the tower during a round. |
+| `shockwaveFastPhase`, `shockwaveWindow`, `shockwaveFlips` | Shockwave rows only: whether the frame ran at the faster of the round's two rates, whether the response window was open, and how many flips the round has had so far. |
 | `mouseX`, `mouseY` | Mouse pointer position on screen (pixels). |
 | `mouseDeltaX`, `mouseDeltaY` | Raw mouse movement this frame (counts). |
 | `ufoX`, `ufoY` | UFO position (world units). |
@@ -601,6 +588,7 @@ A round is answered by a shot, or ends with no shot when it runs out.
 | `shotFired` | 1 on the frame a response was logged. Frames where a round ran out get a 1 too. |
 | `shotHitX` | Where that shot landed on X (0 when there's no shot). |
 | `camX` | The camera's resting X this frame. The UFO's place on screen is `0.5 + (ufoX − camX) / viewWidthWorld` in every level. |
+| `diffMs`, `armed` | The round's Δ in frame time (blank between rounds), and whether firing was on this frame. |
 
 Every GO! is in the frame log, the first of a phase included (the phase clock starts with it), and the UFO holds still through each one, so no crossing happens before a round's firing is handed back and every frame a round's measured frame rates count is in the log.
 
@@ -616,11 +604,15 @@ Everything is in `Analysis/`:
 |---|---|
 | `audit_logs.py` | **Run this first.** Checks every session's logs: each row's structure and internal consistency, and that the three files agree with each other (shots against the frames they fired on, each round's measured frame rates recomputed from its frames, the session row recomputed from the rounds). `python Analysis/audit_logs.py --all` (one line per session; `--data "<build>/Data"` for a build's logs, `--verbose` for every message). Exit code 1 on any FAIL. It reads every log format this study has written; for logs from before `levelType` it infers the level from how far the UFO travelled. Standard library only. |
 | `build_db.py` | Builds a SQLite `.db` for each session. It runs by itself at the end of every session, and reads both this study's logs and the stutter study's. To rebuild: `python Analysis/build_db.py --data "<build>/Data"`. `--schema` prints the tables and example queries; `--verify` checks the database gives the CSVs back cell for cell; `--combined all.db` adds one database of every session. |
-| `level_analysis.py` | Figures, tables and a report for a study with **several level types**: a condition is level type × base rate × direction, so manual, scroll and auto blocks are compared and never pooled. Thresholds (Weber % and fps) with participants paired across level types; the within-participant level contrasts (sign-flip and Wilcoxon tests); psychometric curves; QUEST+ convergence and every block's staircase; round outcomes, response latency after the crossing, miss distances; for auto levels, where the shot landed along the UFO's direction of travel and the reaction lag it implies, and hit rate against latency; the UFO's speed at crossings; screen-position heatmaps, mouse activity and frame-time errors (from the PlayerLogs); frame delivery, the chance rate per block, practice, and a data inventory. `python Analysis/level_analysis.py --data Data/Logs --out <folder>` (`--no-frames` skips the PlayerLogs; `--list` lists the figures). |
+| `level_analysis.py` | Figures, tables and a report for a study with **several level types**: a condition is level type × base rate × direction, so manual, scroll and auto blocks are compared and never pooled. Thresholds (Weber %, fps and ms) with participants paired across level types; the within-participant level contrasts (sign-flip and Wilcoxon tests); psychometric curves; QUEST+ convergence and every block's staircase; round outcomes, response latency after the crossing, miss distances; for auto levels, where the shot landed along the UFO's direction of travel and the reaction lag it implies, and hit rate against latency; the UFO's speed at crossings; screen-position heatmaps, mouse activity and frame-time errors (from the PlayerLogs); frame delivery, the chance rate per block, practice, and a data inventory. `python Analysis/level_analysis.py --data Data/Logs --out <folder>` (`--no-frames` skips the PlayerLogs; `--list` lists the figures). |
 | `jnd_analysis.py` | The paper figures, statistics and report for one kind of block. It keys conditions by base rate, so it now runs once per level type × direction, into `<out>/<levelType>_<direction>/` (or `--level` / `--direction` to pick one). For logs from before `levelType` it infers the level (`--legacy-level` to set it). |
 | `simulate_logs.py` | Synthetic sessions in the current log format: every level type, both directions, QUEST+ and per-frame pacing, from simulated observers. For testing the analysis before real data exist, or checking a design: `python Analysis/simulate_logs.py --out <folder> --participants 8`. The folders end in `SIM`; nothing in them is real data. |
 | `plot_quest.py`, `reaction_after_spike.py`, … | Written for the **stutter** study. They expect its columns (`jndEstimateMs`, `stimulusMs`, `weapon`, …). |
 
 `Analysis/COLUMNS.md` has a compact list of every config and log column.
+
+**Check a build with a stand-in participant:** `Invasion.exe -jndRobot` plays a real session through real input, with some presses deliberately too early, too late and ignored, then `python Analysis/audit_logs.py --data "<build>/Data"`. It does not advance the participant number. `Invasion.exe -jndShockFx <folder>` photographs the flight and the blast frame by frame, and `-jndBenchmark` answers whether the PC holds 500 fps.
+
+`simulate_logs.py` still writes the previous log format. `level_analysis.py` is the script for these logs: it treats shockwave as a level, but has no shockwave-specific figures yet (reaction time, foreperiod, outcomes); the columns they need are all logged. `jnd_analysis.py` skips frame-time logs and points to it.
 
 A good routine after each session: `python Analysis/audit_logs.py --all`, then check `SessionInfo_<id>.csv` says `UIManager.showDebug,false` (`level_analysis.py`'s report flags any session where it was on), then the analysis.
