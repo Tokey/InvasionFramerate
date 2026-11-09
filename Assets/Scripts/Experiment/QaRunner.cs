@@ -265,7 +265,7 @@ namespace JndUfo
             }
             _split.SetPractice(practice.highFps > 0, practice);
             _split.ResetSideTracking();
-            _split.BeginTrial();
+            _split.BeginRound();
 
             float t0 = Time.realtimeSinceStartup;
             for (float t = 0f; t < 1f; t = (Time.realtimeSinceStartup - t0) / flySec)
@@ -439,7 +439,7 @@ namespace JndUfo
             _ufo.SetHidden(false);
             if (pilot != null) pilot.BeginRound();
             _split.ResetSideTracking();
-            _split.BeginTrial();
+            _split.BeginRound();
             _laser.SetFiringEnabled(true);
         }
 
@@ -512,7 +512,7 @@ namespace JndUfo
                 {
                     // A forgiven press leaves the round live: close it, so the next one opens clean.
                     _laser.SetFiringEnabled(false);
-                    _split.CancelTrial();
+                    _split.CancelRound();
                 }
             }
             while (_game.IsRevealing) yield return null;
@@ -663,7 +663,7 @@ namespace JndUfo
             AudioListener.volume = 0f;   // minutes of the engine's drone help no one; sound is not what is timed
 
             // Uncapped and the split off, as in the benchmark's sweep: this PC's frame rate with the scene as it is.
-            _split.CancelTrial();
+            _split.CancelRound();
             _split.enabled = false;
             FrameLimiter.Apply(0, FrameLimiterMode.Precise);
             _ufo.FreezeMovement = true;
@@ -1032,7 +1032,7 @@ namespace JndUfo
             }
 
             // Uncapped: this PC's ceiling with the scene as it is.
-            _split.CancelTrial();
+            _split.CancelRound();
             _split.enabled = false;              // its LateUpdate would re-apply the block's cap
             FrameLimiter.Apply(0, FrameLimiterMode.Precise);
             yield return TimeSweep("uncapped", 8f);

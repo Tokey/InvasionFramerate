@@ -18,7 +18,7 @@ public class UIManager : MonoBehaviour
     [Tooltip("The fill of the HUD's progress bar. Anchored to the left edge of its track; its " +
              "right anchor is driven from 0 to 1 as the phase progresses. Practice fills by " +
              "rounds completed; the main run fills by how close QUEST+ is to stopping — see " +
-             "RoundProgress for the formula.")]
+             "QuestProgress for the formula.")]
     public RectTransform progressFill;
 
     [Tooltip("ONE font for the whole game. Assign a TMP Font Asset here and everything follows it " +
@@ -105,13 +105,6 @@ public class UIManager : MonoBehaviour
              "participant who reads it as a timer will pace themselves against it.")]
     public string progressLabelText = "PROGRESS";
 
-    [Tooltip("Show the word during PRACTICE only, and leave the bar unlabelled in main rounds.\n\n" +
-             "Practice is where the bar has to be explained — it is the first time the participant " +
-             "sees one and they have no way to know what it counts. By the main run they do, and " +
-             "the word is then a block of text sitting on screen for the rest of the session with " +
-             "nothing left to say.")]
-    public bool progressLabelDuringPracticeOnly = true;
-
     [Min(6f)] public float progressLabelSize = 32f;
     [Tooltip("Pixels between the top of the bar and the baseline box of its label.")]
     [Min(0f)] public float progressLabelGap = 8f;
@@ -150,7 +143,7 @@ public class UIManager : MonoBehaviour
     public Color tallyHitColor  = new(0.30f, 1f, 0.45f, 1f);
     [Tooltip("A shot that missed the tower: red.")]
     public Color tallyMissColor = new(1f, 0.28f, 0.28f, 1f);
-    [Tooltip("A round that ran out with no shot - its time limit, or its crossing cap: orange.")]
+    [Tooltip("A round that ran out with no shot - its time limit, its crossing cap or its flip cap: orange.")]
     public Color tallyRanOutColor = new(1f, 0.68f, 0.2f, 1f);
     [Tooltip("The empty ring. Bright enough to be found against the sky, dim enough not to " +
              "compete with the filled pips beside it.")]
@@ -169,12 +162,12 @@ public class UIManager : MonoBehaviour
     public string calloutCrossingCapText = "TOO MANY PASSES!";
     [Tooltip("Shockwave: fired inside the detection window after a frame-rate flip.")]
     public string calloutShockwaveHitText = "DESTROYED!";
-    [Tooltip("Shockwave: fired before any frame-rate flip occurred.")]
+    [Tooltip("Fired before the frame rate had changed: before any flip on shockwave, before any crossing on a laser level.")]
     public string calloutEarlyText = "TOO EARLY!";
     [Tooltip("Shockwave: fired after a flip's detection window had already closed.")]
     public string calloutLateText = "TOO LATE!";
     [Tooltip("Shockwave: all allowed flips passed unanswered.")]
-    public string calloutShockwaveTimeoutText = "CHANCES MISSED!";
+    public string calloutFlipCapText = "CHANCES MISSED!";
 
     [Header("Hit / Miss Callout")]
     public string calloutHitText  = "Hit!";
@@ -201,7 +194,7 @@ public class UIManager : MonoBehaviour
 
     // What the bar is showing, where it is heading, and how fast — the spring's state, stepped
     // in Update only while the two differ. The target is the most the phase has reached: the bar
-    // never goes backward — see RoundProgress — so a phase is over when it reaches 1.
+    // never goes backward — see QuestProgress — so a phase is over when it reaches 1.
     float _progressShown;
     float _progressPeak;
     float _progressVelocity;
@@ -368,38 +361,38 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
-    /// A round that ended with no shot — its time limit ran out, or the UFO crossed the tower too
-    /// many times. Its own wording rather than "Miss!": the participant did not aim badly, they did
-    /// not answer, and that is a different thing to correct.
+    /// A response or run-out with its own wording rather than "Miss!": a shockwave detection, a press too early or too
+    /// late, or a round that ran out (its time limit, its crossing cap or its flip cap). The participant did not aim
+    /// badly, and that is a different thing to correct.
     /// </summary>
-    public void DisplayOutcomeCallout(TrialOutcome outcome, float totalScore)
+    public void DisplayOutcomeCallout(ResponseOutcome outcome, float totalScore)
     {
         RefreshScoreText();
 
         switch (outcome)
         {
-            case TrialOutcome.Detected:
+            case ResponseOutcome.Detected:
                 // The blast's own violet flash is already up: a green wash over it would fight it.
                 PulseScore(new Color(0.2f, 1f, 0.3f, 1f), positive: true);
                 ShowCallout(true, calloutShockwaveHitText, calloutHitColor);
                 break;
 
-            case TrialOutcome.Early:
+            case ResponseOutcome.Early:
                 TriggerMissFlash(tallyRanOutColor);
                 ShowCallout(false, calloutEarlyText, tallyRanOutColor);
                 break;
 
-            case TrialOutcome.Late:
+            case ResponseOutcome.Late:
                 TriggerMissFlash();
                 ShowCallout(false, calloutLateText, calloutMissColor);
                 break;
 
-            case TrialOutcome.Timeout:
+            case ResponseOutcome.FlipCap:
                 TriggerMissFlash(tallyRanOutColor);
-                ShowCallout(false, calloutShockwaveTimeoutText, tallyRanOutColor);
+                ShowCallout(false, calloutFlipCapText, tallyRanOutColor);
                 break;
 
-            case TrialOutcome.CrossingCap:
+            case ResponseOutcome.CrossingCap:
                 TriggerMissFlash(tallyRanOutColor);
                 ShowCallout(false, calloutCrossingCapText, tallyRanOutColor);
                 break;
@@ -441,7 +434,7 @@ public class UIManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Takes the callout down early. The TOO LATE re-gate puts TRY AGAIN! in the same spot, and
+    /// Takes the callout down early. A TOO LATE puts TRY AGAIN! in the same spot, and
     /// one word replacing another there is the handoff — two words stacked would be a mess.
     /// Safe with no callout up.
     /// </summary>
@@ -532,7 +525,7 @@ public class UIManager : MonoBehaviour
         if (p.PracticeMode)
             return ExperimentDirector.Instance != null ? ExperimentDirector.Instance.PracticeProgress : 0f;
 
-        return RoundProgress.Of(p.ActiveStaircase, p.PosteriorSD);
+        return QuestProgress.Of(p.ActiveStaircase, p.PosteriorSD);
     }
 
     // The fill is anchor-stretched to its track, so its right anchor IS the fraction — no sprite,

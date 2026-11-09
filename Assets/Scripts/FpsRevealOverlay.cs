@@ -11,10 +11,8 @@ namespace JndUfo
     ///   the slower — with the rate actually delivered underneath, while each side of the screen
     ///   slowly takes on its colour.
     /// - On temporal shockwave blocks (<see cref="ShowShockwave"/>): <b>no left/right split</b>.
-    ///   Instead, a single unified full-sky violet/cyan wash and a centred temporal alternation
-    ///   readout in the upper sky where the whole-screen rate rolls from <c>baseFps</c> to
-    ///   <c>alteredFps</c> and alternates between them above the temporal sequence line
-    ///   (<c>500 FPS  &gt;&gt;  60 FPS  &gt;&gt;  500 FPS</c>) and measured values.
+    ///   Instead, one full-sky wash in the faster or slower colour and a readout in the upper sky of the
+    ///   round's last change: the rate it WAS and the rate it is NOW, each with its frame time.
     /// </summary>
     public class FpsRevealOverlay : MonoBehaviour
     {
@@ -24,8 +22,6 @@ namespace JndUfo
         [Tooltip("The side that ran at the LOWER frame rate. Blue against orange stays distinct for " +
                  "the common forms of colour blindness.")]
         public Color slowerColor = new Color(1.00f, 0.58f, 0.22f, 1f);
-        [Tooltip("Primary electric-violet accent for the shockwave temporal reveal.")]
-        public Color shockwaveColor = new Color(0.22f, 0.03f, 0.98f, 1f);
         [Tooltip("Opacity the tint deepens to at its strongest, in the band just beyond the hit-zone " +
                  "lines. It starts fully transparent.")]
         [Range(0f, 1f)] public float washAlpha = 0.15f;
@@ -166,11 +162,11 @@ namespace JndUfo
         /// Spatial reveal for laser blocks (<c>manual</c>, <c>scroll</c>, <c>auto</c>): splits the
         /// screen left and right at <paramref name="towerBase"/>.
         /// </summary>
-        public void Show(PerturbationController.TrialRecord trial, Vector3 towerBase, float hitRadius,
+        public void Show(PerturbationController.RoundRecord round, Vector3 towerBase, float hitRadius,
                          float delaySec = 0f, float holdSec = 0f, bool track = false, float settleShiftX = 0f)
         {
             if (_root == null) Build();
-            if (_root == null || !trial.valid) return;
+            if (_root == null || !round.valid) return;
 
             _shockwaveMode = false;
             _track         = track;
@@ -187,12 +183,12 @@ namespace JndUfo
 
             RefreshWashTexture();
 
-            bool leftFaster = trial.LeftFps >= trial.RightFps;
-            Configure(_left,  trial.LeftFps,  trial.MeasuredLeftFps,
-                      trial.alteredSide == PerturbationController.Side.Left,  trial.baseFps,
+            bool leftFaster = round.LeftFps >= round.RightFps;
+            Configure(_left,  round.LeftFps,  round.MeasuredLeftFps,
+                      round.alteredSide == PerturbationController.Side.Left,  round.baseFps,
                       leftFaster ? fasterColor : slowerColor);
-            Configure(_right, trial.RightFps, trial.MeasuredRightFps,
-                      trial.alteredSide == PerturbationController.Side.Right, trial.baseFps,
+            Configure(_right, round.RightFps, round.MeasuredRightFps,
+                      round.alteredSide == PerturbationController.Side.Right, round.baseFps,
                       leftFaster ? slowerColor : fasterColor);
 
             Place(split, zone);
@@ -215,10 +211,10 @@ namespace JndUfo
         /// left and right sides. Instead, shows a clean, floating side-by-side transition readout
         /// in the upper sky matching the exact typography and minimalist elegance of laser mode.
         /// </summary>
-        public void ShowShockwave(PerturbationController.TrialRecord trial, float delaySec = 0f, float holdSec = 0f)
+        public void ShowShockwave(PerturbationController.RoundRecord round, float delaySec = 0f, float holdSec = 0f)
         {
             if (_root == null) Build();
-            if (_root == null || !trial.valid) return;
+            if (_root == null || !round.valid) return;
 
             _shockwaveMode = true;
             _track         = false;
@@ -229,9 +225,9 @@ namespace JndUfo
             _swRoot.gameObject.SetActive(true);
 
             // The last change the participant met: what it was and what it became. Before any, just the base.
-            bool changed = trial.changeToFps > 0 && trial.changeFromFps > 0;
-            int  wasFps  = changed ? trial.changeFromFps : trial.baseFps;
-            int  nowFps  = changed ? trial.changeToFps   : trial.baseFps;
+            bool changed = round.changeToFps > 0 && round.changeFromFps > 0;
+            int  wasFps  = changed ? round.changeFromFps : round.baseFps;
+            int  nowFps  = changed ? round.changeToFps   : round.baseFps;
             _swRolls = wasFps != nowFps;
 
             _swWasFps   = wasFps;

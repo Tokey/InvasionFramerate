@@ -81,7 +81,7 @@ namespace JndUfo
         readonly Color _hintIdleColor  = new Color(1f, 0.74f, 0.24f, 0.85f);
         readonly Color _hintAlertColor = new Color(1f, 0.30f, 0.22f, 1f);
 
-        [Header("Between-Trial Gate")]
+        [Header("Between-Round Gate")]
         [Tooltip("Shown for the frame or two the round's log rows take to reach disk, before " +
                  "READY. Names the pause so a hitch there reads as bookkeeping, not as a change " +
                  "of frame rate.")]
@@ -91,7 +91,7 @@ namespace JndUfo
         public string gateHoldText = "READY…";
         [Tooltip("The starting gun itself. Shaken, then the gate lifts and firing comes back.")]
         public string gateGoText    = "GO!";
-        [Tooltip("Shown when a shockwave round re-gates after a TOO LATE press.")]
+        [Tooltip("Shown when a shockwave round goes on after a TOO LATE press.")]
         public string gateRetryText = "TRY AGAIN!";
         [Tooltip("How much of the play area the reset veil covers. Opaque would hide the pan and " +
                  "the skybox spin, which are what sell the scene changing location; at 0.8 they still " +
@@ -204,7 +204,7 @@ namespace JndUfo
             _alertStart    = Time.realtimeSinceStartup;
             _alertReleased = false;
             // How long the PUNCH runs, not how long the line stays up — the line holds until it
-            // is released or the trial ends. This is only the floor on how long an alert must be
+            // is released or the round ends. This is only the floor on how long an alert must be
             // readable before either is allowed to take it away.
             _alertHold     = Mathf.Max(HintPunchMinSec, holdSec);
         }
@@ -213,7 +213,6 @@ namespace JndUfo
         /// The alert's reason has passed with the round still live, so hand back to the standing
         /// prompt once the punch has been on screen long enough to read. The next trigger flashes
         /// the alert afresh. Harmless to call every frame, and a no-op outside the alert state.
-        /// (Unused by the frame-rate task, whose alert holds until the shot.)
         /// </summary>
         public void ReleaseAlertHint()
         {
@@ -246,10 +245,10 @@ namespace JndUfo
             _idleText = "";
         }
 
-        // ── Between-trial gate: "READY…" while the scene resets, then "GO!" ───
+        // ── Between-round gate: "READY…" while the scene resets, then "GO!" ───
 
         /// <summary>
-        /// Covers the between-trial reset: a veil over the play area and a pulsing "READY…".
+        /// Covers the between-round reset: a veil over the play area and a pulsing "READY…".
         ///
         /// It masks as well as instructs. The camera pan, the tower move and whatever the runtime
         /// does with the frame it happens to be on all land in this window, and a hitch there is
@@ -274,7 +273,7 @@ namespace JndUfo
 
         /// <summary>
         /// The veil with no word on it. For a reset that plays after the phase has already ended
-        /// (the last practice round, the trial that finished the staircase): the scene still has
+        /// (the last practice round, the response that finished the staircase): the scene still has
         /// to reset under cover, because the next prompt lands on whatever it leaves — but READY…
         /// would promise a GO! that is not coming.
         /// </summary>
@@ -443,7 +442,7 @@ namespace JndUfo
             //
             //   a release            ReleaseAlertHint — the standing prompt comes back until the
             //                        next trigger.
-            //   the trial ending     HideIdleHint empties _idleText, and the line clears.
+            //   the round ending     HideIdleHint empties _idleText, and the line clears.
             //
             // Both wait for the punch to have been readable first, or a participant who fires on
             // the crossing frame would never get to read what they were answering.
@@ -464,7 +463,7 @@ namespace JndUfo
 
             // Strobes to white over the alert colour while the punch lasts. It settles INTO the
             // alert colour rather than back toward the standing prompt's amber — the instruction on
-            // screen for the rest of the trial is "fire", so it has to keep looking like one.
+            // screen for the rest of the round is "fire", so it has to keep looking like one.
             float strobe = (0.5f + 0.5f * Mathf.Sin(t * 40f)) * decay;
             Color hot    = Color.Lerp(_hintAlertColor, Color.white, strobe);
 
@@ -564,7 +563,7 @@ namespace JndUfo
             // against the top of the screen and clip it.
             _hintRestPos = _hintPlate.anchoredPosition;
 
-            // ── Between-trial gate (veil + "READY…" / "GO!") ─────────────────
+            // ── Between-round gate (veil + "READY…" / "GO!") ─────────────────
             _gateRoot = NewRect("Gate", canvasGo.transform,
                                  Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
             _veil = _gateRoot.AddComponent<Image>();

@@ -10,11 +10,11 @@ namespace JndUfo
     /// Owns the session's three CSV logs and the buffering policy around them.
     ///
     ///   Data/Logs/&lt;id&gt;/SessionLog_&lt;id&gt;.csv   one row per BLOCK, incl. that block's QUEST+ result
-    ///   Data/Logs/&lt;id&gt;/ShotLog_&lt;id&gt;.csv      one row per round (one response)
+    ///   Data/Logs/&lt;id&gt;/ShotLog_&lt;id&gt;.csv      one row per press, and one for a round that runs out
     ///   Data/Logs/&lt;id&gt;/PlayerLog_&lt;id&gt;.csv    one row per rendered frame
     ///
-    /// A block is one QUEST+ run at one base frame rate; a round is one frame-rate split plus the
-    /// shot that answers it. Every staircase output — threshold, posterior SD, slope, trial count,
+    /// A block is one QUEST+ run at one base frame rate; a round is one frame-rate split, or on shockwave one stretch of
+    /// flips, up to the response that ends it. Every staircase output — threshold, posterior SD, slope, trial count,
     /// stop reason — is a property of the run, so it lives in the session row; the shot rows carry
     /// the split presented, what was actually delivered, and where the shot landed.
     ///
@@ -80,18 +80,18 @@ namespace JndUfo
         readonly List<TickSample> _ticks = new List<TickSample>(TickCapacity);
         readonly List<ShotSample> _shots = new List<ShotSample>(256);
 
-        static string OutcomeCell(TrialOutcome outcome) => outcome switch
+        static string OutcomeCell(ResponseOutcome outcome) => outcome switch
         {
-            TrialOutcome.Shot        => "shot",
-            TrialOutcome.Detected    => "detected",
-            TrialOutcome.Early       => "early",
-            TrialOutcome.Late        => "late",
-            TrialOutcome.Timeout     => "timeout",
-            TrialOutcome.Expired     => "expired",
-            TrialOutcome.CrossingCap => "crossingCap",
-            TrialOutcome.PressCooldown => "cooldown",
-            TrialOutcome.PressLockout  => "lockout",
-            TrialOutcome.PressNotLive  => "notLive",
+            ResponseOutcome.Shot        => "shot",
+            ResponseOutcome.Detected    => "detected",
+            ResponseOutcome.Early       => "early",
+            ResponseOutcome.Late        => "late",
+            ResponseOutcome.FlipCap     => "flipCap",
+            ResponseOutcome.Expired     => "expired",
+            ResponseOutcome.CrossingCap => "crossingCap",
+            ResponseOutcome.PressCooldown => "cooldown",
+            ResponseOutcome.PressLockout  => "lockout",
+            ResponseOutcome.PressNotLive  => "notLive",
             _                        => "shot",
         };
 
@@ -165,7 +165,7 @@ namespace JndUfo
                 "jndMedianDiffMs", "jndModeDiffMs", "jndCI95LoDiffMs", "jndCI95HiDiffMs", "jndRangeEdge",
                 "slopeEstimate", "lapseEstimate", "staircaseTrials", "lastDiffFps", "lastDiffMs",
                 // performance
-                "trials", "shotsFired", "hits", "accuracy", "score",
+                "rounds", "shotsFired", "hits", "accuracy", "score",
                 "roundsExpired", "roundsCrossingCapped", "avgRoundDurationSec",
                 // exploration
                 "avgCrossingsPerRound", "shotsWithoutCrossing", "avgSinceLastCrossingSec",
@@ -184,7 +184,7 @@ namespace JndUfo
                 "avgFirstCrossingSec", "avgCrossingSpeed", "avgShotUfoSpeed",
                 "medianSinceLastCrossingSec", "avgMissAlongTravelX",
                 // the block's frame time; every kind of press; the reaction times; frame times
-                "baseFrameMs", "ftDirection", "swDetections", "earlyFires", "swLateFires", "swTimeouts",
+                "baseFrameMs", "ftDirection", "swDetections", "earlyFires", "swLateFires", "roundsFlipCapped",
                 "lockoutPresses", "cooldownPresses", "notLivePresses", "roundsNotCounted",
                 "avgReactionSec", "sdReactionSec", "medianReactionSec", "minReactionSec", "maxReactionSec",
                 "shotsPerMinute", "p95FrameTimeMs", "p99FrameTimeMs", "baseP99FrameTimeMs", "alteredP99FrameTimeMs",
@@ -201,7 +201,7 @@ namespace JndUfo
                 "crossings", "lastCrossingAtSec", "sinceLastCrossingSec",
                 // outcome
                 "outcome", "playerFired", "isHit", "countedByStaircase", "totalScore",
-                "trialStartSec", "firedAtSec", "roundDurationSec",
+                "roundStartSec", "firedAtSec", "roundDurationSec",
                 "hitX", "missDistX", "towerX", "ufoY", "side",
                 // QUEST+ posterior after this response (blank in practice)
                 "threshDiffFps", "threshDiffMs", "sd", "slopeEstimate", "lapseEstimate",
@@ -209,7 +209,7 @@ namespace JndUfo
                 "camX", "ufoViewportX", "towerViewportX", "ufoVelX", "ufoXAtStart",
                 "firstCrossingAtSec", "meanCrossingSpeed", "lastCrossingSpeed",
                 // the press, and the state it met
-                "attemptInRound", "roundEnded", "inputDevice", "firingEnabled",
+                "shotInRound", "roundEnded", "inputDevice", "firingEnabled",
                 "capFps", "capFrameMs", "pacedBy", "windowOpen",
                 // the last change of frame rate before it: how long ago, how much, and where the ship was
                 "reactionSec", "framesSinceLastChange", "changesSinceLastPress",
@@ -333,7 +333,7 @@ namespace JndUfo
                 CsvTable.I(qp != null ? qp.TrialCount : 0),
                 CsvTable.F(stats.LastDiffFps, 0), CsvTable.F(stats.LastDiffMs, 3),
 
-                CsvTable.I(stats.Trials), CsvTable.I(stats.ShotsFired), CsvTable.I(stats.Hits),
+                CsvTable.I(stats.Rounds), CsvTable.I(stats.ShotsFired), CsvTable.I(stats.Hits),
                 CsvTable.F(stats.Accuracy, 4), CsvTable.F(stats.Score, 2),
                 CsvTable.I(stats.RoundsExpired), CsvTable.I(stats.RoundsCrossingCapped),
                 CsvTable.F(stats.AvgRoundDurationSec, 3),
@@ -362,7 +362,7 @@ namespace JndUfo
 
                 CsvTable.F(_config != null ? 1000f / _config.baseFps : float.NaN, 3),
                 _config != null ? _config.FtDirectionCell : "",
-                CsvTable.I(stats.Detections), CsvTable.I(stats.EarlyFires), CsvTable.I(stats.LateFires), CsvTable.I(stats.Timeouts),
+                CsvTable.I(stats.Detections), CsvTable.I(stats.EarlyFires), CsvTable.I(stats.LateFires), CsvTable.I(stats.RoundsFlipCapped),
                 CsvTable.I(stats.LockoutPresses), CsvTable.I(stats.CooldownPresses), CsvTable.I(stats.NotLivePresses),
                 CsvTable.I(stats.RoundsNotCounted),
                 CsvTable.F(stats.AvgReactionSec, 4), CsvTable.F(stats.SdReactionSec, 4), CsvTable.F(stats.MedianReactionSec, 4),
@@ -420,7 +420,7 @@ namespace JndUfo
                          .Cell(s.crossings).Cell(s.lastCrossingAtSec, 4).Cell(s.sinceLastCrossingSec, 4)
                          .Cell(OutcomeCell(s.outcome)).Cell(s.playerFired).Cell(s.isHit)
                          .Cell(s.countedByStaircase).Cell(s.totalScore, 2)
-                         .Cell(s.trialStartSec, 4).Cell(s.firedAtSec, 4).Cell(s.roundDurationSec, 4)
+                         .Cell(s.roundStartSec, 4).Cell(s.firedAtSec, 4).Cell(s.roundDurationSec, 4)
                          .Cell(s.hitX, 4).Cell(s.missDistX, 4).Cell(s.towerX, 4).Cell(s.ufoY, 4)
                          .Cell(s.side)
                          .Cell(s.threshDiffFps, 3).Cell(s.threshDiffMs, 4).Cell(s.sd, 3)
@@ -428,7 +428,7 @@ namespace JndUfo
                          .Cell(s.camX, 4).Cell(s.ufoViewportX, 4).Cell(s.towerViewportX, 4)
                          .Cell(s.ufoVelX, 3).Cell(s.ufoXAtStart, 4).Cell(s.firstCrossingAtSec, 4)
                          .Cell(s.meanCrossingSpeed, 3).Cell(s.lastCrossingSpeed, 3)
-                         .Cell(s.attemptInRound).Cell(s.roundEnded).Cell(s.inputDevice ?? "").Cell(s.firingEnabled)
+                         .Cell(s.shotInRound).Cell(s.roundEnded).Cell(s.inputDevice ?? "").Cell(s.firingEnabled)
                          .Cell(s.capFps).Cell(s.capFrameMs, 3).Cell(PaceCells[(int)s.pacedBy]).Cell(s.windowOpen)
                          .Cell(s.reactionSec, 4)
                          .Cell(s.framesSinceLastChange >= 0 ? CsvTable.I(s.framesSinceLastChange) : "")

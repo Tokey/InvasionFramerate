@@ -19,10 +19,7 @@ namespace JndUfo
         public float TotalScore       { get; private set; }
         public float LastShotScore    { get; private set; }
         public float LastShotDistance { get; private set; }
-        public int   ShotCount        { get; private set; }
         public float HitPoints        => hitPoints;
-        public float CloseRadius      => closeRadius;
-        public float MissPoints       => missPoints;
 
         /// <summary>
         /// Responses this phase that landed, and responses that did not — the HUD's tally. Kept here
@@ -38,7 +35,7 @@ namespace JndUfo
 
         /// <summary>How the last scored round ended — a shot, or running out. The tally colours a
         /// ran-out round apart from a shot that missed.</summary>
-        public TrialOutcome LastOutcome { get; private set; }
+        public ResponseOutcome LastOutcome { get; private set; }
 
         /// <summary>(lastShotScore, totalScore, distance)</summary>
         public event Action<float, float, float> OnScored;
@@ -67,8 +64,7 @@ namespace JndUfo
 
             LastShotScore = pts;
             TotalScore   += pts;
-            ShotCount    += 1;
-            LastOutcome   = TrialOutcome.Shot;
+            LastOutcome   = ResponseOutcome.Shot;
             Tally(hit);
             OnScored?.Invoke(LastShotScore, TotalScore, dist);
             return pts;
@@ -76,9 +72,9 @@ namespace JndUfo
 
         /// <summary>
         /// Scores a shockwave or ran-out outcome. When <paramref name="countInTally"/> is false
-        /// (a forgiven TOO EARLY press), neither the score nor the HUD pip tally is changed.
+        /// (a laser shot before any crossing), neither the score nor the HUD pip tally is changed.
         /// </summary>
-        public float ScoreOutcome(TrialOutcome outcome, bool isHit = false, bool countInTally = true)
+        public float ScoreOutcome(ResponseOutcome outcome, bool isHit = false, bool countInTally = true)
         {
             LastShotDistance = float.NaN;
             if (!countInTally)
@@ -90,7 +86,6 @@ namespace JndUfo
             float pts = isHit ? hitPoints : missPoints;
             LastShotScore = pts;
             TotalScore   += pts;
-            ShotCount    += 1;
             LastOutcome   = outcome;
             Tally(isHit);
             OnScored?.Invoke(LastShotScore, TotalScore, float.NaN);
@@ -109,11 +104,10 @@ namespace JndUfo
             TotalScore       = 0f;
             LastShotScore    = 0f;
             LastShotDistance = 0f;
-            ShotCount        = 0;
             Hits             = 0;
             Misses           = 0;
             LastWasHit       = false;
-            LastOutcome      = TrialOutcome.Shot;
+            LastOutcome      = ResponseOutcome.Shot;
             OnScored?.Invoke(0f, 0f, 0f);
         }
     }

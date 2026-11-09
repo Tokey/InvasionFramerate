@@ -20,15 +20,17 @@ number = `blockIndex` in the logs.
 
 | Group | Columns |
 |---|---|
-| Level | `levelType` (`manual` = the mouse flies the UFO, camera still / `scroll` = the mouse flies it, the world scrolls / `auto` = the UFO flies itself, the participant only clicks; missing = the scene's World Scroll box), `scrollFollow` (`locked` / `handheld` / blank = Inspector) |
+| Level | `levelType` (`manual` = the mouse flies the UFO, camera still / `scroll` = the mouse flies it, the world scrolls / `auto` = the UFO flies itself, the participant only clicks / `shockwave` = it flies itself while the whole screen flips between the two rates; missing = the scene's World Scroll box), `scrollFollow` (`locked` / `handheld` / blank = Inspector) |
 | Stimulus | `baseFrameMs` (2 or 16.667); `ftDirection` (`up` = altered frame time Δ ms longer, `down` = Δ ms shorter; older configs: `baseFps`, `direction` of the frame rate); `minDiffMs`, `maxDiffMs`, `diffStepMs` (the Δ grid QUEST+ searches, ms of frame time: min, min + step, … max, each shown at the nearest whole fps; logs before this have `minDiffFps`, `maxDiffFps`, `diffStepFps` instead); `alteredSide` (`random` per round / `left` / `right`); `frameLimiter` (`precise` busy-wait / `unity` targetFrameRate) |
 | Round bounds | `maxCrossingsPerRound` (0 = no cap), `roundTimeoutSec` |
 | Scoring | `hitPoints`, `missPoints` (`hitPoints` also defines `isHit`) |
-| QUEST+ | `threshCount` (θ grid over `minDiffMs`–`maxDiffMs`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ: 0.256 on 16:9 for closeRadius=6.0), `maxTrials`, `minTrials`, `stopSD` (ms; fps in logs with the fps columns) |
-| Autopilot (auto rows) | `autoSpeed` (world units/s, 20), `autoPath` (`linear` the infinity sign at constant speed / `sine`), `autoSweep` (share of the screen width, 0.92), `autoTurnSec` (seconds a lobe of the infinity sign takes, 1), `autoHeight` (0–1 of the flight band, 0.38), `autoBobAmp` (0.25 units) and `autoBobHz` (1.1): the very slight wobble, `autoStart` (`random` / `continue`). Blank on other rows. |
+| QUEST+ | `threshCount` (θ grid over `minDiffMs`–`maxDiffMs`), `slopeMin/Max/Count`, `lapseMin/Max/Count`, `guessRate` (γ: 0.256 on 16:9 for closeRadius=6.0; on shockwave 0.36, `swWindowSec` / (`swFlipDelayMaxSec` − `swFlipDelayMinSec`)), `maxTrials`, `minTrials`, `stopSD` (ms; fps in logs with the fps columns) |
+| Autopilot (auto and shockwave rows) | `autoSpeed` (world units/s, 20), `autoPath` (`linear` the infinity sign at constant speed / `sine`), `autoSweep` (share of the screen width, 0.92), `autoTurnSec` (seconds a lobe of the infinity sign takes, 1), `autoHeight` (0–1 of the flight band, 0.38), `autoBobAmp` (0.25 units) and `autoBobHz` (1.1): the very slight wobble, `autoStart` (`random` / `continue`). Blank on other rows. |
+| Shockwave | `swFlipDelayMinSec`, `swFlipDelayMaxSec` (the random wait before every flip, s: 1 and 3.5), `swWindowSec` (the response window after a flip, s: 0.9), `swMaxEarlyPerRound` (early presses a main round forgives: 1), `maxFlipsPerRound` (unanswered flips before the round ends: 5). Blank on other rows. |
+| Debug | `showDebug` (the on-screen readout: 0 for participants) |
 
 Not in the file, pinned in `StudyConfig`: `closeRadius` = 6.0, `crossingDeadZone` = 0.25,
-`fireCooldown` = 0.25 s, `revealHoldSec` = 2 s, `readyBeatSec` = 0.5 s.
+`fireCooldown` = 0.25 s, `revealHoldSec` = 2 s, `readyBeatSec` = 0.5 s, `practiceMaxFlipsPerRound` = 3, `swEarlyLockoutSec` = 1 s.
 
 ## `Data/PracticeRounds.csv` — the practice phases
 
@@ -42,9 +44,9 @@ is altered is random. A round's reveal plays at its own base.
 `row, pos1 … posN`. Each cell is a 1-based row number in `ExperimentConfig.csv`; the row a
 session uses is `((sessionId − 1) mod rowCount) + 1`. Comment lines (`#`) are ignored.
 
-With 6 settings the shipped design is a **Williams** design of 6 rows (pos1 to pos6):
+With 4 settings the shipped design is a **Williams** design of 4 rows (pos1 to pos4):
 every setting takes every position equally often *and* every ordered pair of settings
-occurs exactly once. Run participants in groups of 6 for full balance. Validated at load.
+occurs exactly once. Run participants in groups of 4 for full balance. Validated at load.
 
 ---
 
@@ -65,14 +67,14 @@ phase is `phase = practice` plus its `levelType`.
 |---|---|
 | Where / when | `displayHz`, `resolution`, `startIso`, `endIso`, `sessionDurationSec`, `playDurationSec`, `endReason` (`converged` / `maxTrials` / `abandoned`) |
 | QUEST+ result | `jndFrameTimeDiffMs` (posterior **mean** of θ, ms), `jndAlteredFps` and `jndDiffFps` (the same θ as a frame rate and a frame-rate difference), `sd`, `priorSd` (ms), `jndMedianDiffMs`, `jndModeDiffMs`, `jndCI95LoDiffMs`, `jndCI95HiDiffMs` and their `…DiffFps` restatements, `jndRangeEdge` (`top` / `bottom` / empty: the estimate is pressed against an end of the Δ range), `slopeEstimate` (β̂), `lapseEstimate` (λ̂), `staircaseTrials`, `lastDiffMs`, `lastDiffFps` |
-| Performance | `trials`, `shotsFired`, `hits`, `accuracy`, `score`, `roundsExpired`, `roundsCrossingCapped`, `avgRoundDurationSec` |
+| Performance | `rounds`, `shotsFired`, `hits`, `accuracy`, `score`, `roundsExpired`, `roundsCrossingCapped`, `avgRoundDurationSec` |
 | Exploration | `avgCrossingsPerRound`, `shotsWithoutCrossing`, `avgSinceLastCrossingSec` |
 | Shot geometry (world units on X) | `avgMissDistX`, `avgMissDistXMissesOnly`, `medianMissDistX`, `sdMissDistX`, `maxMissDistX` |
 | Movement | `totalMousePathPx`, `avgMouseSpeedPxPerSec`, `peakMouseSpeedPxPerSec`, `totalUfoPathWorld` |
 | Frame delivery | `frameCount`, `liveFrames`, `baseSideFrames`, `baseSideMeasuredFps`, `baseFrameTimeSdMs`, `alteredSideFrames`, `alteredFrameTimeErrPct`, `alteredFrameTimeSdMs`, `slowFrames`, `maxLiveFrameTimeMs` |
 | Screen and motion | `viewWidthWorld` (the view's width at the play plane: screen x = `0.5 + (x − camX) / viewWidthWorld`), `guessRateScreen` (γ this screen implies for the level), `avgFirstCrossingSec`, `avgCrossingSpeed` (UFO speed at crossings), `avgShotUfoSpeed`, `medianSinceLastCrossingSec`, `avgMissAlongTravelX` (mean `missDistX × sign(ufoVelX)`: + = shots land past the tower, late) |
 
-| Added | `baseFrameMs`, `ftDirection`, `swDetections`, `earlyFires`, `swLateFires`, `swTimeouts`, `lockoutPresses`, `cooldownPresses`, `notLivePresses`, `roundsNotCounted`, `avg/sd/median/min/maxReactionSec` (over hits), `shotsPerMinute`, `p95FrameTimeMs`, `p99FrameTimeMs`, `baseP99FrameTimeMs`, `alteredP99FrameTimeMs` |
+| Added | `baseFrameMs`, `ftDirection`, `swDetections`, `earlyFires`, `swLateFires`, `roundsFlipCapped`, `lockoutPresses`, `cooldownPresses`, `notLivePresses`, `roundsNotCounted`, `avg/sd/median/min/maxReactionSec` (over hits), `shotsPerMinute`, `p95FrameTimeMs`, `p99FrameTimeMs`, `baseP99FrameTimeMs`, `alteredP99FrameTimeMs` |
 
 `endReason` can also be `roundCap`: 3 × `maxTrials` rounds went by, because uncounted rounds do not advance QUEST+.
 
@@ -99,19 +101,17 @@ Every press of the fire button in an open phase has a row with the state of the 
 | Position in run | `roundNumber`, `timeSinceStartSec` |
 | The split presented | `diffMs` (the stimulus: the frame-time difference the two caps really produce), `diffFps` (the same as a frame-rate difference), `alteredFps`, `alteredSide` (`Left`/`Right` of the tower) |
 | What was delivered | `measuredBaseFps`, `measuredAlteredFps` (blank if the UFO never went there), `baseSideSec`, `alteredSideSec`, `lateFrames` (precise limiter: frames that overran) |
-| Exploration | `crossings`, `lastCrossingAtSec`, `sinceLastCrossingSec` |
-| Outcome | `outcome` (`shot` / `detected` / `early` / `late` / `timeout` / `expired` / `crossingCap` / `cooldown` / `lockout` / `notLive`), `playerFired`, `isHit`, `countedByStaircase`, `totalScore` |
-| Timing | `trialStartSec` (firing handed back at GO!), `firedAtSec`, `roundDurationSec` |
+| Exploration | `crossings`, `lastCrossingAtSec`, `sinceLastCrossingSec` (on a shockwave row these and every other `…Crossing…` column hold the flips) |
+| Outcome | `outcome` (`shot` / `detected` / `early` / `late` / `flipCap` / `expired` / `crossingCap` / `cooldown` / `lockout` / `notLive`), `playerFired`, `isHit`, `countedByStaircase`, `totalScore` |
+| Timing | `roundStartSec` (firing handed back at GO!), `firedAtSec`, `roundDurationSec` |
 | Geometry | `hitX`, `missDistX` (`hitX − towerX`), `towerX`, `ufoY`, `side` (the side the shot was fired from) |
 | Posterior after this round | `threshDiffMs`, `threshDiffFps` (the same θ in fps), `sd` (ms), `slopeEstimate`, `lapseEstimate` (blank on practice rows) |
 | Screen and motion | `camX` (camera rest X), `ufoViewportX`, `towerViewportX` (0 = left edge, 1 = right), `ufoVelX` (UFO velocity at the response over the last 0.1 s, + = right), `ufoXAtStart`, `firstCrossingAtSec`, `meanCrossingSpeed`, `lastCrossingSpeed` |
 
-| The press | `attemptInRound`, `roundEnded`, `inputDevice` (`mouse` / `key`), `firingEnabled`, `capFps`, `capFrameMs`, `pacedBy`, `windowOpen` |
+| The press | `shotInRound`, `roundEnded`, `inputDevice` (`mouse` / `key`), `firingEnabled`, `capFps`, `capFrameMs`, `pacedBy`, `windowOpen` |
 | The last change before it | `reactionSec`, `framesSinceLastChange`, `changesSinceLastPress`, `changeFromFps`, `changeToFps`, `changeFromMs`, `changeToMs`, `changeDeltaMs` (+ = frames got longer), `changeDir` (`slower` / `faster`), `foreperiodSec`, `windowSec`, `changeTimesSec` (`;`-separated), `changeUfoX`, `changeUfoY` |
 | Presses so far this round | `earlyPresses`, `latePresses`, `lockoutPresses`, `cooldownPresses`, `notLivePresses`; `ufoX` (the ship at the press) |
 | In frame time | `baseFrameMs`, `ftDirection`, `alteredFrameMs`, `measuredBaseMs`, `measuredAlteredMs` |
-
-**Older logs** of this study use earlier names: `cfg_swSpikeDelayMinSec` and `cfg_swSpikeDelayMaxSec` for `cfg_swFlipDelayMinSec` and `cfg_swFlipDelayMaxSec`, `cfg_maxSpikesPerRound` for `cfg_maxFlipsPerRound`, `shockwaveEvent` for `shockwaveFlips`, `swEarlyFires` for `earlyFires`. They also have `cfg_swRespikeMinSec` and `cfg_swRespikeMaxSec`, the wait between flips, which is now the same range as the wait before the first.
 
 A shot fired before the frame rate has changed in its round has `outcome = early` and `countedByStaircase = 0`: it never reached QUEST+. On a laser level such a row has `isHit = 0` and scores nothing, wherever it landed (`missDistX` still says where), and it also counts in the SessionLog's `earlyFires`.
 
@@ -125,7 +125,8 @@ A shot fired before the frame rate has changed in its round has `outcome = early
 | Phase | `phase`, `phaseStartIso` |
 | Frame | `roundNumber`, `frameIndex`, `timeSinceStartSec`, `unscaledDeltaMs` |
 | Pacing | `targetFps` (the cap that paced THIS frame — the one `unscaledDeltaMs` measures), `pacedBy` (`base` / `altered` / empty between rounds) |
-| Round | `diffFps`, `alteredSide` (both empty between rounds), `side` (the UFO's side of the tower), `crossed` (1 on a crossing frame) |
+| Round | `diffFps`, `alteredSide` (both empty between rounds), `side` (the UFO's side of the tower; means nothing on a shockwave row, nor does `alteredSide`), `crossed` (1 on a crossing frame; on shockwave, a flip) |
+| Shockwave | `shockwaveFastPhase` (the cap now set, which paces the next frame, is the faster of the round's two rates), `shockwaveWindow` (the response window is open), `shockwaveFlips` (flips so far this round) |
 | Input | `mouseX`, `mouseY`, `mouseDeltaX`, `mouseDeltaY`, `leftButtonDown`, `leftButtonPressed`, `fireKeyDown` |
 | World | `ufoX`, `ufoY`, `towerX` |
 | Shot | `shotFired` (a response was logged — *not* the same as `leftButtonPressed`), `shotHitX` |
@@ -145,6 +146,25 @@ Unity version, editor or build), `system.*` (CPU, GPU, memory), `display.*` (siz
 LatinSquare.csv and PracticeRounds.csv), and `<Type>.<field>` for every public setting of the
 game's components in the scene - e.g. `UIManager.showDebug` (must be `false` for participants),
 `CameraRig.parallax`, `Weather.kind`, `GameManager.worldScrollPeriod`.
+
+---
+
+## Older logs of this study
+
+Logs already recorded keep the names they were written with; nothing rewrites raw data. `audit_logs.py` and
+`level_analysis.py` read both, and a combined `build_db.py` database has both columns, NULL where a session lacks one.
+
+| In older logs | Now |
+|---|---|
+| `cfg_swSpikeDelayMinSec`, `cfg_swSpikeDelayMaxSec` | `cfg_swFlipDelayMinSec`, `cfg_swFlipDelayMaxSec` |
+| `cfg_swRespikeMinSec`, `cfg_swRespikeMaxSec` (the wait after a closed window) | gone: the one flip-delay range sets every wait |
+| `cfg_maxSpikesPerRound` (0 on manual rows) | `cfg_maxFlipsPerRound` (blank on manual rows) |
+| `shockwaveEvent` (PlayerLog) | `shockwaveFlips` |
+| `trials` (SessionLog) | `rounds` |
+| `swEarlyFires`, `swTimeouts` (SessionLog) | `earlyFires`, `roundsFlipCapped` |
+| `trialStartSec`, `attemptInRound` (ShotLog) | `roundStartSec`, `shotInRound` |
+| `outcome` = `timeout` | `outcome` = `flipCap` |
+| `roundsExpired` also counted `timeout` rounds | it counts the time limit only; flip caps are `roundsFlipCapped` |
 
 ---
 

@@ -1,3 +1,4 @@
+"""SD targets for the stutter study: it reads that study's columns through plot_quest.load, so it skips this study's logs."""
 import argparse
 import math
 from pathlib import Path

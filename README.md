@@ -68,7 +68,7 @@ The Console prints `[Build] Copied ExperimentConfig.csv → ...` when the copy w
 The debug readout is set per row by the `showDebug` column (0 for every row now). It sits in the top-right corner and shows:
 
 ```
-FPS JND | MAIN 2/6 | scroll | base 60 up | diff 0.5-14.5 ms step 0.5 | precise limiter
+FPS JND | MAIN 2/4 | scroll | base 60 up | diff 0.5-14.5 ms step 0.5 | precise limiter
 LIVE  diff 3.51 ms: 60 vs 76 fps, altered on RIGHT   (L 60 | R 76)
 measured  L 59.9 | R 76.0   crossings 4   late 0
 now RIGHT @ 76 fps cap | spin 12.3 ms
@@ -89,8 +89,8 @@ To check the end-of-round reveal without playing, use **Tools ▸ JND ▸ Render
 ## Running a participant
 
 1. Start `Invasion.exe`.
-2. The session opens with the **PRACTICE** instruction screen. The participant presses **Space**, sees **GO!**, and plays the five practice rounds. Then each main block opens with its own screen (**MAIN 1/4**, **MAIN 2/4**, …) and **Space** starts it. The first time the order brings a new kind of level, its own **PRACTICE** comes first. Every screen's instructions are the ones for its level (`ExperimentDirector` → `manualInstruction` / `scrollInstruction` / `autoInstruction`).
-3. Controls: **mouse** to fly, **left click** (or **Space**) to fire. In an auto level the mouse flies nothing: **left click** (or **Space**) fires when the UFO is over the boundary.
+2. The session opens with the **PRACTICE** instruction screen. The participant presses **Space**, sees **GO!**, and plays the five practice rounds. Then each main block opens with its own screen (**MAIN 1/4**, **MAIN 2/4**, …) and **Space** starts it. The first time the order brings a new kind of level, its own **PRACTICE** comes first. Every screen's instructions are the ones for its level (`ExperimentDirector` → `manualInstruction` / `scrollInstruction` / `autoInstruction` / `shockwaveInstruction`).
+3. Controls: **mouse** to fly, **left click** (or **Space**) to fire. In an auto level the mouse flies nothing: **left click** (or **Space**) fires when the UFO is over the boundary. In a shockwave level the mouse flies nothing either: **left click** (or **Space**) fires when the frame rate changes.
 4. After the last block the game shows "Thank you", saves everything and closes itself.
 
 Logs go to `Data/Logs/<sessionId>_<runId>/` next to the .exe:
@@ -98,7 +98,7 @@ Logs go to `Data/Logs/<sessionId>_<runId>/` next to the .exe:
 ```
 Data/Logs/3_GTZ3/
   SessionLog_3_GTZ3.csv   one row per block (the threshold is here: jndFrameTimeDiffMs)
-  ShotLog_3_GTZ3.csv      one row per round
+  ShotLog_3_GTZ3.csv      one row per press
   PlayerLog_3_GTZ3.csv    one row per frame
   SessionInfo_3_GTZ3.csv  what it ran on and with: build, machine, display, config hashes, scene settings
   3_GTZ3.db               the same data as SQLite, built at the end
@@ -129,7 +129,7 @@ Data/
 ```
 
 - In the Editor it's next to `Assets`. In a build it's next to the .exe. You can edit these files between participants without rebuilding.
-- If `ExperimentConfig.csv` is missing, the game writes the [default config](#the-default-config). If `LatinSquare.csv` is missing, it writes a balanced square for however many settings the config has.
+- If `ExperimentConfig.csv` is missing, the game writes the [default config](#the-current-config-4-blocks). If `LatinSquare.csv` is missing, it writes a balanced square for however many settings the config has.
 - Empty lines and lines starting with `#` are ignored. Use a dot for decimals. Lists inside one cell use `;`, because `,` separates the columns.
 - Excel works, but make sure it saves with commas and dot decimals. A plain text editor is safer.
 
@@ -164,18 +164,20 @@ The other settings every row shares: `slope` 1 to 7 (10 values), `lapse` 0 to 0.
 
 **guessRate for shockwave** is simply the window over the spread of the wait: 0.9 / (3.5 - 1) = **0.36**. Early presses are deliberately left out of it.
 
-> **Note:** if the file goes missing, the game writes these same four rows (`DefaultCsv()` in `StudyConfig.cs`). A config from before this one, with `baseFps` and `direction` (of the frame rate), still loads.
+> **Note:** if the file goes missing, the game writes these same four rows (`DefaultCsv()` in `StudyConfig.cs`). A config from before this one, with `baseFps` and `direction` (of the frame rate), still loads. Shockwave timing under older column names is not read: the Console reports an error, and that row uses the defaults (1 to 3.5 s, 5 flips).
 
 ### Columns
+
+**Default** is what a blank cell falls back to; where this study's rows use something else, the cell says so.
 
 **The level** (see [Level types](#level-types))
 
 | Column | What it does | Default |
 |---|---|---|
-| `levelType` | `manual`: the mouse flies the UFO. `scroll`: the mouse flies it while the world scrolls. `auto`: the UFO flies itself. `shockwave`: the UFO flies itself while frame rate alternates between `shockwaveFastFps` and `shockwaveSlowFps` after randomized delays. | If the column is missing or blank: `scroll` when `GameManager` → **World Scroll** is ticked in the scene, else `manual`. |
+| `levelType` | `manual`: the mouse flies the UFO. `scroll`: the mouse flies it while the world scrolls. `auto`: the UFO flies itself. `shockwave`: the UFO flies itself while the whole screen's frame rate flips between the base and the altered rate after a random wait. | If the column is missing or blank: `scroll` when `GameManager` → **World Scroll** is ticked in the scene, else `manual`. |
 | `scrollFollow` | Scroll levels: `locked` (the UFO always exactly mid-screen) or `handheld` (the camera follows it like a camera operator, see `GameManager` → **World Scroll Handheld Follow**). Blank leaves the Inspector's choice. | blank |
 
-**The autopilot** (auto levels only; leave them blank on other rows)
+**The autopilot** (auto and shockwave levels; leave them blank on other rows)
 
 | Column | What it does | Default |
 |---|---|---|
@@ -187,26 +189,41 @@ The other settings every row shares: `slope` 1 to 7 (10 values), `lapse` 0 to 0.
 | `autoBobAmp`, `autoBobHz` | The very slight sine wobble on top of the path: amplitude in world units and frequency. 0 flies clean. | 0.25, 1.1 |
 | `autoStart` | Where each later round's flight starts, with the ship hidden under the veil: `random`, a random point of the lap; `continue`, where the last round stopped. A phase's first round always starts from wherever the ship is, because it is in view. | random |
 
+**Shockwave** (shockwave levels; leave them blank on other rows)
+
+| Column | What it does | Default |
+|---|---|---|
+| `swFlipDelayMinSec`, `swFlipDelayMaxSec` | The random wait before every flip, in seconds: from GO! or TRY AGAIN!, from a forgiven early press, and from a closed window. With `swWindowSec` it sets `guessRate`. | 1, 3.5 |
+| `swWindowSec` | How long after a flip a press counts as `detected`, in seconds. | 0.9 |
+| `swMaxEarlyPerRound` | Early presses a main round forgives; the next one ends the round, uncounted. Practice forgives them all. | 1 |
+| `maxFlipsPerRound` | Unanswered flips before the round ends (`flipCap`, a counted miss). Practice stops at 3. | 5 |
+
+**The debug readout**
+
+| Column | What it does | Default |
+|---|---|---|
+| `showDebug` | `1` shows the debug readout on screen. Keep `0` for participants. | 0 |
+
 **The stimulus**
 
 | Column | What it does | Default |
 |---|---|---|
 | `baseFrameMs` | The reference frame time, ms: 2 is 500 fps, 16.667 is 60 fps. One side always runs at exactly this. Between rounds the whole game runs at it too. | 2 / 16.667 |
 | `ftDirection` | `up`: the altered frame time is Δ longer (a lower frame rate). `down`: Δ shorter (a higher one). | up / down |
-| `maxDiffMs` | The biggest Δ QUEST+ may use, in ms of frame time, and the top of its threshold range. It's clamped so the altered side stays at 1 fps or above on a `down` row, and keeps a frame time above zero on an `up` row. | 98 / 14.5 |
+| `maxDiffMs` | The biggest Δ QUEST+ may use, in ms of frame time, and the top of its threshold range. It's clamped so the altered side stays at 1 fps or above on a `down` row, and keeps a frame time above zero on an `up` row. | 14.5; this study 48 / 14.667 |
 | `minDiffMs` | The smallest Δ QUEST+ may use (ms), and the bottom of its threshold range. | 0.5 |
 | `diffStepMs` | Spacing of the Δ values QUEST+ may use (ms): `minDiffMs`, `minDiffMs + step`, … up to `maxDiffMs`. If `maxDiffMs − minDiffMs` is not a multiple of it, the last step is shorter, so the range still ends exactly at `maxDiffMs`. | 0.5 |
 | `alteredSide` | Which side of the tower is altered: `random` (drawn every round), `left` or `right`. | random |
 | `frameLimiter` | How the frame rate is enforced: `unity` or `precise`. See [The frame limiter](#the-frame-limiter). | unity |
 
-> **Whole-number frame rates.** `Application.targetFrameRate` only takes whole numbers, so each step shows the nearest whole fps, and QUEST+ and the logs use the frame-time difference that rate really gives (`diffMs`), not the nominal step. Above about 44 fps one fps is worth less than a step, so the steps stay close to even. Below that, steps start landing on the same rate, and those count once. That makes the slow end of the 500 fps rows sparser than the step: 75 different values out of 196 steps, even up to about 24 ms and up to 9 ms apart at the far end.
+> **Whole-number frame rates.** `Application.targetFrameRate` only takes whole numbers, so each step shows the nearest whole fps, and QUEST+ and the logs use the frame-time difference that rate really gives (`diffMs`), not the nominal step. Above about 44 fps one fps is worth less than a step, so the steps stay close to even. Below that, steps start landing on the same rate, and those count once. That makes the slow end of the 500 fps rows sparser than the step: 65 different values out of 96 steps, even up to about 22 ms and up to 2.4 ms apart at the far end.
 
-**Round limits** (keep at least one of them above 0, or a round could run forever)
+**Round limits** (on a laser row keep at least one of them above 0, or a round could run forever; a shockwave row sets both to 0 and is bounded by `maxFlipsPerRound`)
 
 | Column | What it does | Default |
 |---|---|---|
-| `maxCrossingsPerRound` | Most tower crossings one round may have; the next crossing ends the round as a miss. `0` means no limit. Keep it generous: crossing the tower is how people compare the two rates. | 15 |
-| `roundTimeoutSec` | Time limit per round, in seconds. No shot by then means a miss. `0` turns it off. | 15 |
+| `maxCrossingsPerRound` | Most tower crossings one round may have; the next crossing ends the round as a miss. `0` means no limit. Keep it generous: crossing the tower is how people compare the two rates. | 0; this study 15 (laser), 0 (shockwave) |
+| `roundTimeoutSec` | Time limit per round, in seconds. No shot by then means a miss. `0` turns it off. | 15; this study 20 (laser), 0 (shockwave) |
 
 **Score**
 
@@ -221,15 +238,15 @@ QUEST+ keeps a big table of possible answers for each participant and picks the 
 
 | Column | What it does | Default |
 |---|---|---|
-| `threshCount` | How many threshold values it considers, spread over the same range. Keep them no further apart than a step, `(maxDiffMs − minDiffMs) / diffStepMs + 1`; on a coarser grid the estimate snaps to the nearest value, and the Console warns. | 196 / 29 |
+| `threshCount` | How many threshold values it considers, spread over the same range. Keep them no further apart than a step, `(maxDiffMs − minDiffMs) / diffStepMs + 1`; on a coarser grid the estimate snaps to the nearest value, and the Console warns. | 50; this study 96 / 30 |
 | `slopeMin`, `slopeMax`, `slopeCount` | How sharply noticing goes from "never" to "always". | 1 – 7, 10 values |
 | `lapseMin`, `lapseMax`, `lapseCount` | How often people miss even huge differences (blinks, attention). | 0 – 0.06, 4 values |
-| `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | 0.256 |
-| `maxTrials` | Most main rounds in one block. | 50 |
-| `minTrials` | No early stop before this many rounds. | 8 |
-| `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in ms) is at or below this. 0.5 is one step. In simulation a threshold around 3 ms stops after about 25–30 rounds, and one above about 6 ms usually runs to `maxTrials`. | 0.5 |
+| `guessRate` | Chance level, γ: how often a blind shot lands on the tower anyway. It's **fixed**, never estimated. See below. | this study 0.256 (laser), 0.36 (shockwave) |
+| `maxTrials` | Most responses QUEST+ uses in one block. | 50 |
+| `minTrials` | No early stop before this many. | 8 |
+| `stopSD` | Stop early once QUEST+ is sure enough: the uncertainty of the threshold (posterior SD, in ms) is at or below this. At 1, simulated from the pilot, a manual block stops after a median of 41 to 50 rounds and a shockwave block after about 30. | 0.5; this study 1 |
 
-A block ends when `stopSD` is reached (after `minTrials`) or when it hits `maxTrials`. The SessionLog saves which one happened as `endReason`: `converged` or `maxTrials`.
+A block ends when `stopSD` is reached (after `minTrials`) or when it hits `maxTrials`. The SessionLog saves which one happened as `endReason`: `converged` or `maxTrials` (or `roundCap`, see [Shockwave](#shockwave)).
 
 > **Watch for estimates stuck at the edge of the range.** Someone who never finds the boundary piles QUEST+'s belief against the largest Δ. Its SD collapses there, so the block "converges" in under 20 rounds on a number that only means "somewhere above the range". The session log flags this as `jndRangeEdge = top` (or `bottom` at the other end), and the Console warns. Treat such a block's threshold as a bound, not an estimate.
 
@@ -248,15 +265,15 @@ round,fpsA,fpsB
 
 - Each round shows the two frame rates on either side of the hidden tower. The higher one plays the role of the base, and which side gets the lower one is random, like a main round. Its reveal plays at its own base rate; the next pair's starts at the next GO!.
 - The first column (`round`) is just a label. Order in the file is play order.
-- Practice runs in the level, limiter, round limits and scoring of the main block it comes before. It never feeds QUEST+. Each practice phase is logged with `blockIndex` 0, `phase` = practice and the `levelType` it practised.
-- During practice, a line on screen says `FIND WHERE THE FRAME RATE CHANGES`, and it flashes `FRAME RATE CHANGED — FIRE HERE` every time the UFO crosses the tower. Never in main rounds.
+- Practice runs in the level, limiter, round limits and scoring of the main block it comes before. On shockwave, a practice round ends after 3 unanswered flips rather than 5, and every early press is forgiven. It never feeds QUEST+. Each practice phase is logged with `blockIndex` 0, `phase` = practice and the `levelType` it practised.
+- During practice, a line on screen says `FIND WHERE THE FRAME RATE CHANGES`, and it flashes `FRAME RATE CHANGED — FIRE HERE` every time the UFO crosses the tower. On shockwave it says `WAIT FOR THE FRAME RATE TO CHANGE`, and flashes `FRAME RATE CHANGED — FIRE NOW!` on each flip. Never in main rounds.
 - Delete every row to skip practice. If the file is missing, the game writes these five rounds.
 
 ### The frame limiter
 
 The `frameLimiter` column picks how each frame-rate cap is enforced, per row:
 
-- **`unity`** (default): `Application.targetFrameRate`, Unity's own limiter, as the stutter study used. In the stutter study's Editor logs it held 60 fps frames to about ±0.6 ms.
+- **`unity`** (default): `Application.targetFrameRate`, Unity's own limiter. In the Editor it holds 60 fps frames to about ±0.6 ms.
 - **`precise`**: a busy-wait hooked into the very start of Unity's frame, the same place Unity's own limiter waits, before time is sampled and before input events are processed. Each frame is released exactly one period after the previous one, so frame times land within microseconds of the target, and it adds no input lag beyond what any frame cap implies. The cost: one CPU core runs at 100% while it waits. That's fine on a lab PC.
 
 Either way vSync is off. To compare them, run the same row twice with different limiters and look at `baseFrameTimeSdMs` / `alteredFrameTimeSdMs`, or run `Invasion.exe -jndBenchmark` once per setting (edit the build's own `Data/ExperimentConfig.csv` in between). Add `-jndNoBackdrop`, `-jndNoForeground` or `-jndNoParallax` to benchmark (or `-jndCapture`) without that part of the scene and see what it costs.
@@ -277,7 +294,7 @@ Both reach 500. The frame rate used to fall short because of the scene, not the 
 
 γ is the chance that a blind shot lands on the tower. At startup the game works it out from the screen and prints it in the Console (or in `Player.log` in a build), in a `[GuessRate]` block that ends with `>>> guessRate : <number>`. Use that number. It's about 0.256 on a 16:9 screen (the UFO can fly until its centre reaches either edge, so a shot can land anywhere across the view), and it changes with the screen shape, which is why the monitor should be 16:9. If a row's `guessRate` is far from it, the Console says so. The SessionLog records the value the screen implied for each block as `guessRateScreen`.
 
-Manual and scroll levels share that one γ (a scroll round's boundary is dealt as far from the UFO, in mouse travel, as without the scroll). An **auto** level has its own, printed once per distinct autopilot setting: there a blind response is a click at a random moment, so it lands wherever the autopilot has the UFO then, and γ is the share of tower positions the UFO is over, averaged over one sweep there and back. At the defaults (`linear`, 8 units/s, `autoSweep` 0.9) it is **0.248** on 16:9. A narrower sweep raises it (the UFO spends more of its time over the towers' band): 0.267 at 0.8. A `sine` path lowers it, because the UFO lingers at the ends: 0.216.
+Manual and scroll levels share that one γ (a scroll round's boundary is dealt as far from the UFO, in mouse travel, as without the scroll). An **auto** level has its own, printed once per distinct autopilot setting: there a blind response is a click at a random moment, so it lands wherever the autopilot has the UFO then, and γ is the share of tower positions the UFO is over, averaged over one sweep there and back. With `linear` at 8 units/s and `autoSweep` 0.9 it was **0.248** on 16:9, before the infinity-sign path: use the printed value. A narrower sweep raises it (the UFO spends more of its time over the towers' band): 0.267 at 0.8. A `sine` path lowers it, because the UFO lingers at the ends: 0.216.
 
 ### Fixed in code, not in the CSV
 
@@ -285,11 +302,13 @@ These define the task itself, so they live in `Assets/Scripts/Experiment/StudyCo
 
 | Setting | Value |
 |---|---|
-| Hit radius (`closeRadius`) | 6.0 world units on each side of the tower (giving γ = 0.255 on 16:9). Changing it changes γ. |
+| Hit radius (`closeRadius`) | 6.0 world units on each side of the tower (giving γ = 0.256 on 16:9). Changing it changes γ. |
 | Dead zone around the tower | 0.25 world units. The UFO keeps its side until it's this far past the boundary, so hovering on the line can't flicker the frame rate. |
 | Fire cooldown | 0.25 s |
 | Reveal after a shot | 2 s |
 | "GO!" before each round | 0.5 s |
+| Lockout after a forgiven early press (`swEarlyLockoutSec`) | 1 s |
+| Unanswered flips before a shockwave practice round ends (`practiceMaxFlipsPerRound`) | 3 |
 
 ### Adding or removing a setting
 
@@ -311,7 +330,7 @@ These define the task itself, so they live in `Assets/Scripts/Experiment/StudyCo
 
 ## Level types
 
-Every row of the config picks one with `levelType`. Manual, scroll and auto retain the spatial tower task. Shockwave keeps the automatic flight but makes the response temporal: each randomized event toggles the configured fast/slow caps and opens the configured response window. The actual phase, cap and event values are written to `PlayerLog`.
+Every row of the config picks one with `levelType`. Manual, scroll and auto retain the spatial tower task. Shockwave keeps the automatic flight but makes the response temporal: each flip switches the whole screen between the base rate and the round's altered rate, and opens the response window. The phase, the cap and the flip count are written to `PlayerLog`.
 
 ### Manual
 
@@ -341,7 +360,7 @@ No tower and no aiming. From GO! the UFO flies, and the whole screen's frame rat
 | After the window closed | `late` | counted miss | goes on: TRY AGAIN!, then QUEST+'s new Δ from the base rate |
 | Before any flip since GO! or TRY AGAIN! (within `swMaxEarlyPerRound`) | `early`, forgiven; 1 s lockout | **not counted** | goes on, wait redrawn |
 | Before any flip, past that | `early` | **not counted** | ends |
-| `maxFlipsPerRound` flips pass unanswered | `timeout` | counted miss | ends |
+| `maxFlipsPerRound` flips pass unanswered | `flipCap` | counted miss | ends |
 
 If a counted miss finishes QUEST+, the round ends there. A press that lands nothing only fizzles at the muzzle, so the view stays clear. Because uncounted rounds do not advance QUEST+, a block also ends at 3 × `maxTrials` rounds (`endReason` = `roundCap`), so it cannot run for ever.
 
@@ -450,7 +469,7 @@ Covers the main run only, never practice.
 | `endIso` | Clock time the block finished and its row was written. |
 | `sessionDurationSec` | `endIso` − `startIso`, in seconds. |
 | `playDurationSec` | Length of the main run up to its last frame, in seconds. |
-| `endReason` | Why the block stopped: `converged` (reached `stopSD`), `maxTrials`, or `abandoned` (game closed mid-block). |
+| `endReason` | Why the block stopped: `converged` (reached `stopSD`), `maxTrials`, `roundCap` (3 × `maxTrials` rounds went by) or `abandoned` (game closed mid-block). |
 | `jndFrameTimeDiffMs` | **The threshold.** QUEST+'s best estimate of Δ (posterior mean), in ms of frame time. |
 | `jndAlteredFps` | The same threshold as the altered side's frame rate: 1000 / (1000/`baseFps` ± `jndFrameTimeDiffMs`). |
 | `jndDiffFps` | The same threshold as a frame-rate difference: \|`jndAlteredFps` − `baseFps`\|. |
@@ -464,13 +483,14 @@ Covers the main run only, never practice.
 | `lapseEstimate` | Estimated lapse rate (misses even on huge differences). |
 | `staircaseTrials` | Rounds QUEST+ actually used. Use this as the trial count. |
 | `lastDiffMs`, `lastDiffFps` | Δ of the last round, in ms and in fps. |
-| `trials` | Rounds logged: shots plus rounds that ran out. |
-| `shotsFired` | Rounds answered with a shot. |
+| `rounds` | Rounds ended: by a response, or by running out. |
+| `shotsFired` | Every shot fired, including those that did not end a round. |
 | `hits` | Rounds with `isHit` = 1. |
-| `accuracy` | `hits` / `trials`. |
+| `accuracy` | `hits` / `rounds`. |
 | `score` | Final points. |
 | `roundsExpired` | Rounds that hit the time limit with no shot. |
 | `roundsCrossingCapped` | Rounds that hit `maxCrossingsPerRound` with no shot. |
+| `roundsFlipCapped` | Shockwave rounds that hit `maxFlipsPerRound` with no response. |
 | `avgRoundDurationSec` | Mean time from GO! to the answer. |
 | `avgCrossingsPerRound` | Mean tower crossings per round: how much comparing they did. |
 | `shotsWithoutCrossing` | Shots fired without crossing the tower once that round. They only ever saw one side, so the shot had nothing to compare. These are the laser's TOO EARLY! rows. |
@@ -502,13 +522,13 @@ Covers the main run only, never practice.
 
 ### ShotLog: one row per press
 
-**Every press of the fire button in an open phase has a row, with the state of the game at that instant**, including presses that fired nothing. So a round has as many rows as it had presses. `roundEnded` = 1 marks the row that closed it, and `countedByStaircase` = 1 marks those that reached QUEST+. `outcome` is `shot` (laser, after at least one crossing), `detected`, `early` (shockwave before the first flip, laser before the first crossing), `late`, `timeout`, `expired`, `crossingCap`, or, for a press that fired nothing, `cooldown` (inside the fire cooldown), `lockout` (after a forgiven early press) or `notLive` (firing off: reveal, reset, GO!, TRY AGAIN!).
+**Every press of the fire button in an open phase has a row, with the state of the game at that instant**, including presses that fired nothing. So a round has as many rows as it had presses. `roundEnded` = 1 marks the row that closed it, and `countedByStaircase` = 1 marks those that reached QUEST+. `outcome` is `shot` (laser, after at least one crossing), `detected`, `early` (shockwave before the first flip, laser before the first crossing), `late`, `flipCap` (`maxFlipsPerRound` flips unanswered), `expired`, `crossingCap`, or, for a press that fired nothing, `cooldown` (inside the fire cooldown), `lockout` (after a forgiven early press) or `notLive` (firing off: reveal, reset, GO!, TRY AGAIN!).
 
-In a shockwave row, `crossings` and `lastCrossingAtSec` are the flips of the frame rate, and `alteredSide` and `side` are blank.
+In a shockwave row, `crossings` and every other `…Crossing…` column are the flips of the frame rate, and `alteredSide` and `side` are blank.
 
 | Column | What it is |
 |---|---|
-| `closeRadius` | Hit radius in world units (5.5). |
+| `closeRadius` | Hit radius in world units (6.0). |
 | `roundNumber` | Round number. Main rounds keep counting across blocks; practice restarts at 1. |
 | `timeSinceStartSec` | Phase clock at the response. |
 | `diffMs` | **The stimulus:** Δ for this round in ms of frame time, picked by QUEST+ (or the practice pair's difference): \|1000/`alteredFps` − 1000/`baseFps`\|. |
@@ -522,12 +542,12 @@ In a shockwave row, `crossings` and `lastCrossingAtSec` are the flips of the fra
 | `crossings` | Times the UFO crossed the tower this round. |
 | `lastCrossingAtSec` | When the last crossing happened (phase clock). Blank if none. |
 | `sinceLastCrossingSec` | How long after the last crossing the shot came. |
-| `outcome` | `shot`, `expired` (time limit) or `crossingCap` (too many crossings). |
-| `playerFired` | 1 if they fired; 0 when the round ran out. |
-| `isHit` | 1 = the shot landed within `closeRadius` of the tower. |
-| `countedByStaircase` | 1 if QUEST+ used this round. For any refit, keep `phase` = main and this = 1. |
+| `outcome` | How the row ended: see the list above this table. |
+| `playerFired` | 1 if they fired; 0 when the round ran out or the press fired nothing. |
+| `isHit` | 1 = the shot landed within `closeRadius` of the tower; on shockwave, the press came inside the window. |
+| `countedByStaircase` | 1 if QUEST+ used this response. For any refit, keep `phase` = main and this = 1. |
 | `totalScore` | Running score after this round. |
-| `trialStartSec` | When the round started: firing handed back at GO! (phase clock). |
+| `roundStartSec` | When the round started: firing handed back at GO! (phase clock). |
 | `firedAtSec` | When they fired (phase clock). Blank if they didn't. |
 | `roundDurationSec` | From the round's start to its end. |
 | `hitX` | X position where the shot landed (the UFO's X at the press). |
@@ -550,7 +570,7 @@ These describe the press and the state it met:
 
 | Column | What it is |
 |---|---|
-| `attemptInRound`, `roundEnded` | Which shot of the round this is, and whether this row closed it. |
+| `shotInRound`, `roundEnded` | Which shot of the round this is, and whether this row closed it. |
 | `inputDevice`, `firingEnabled` | `mouse` or `key`; whether firing was on. |
 | `capFps`, `capFrameMs`, `pacedBy`, `windowOpen` | The cap pacing this frame, as a rate and a frame time, whose it was, and whether the shockwave window was open. |
 | `reactionSec`, `framesSinceLastChange` | **How long after the last frame-rate change the press came**, in seconds and in frames. |
@@ -561,7 +581,7 @@ These describe the press and the state it met:
 | `earlyPresses`, `latePresses`, `lockoutPresses`, `cooldownPresses`, `notLivePresses` | Presses of each kind so far this round, this row included. |
 | `baseFrameMs`, `ftDirection`, `alteredFrameMs`, `measuredBaseMs`, `measuredAlteredMs` | The stimulus in frame time, nominal and as delivered since the attempt began. |
 
-The SessionLog adds `baseFrameMs`, `ftDirection`, `swDetections`, `earlyFires`, `swLateFires`, `swTimeouts`, `lockoutPresses`, `cooldownPresses`, `notLivePresses`, `roundsNotCounted`, reaction-time statistics (`avg`, `sd`, `median`, `min`, `max` `ReactionSec`, over hits), `shotsPerMinute`, and live frame-time percentiles (`p95FrameTimeMs`, `p99FrameTimeMs`, `baseP99FrameTimeMs`, `alteredP99FrameTimeMs`). `trials` counts rounds; `shotsFired` counts every shot. `direction` in the identity columns stays the direction of the frame **rate**, for the analysis scripts.
+The SessionLog adds `baseFrameMs`, `ftDirection`, `swDetections`, `earlyFires`, `swLateFires`, `roundsFlipCapped`, `lockoutPresses`, `cooldownPresses`, `notLivePresses`, `roundsNotCounted`, reaction-time statistics (`avg`, `sd`, `median`, `min`, `max` `ReactionSec`, over hits), `shotsPerMinute`, and live frame-time percentiles (`p95FrameTimeMs`, `p99FrameTimeMs`, `baseP99FrameTimeMs`, `alteredP99FrameTimeMs`). `rounds` counts the rounds that ended, `staircaseTrials` the responses QUEST+ used (a TOO LATE is one, without ending its round), and `shotsFired` every shot. `direction` in the identity columns stays the direction of the frame **rate**, for the analysis scripts.
 
 ### PlayerLog: one row per frame
 
@@ -575,9 +595,9 @@ The SessionLog adds `baseFrameMs`, `ftDirection`, `swDetections`, `earlyFires`, 
 | `pacedBy` | Which side's cap that was: `base`, `altered`, or empty between rounds. |
 | `diffFps` | The round's Δ, as a frame-rate difference. Empty between rounds. |
 | `alteredSide` | The round's altered side. Empty between rounds. |
-| `side` | `Left` or `Right`: which side of the tower the UFO is on. |
-| `crossed` | 1 on the frame the UFO crossed the tower during a round. |
-| `shockwaveFastPhase`, `shockwaveWindow`, `shockwaveFlips` | Shockwave rows only: whether the frame ran at the faster of the round's two rates, whether the response window was open, and how many flips the round has had so far. |
+| `side` | `Left` or `Right`: which side of the tower the UFO is on. Means nothing on a shockwave row, and neither does `alteredSide` there; the ShotLog leaves both blank. |
+| `crossed` | 1 on the frame the UFO crossed the tower during a round; on shockwave, the frame of a flip. |
+| `shockwaveFastPhase`, `shockwaveWindow`, `shockwaveFlips` | Shockwave rows only: whether the cap now set, which paces the next frame, is the faster of the round's two rates; whether the response window was open; and how many flips the round has had so far. |
 | `mouseX`, `mouseY` | Mouse pointer position on screen (pixels). |
 | `mouseDeltaX`, `mouseDeltaY` | Raw mouse movement this frame (counts). |
 | `ufoX`, `ufoY` | UFO position (world units). |
@@ -604,15 +624,15 @@ Everything is in `Analysis/`:
 |---|---|
 | `audit_logs.py` | **Run this first.** Checks every session's logs: each row's structure and internal consistency, and that the three files agree with each other (shots against the frames they fired on, each round's measured frame rates recomputed from its frames, the session row recomputed from the rounds). `python Analysis/audit_logs.py --all` (one line per session; `--data "<build>/Data"` for a build's logs, `--verbose` for every message). Exit code 1 on any FAIL. It reads every log format this study has written; for logs from before `levelType` it infers the level from how far the UFO travelled. Standard library only. |
 | `build_db.py` | Builds a SQLite `.db` for each session. It runs by itself at the end of every session, and reads both this study's logs and the stutter study's. To rebuild: `python Analysis/build_db.py --data "<build>/Data"`. `--schema` prints the tables and example queries; `--verify` checks the database gives the CSVs back cell for cell; `--combined all.db` adds one database of every session. |
-| `level_analysis.py` | Figures, tables and a report for a study with **several level types**: a condition is level type × base rate × direction, so manual, scroll and auto blocks are compared and never pooled. Thresholds (Weber %, fps and ms) with participants paired across level types; the within-participant level contrasts (sign-flip and Wilcoxon tests); psychometric curves; QUEST+ convergence and every block's staircase; round outcomes, response latency after the crossing, miss distances; for auto levels, where the shot landed along the UFO's direction of travel and the reaction lag it implies, and hit rate against latency; the UFO's speed at crossings; screen-position heatmaps, mouse activity and frame-time errors (from the PlayerLogs); frame delivery, the chance rate per block, practice, and a data inventory. `python Analysis/level_analysis.py --data Data/Logs --out <folder>` (`--no-frames` skips the PlayerLogs; `--list` lists the figures). |
-| `jnd_analysis.py` | The paper figures, statistics and report for one kind of block. It keys conditions by base rate, so it now runs once per level type × direction, into `<out>/<levelType>_<direction>/` (or `--level` / `--direction` to pick one). For logs from before `levelType` it infers the level (`--legacy-level` to set it). |
-| `simulate_logs.py` | Synthetic sessions in the current log format: every level type, both directions, QUEST+ and per-frame pacing, from simulated observers. For testing the analysis before real data exist, or checking a design: `python Analysis/simulate_logs.py --out <folder> --participants 8`. The folders end in `SIM`; nothing in them is real data. |
-| `plot_quest.py`, `reaction_after_spike.py`, … | Written for the **stutter** study. They expect its columns (`jndEstimateMs`, `stimulusMs`, `weapon`, …). |
+| `level_analysis.py` | Figures, tables and a report for a study with **several level types**: a condition is level type × base rate × direction, so manual, scroll, auto and shockwave blocks are compared and never pooled. Thresholds (Weber %, fps and ms) with participants paired across level types; the within-participant level contrasts (sign-flip and Wilcoxon tests); psychometric curves; QUEST+ convergence and every block's staircase; round outcomes, response latency after the crossing, miss distances; for auto levels, where the shot landed along the UFO's direction of travel and the reaction lag it implies, and hit rate against latency; the UFO's speed at crossings; screen-position heatmaps, mouse activity and frame-time errors (from the PlayerLogs); frame delivery, the chance rate per block, practice, and a data inventory. `python Analysis/level_analysis.py --data Data/Logs --out <folder>` (`--no-frames` skips the PlayerLogs; `--list` lists the figures). |
+| `jnd_analysis.py` | The paper figures, statistics and report for one kind of block. It keys conditions by base rate, so it now runs once per level type × direction, into `<out>/<levelType>_<direction>/` (or `--level` / `--direction` to pick one). For logs from before `levelType` it infers the level (`--legacy-level` to set it). Not for this study's logs: it skips any log in frame time. |
+| `simulate_logs.py` | Synthetic sessions for the frame-rate design, in the columns it shares with today's logs: manual, scroll and auto, both directions, QUEST+ and per-frame pacing, from simulated observers. It refuses this study's config; `Invasion.exe -jndRobot` gives real logs of it. For testing the analysis before real data exist, or checking a design: `python Analysis/simulate_logs.py --out <folder> --participants 8`. The folders end in `SIM`; nothing in them is real data. |
+| `plot_quest.py`, `quick_plot.py`, `sd_target_analysis.py`, `heatmap_generator.py`, `reaction_after_spike.py`, `repair_stimulus.py`, `questplus.py` | Written for the **stutter** study. They expect its columns (`jndEstimateMs`, `stimulusMs`, `weapon`, …). |
 
 `Analysis/COLUMNS.md` has a compact list of every config and log column.
 
 **Check a build with a stand-in participant:** `Invasion.exe -jndRobot` plays a real session through real input, with some presses deliberately too early, too late and ignored, then `python Analysis/audit_logs.py --data "<build>/Data"`. It does not advance the participant number. `Invasion.exe -jndShockFx <folder>` photographs the flight and the blast frame by frame, and `-jndBenchmark` answers whether the PC holds 500 fps.
 
-`simulate_logs.py` still writes the previous log format. `level_analysis.py` is the script for these logs: it treats shockwave as a level, but has no shockwave-specific figures yet (reaction time, foreperiod, outcomes); the columns they need are all logged. `jnd_analysis.py` skips frame-time logs and points to it.
+`level_analysis.py` is the script for these logs: it treats shockwave as a level and compares it with manual, but has no shockwave-specific figures yet (reaction time, foreperiod, outcomes); the columns they need are all logged. `jnd_analysis.py` skips frame-time logs and points to it. Logs already recorded keep the names they were written with; `Analysis/COLUMNS.md` lists them, and `audit_logs.py` and `level_analysis.py` read both.
 
 A good routine after each session: `python Analysis/audit_logs.py --all`, then check `SessionInfo_<id>.csv` says `UIManager.showDebug,false` (`level_analysis.py`'s report flags any session where it was on), then the analysis.

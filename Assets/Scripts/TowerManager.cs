@@ -166,7 +166,7 @@ namespace JndUfo
         [Tooltip("Damping on the spring pull-back. Higher = less overshoot/oscillation, more of a smooth glide home.")]
         public float returnSpringDamping = 6f;
         [Tooltip("Safety cap: if a fog particle system has more live particles than this when a shot lands, the " +
-                 "shockwave is skipped for that trial (falls back to vertical sink) to keep the per-frame " +
+                 "shockwave is skipped for that round (falls back to vertical sink) to keep the per-frame " +
                  "GetParticles/SetParticles cost bounded.")]
         public int maxShockwaveParticles = 3000;
 
@@ -743,7 +743,7 @@ namespace JndUfo
         }
 
         // (Re)creates the per-system home-position tracking dictionaries, or clears stale entries
-        // from a previous trial so a fresh blast starts from a clean slate.
+        // from a previous round so a fresh blast starts from a clean slate.
         void EnsureBlastHomeStorage()
         {
             if (_fogSystems == null) return;

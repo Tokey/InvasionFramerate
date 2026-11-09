@@ -7,7 +7,7 @@ namespace JndUfo
     /// Grid + priors for the QUEST+ frame-time-difference staircase, built from one block of
     /// Data/ExperimentConfig.csv (see StudyConfig).
     ///
-    /// The stimulus is Δ, the frame-time difference between the two sides of the tower, in ms. The
+    /// The stimulus is Δ, the frame-time difference between the two rates (either side of the tower, or of a shockwave flip), in ms. The
     /// stimulus grid steps from minDiffMs to maxDiffMs by diffStepMs, each value moved to the difference
     /// its whole-number frame-rate cap really produces (StudyConfig.DiffGridMs), because QUEST+ must
     /// reason about the stimulus that was actually shown. The threshold grid spans the same range
@@ -59,12 +59,13 @@ namespace JndUfo
     /// frame-time difference Δ (ms) to present and updates its belief about the participant's
     /// threshold after each response.
     ///
-    /// What "isHit" means here: one side of the hidden tower runs at the base frame rate and the
+    /// What "isHit" means here: on a laser block one side of the hidden tower runs at the base frame rate and the
     /// other Δ ms of frame time away, and the participant shoots where they think the boundary is. isHit ==
     /// true means the shot landed on the tower — they could feel where the frame rate changed.
-    /// isHit == false means it missed, or the round ran out. So "hit" and "noticed" are the same
-    /// thing throughout this class; there is no separate detection question layered on top of the
-    /// shot. See GameManager.ResolveTrial for where isHit is computed.
+    /// isHit == false means it missed, or the round ran out. On a shockwave block the whole screen flips between the two
+    /// rates, and isHit == true means the press came inside the response window after a flip. So "hit" and "noticed" are
+    /// the same thing throughout this class; there is no separate detection question layered on top of the response.
+    /// See GameManager.ResolveRound and ResolveShockwaveShot for where isHit is computed.
     ///
     /// How the guessing works: this keeps a probability table over every combination of three
     /// unknowns — threshold θ (the JND we're solving for), slope β (how sharply P(notice) ramps up
@@ -78,18 +79,16 @@ namespace JndUfo
     /// table down the most no matter how the participant responds, then shrinks the table after
     /// they do. The reported JND is the table's current best guess for θ.
     /// </summary>
-    public class QuestPlusStaircase : IJndStaircase
+    public class QuestPlusStaircase
     {
         public readonly QuestPlusConfig Config;
 
         public float CurrentValue { get; private set; }
         public int   TrialCount   { get; private set; }
-        public int   Streak       { get; private set; } // consecutive hits, cosmetic only
-        public int   BestStreak   { get; private set; }
 
         /// <summary>SD of the θ marginal (ms) before any response — the uniform prior's. The
         /// precision stop rule is a journey from here to stopPosteriorSD, which is what the HUD's
-        /// progress bar measures (see RoundProgress).</summary>
+        /// progress bar measures (see QuestProgress).</summary>
         public float PriorThresholdSD { get; }
 
         public bool IsFinished =>
@@ -151,9 +150,6 @@ namespace JndUfo
         {
             if (IsFinished) return CurrentValue;
             TrialCount++;
-
-            if (isHit) { Streak++; BestStreak = Mathf.Max(BestStreak, Streak); }
-            else Streak = 0;
 
             int stimIdx = ClosestIndex(Config.stimGrid, CurrentValue);
             double[] pNotice = _pNotice[stimIdx];

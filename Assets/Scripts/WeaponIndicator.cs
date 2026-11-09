@@ -10,7 +10,7 @@ namespace JndUfo
     /// three expanding purple shock arcs for the shockwave cannon.
     ///
     /// Self-constructs under the HUD canvas in <see cref="Awake"/>. The animation runs on
-    /// <see cref="Time.unscaledTime"/> so it never stalls or hiccups during low-framerate trials.
+    /// <see cref="Time.unscaledTime"/> so it never stalls or hiccups during low-framerate rounds.
     /// </summary>
     public class WeaponIndicator : MonoBehaviour
     {
@@ -29,7 +29,7 @@ namespace JndUfo
         public float characterSpacing  = 5f;
         public string laserText        = "LASER";
         public string shockwaveText    = "SHOCKWAVE";
-        [Tooltip("Only show the word during practice rounds, leaving the animated icon alone during main trials. " +
+        [Tooltip("Only show the word during practice rounds, leaving the animated icon alone during main rounds. " +
                  "Off by default so the weapon name and icon are always visible in the top-right corner.")]
         public bool labelDuringPracticeOnly = false;
 

@@ -146,12 +146,12 @@ namespace JndUfo
         [Min(0f)] public float fpsRevealDelay = 0.12f;
 
         Coroutine _revealCoroutine;
-        Coroutine _regateCoroutine;
+        Coroutine _retryCoroutine;
         Coroutine _blinkCoroutine;
 
-        /// <summary>True while a round's reveal sequence (or shockwave re-gate) is playing. ExperimentDirector
+        /// <summary>True while a round's reveal sequence (or shockwave TRY AGAIN!) is playing. ExperimentDirector
         /// waits on this at the end of a phase so a shot fired on the buzzer still gets its reveal.</summary>
-        public bool IsRevealing => _revealCoroutine != null || _regateCoroutine != null;
+        public bool IsRevealing => _revealCoroutine != null || _retryCoroutine != null;
 
         bool IsShockwaveBlock =>
             (perturbation != null && perturbation.CurrentConfig != null && perturbation.CurrentConfig.IsShockwave) ||
@@ -255,9 +255,8 @@ namespace JndUfo
 
         void OnApplicationFocus(bool focused)
         {
-            // Between rounds the director owns the screen; don't grab the cursor back until a round is
-            // actually live again.
-            if (ExperimentDirector.Instance != null && !ExperimentDirector.Instance.RoundActive) return;
+            // With no phase open the director owns the screen; don't grab the cursor back until one is.
+            if (ExperimentDirector.Instance != null && !ExperimentDirector.Instance.PhaseOpen) return;
 
             Cursor.visible = !focused;
             Cursor.lockState = focused ? CursorLockMode.Confined : CursorLockMode.None;
@@ -286,7 +285,7 @@ namespace JndUfo
         /// <param name="showHitMarker">False for a round that ended with no shot — there is no
         /// landing point to mark. The fog still blows open, from where the UFO was.</param>
         IEnumerator RevealSequence(Vector3 hitPoint, bool showHitMarker,
-                                    PerturbationController.TrialRecord trial, bool isShockwave = false)
+                                    PerturbationController.RoundRecord round, bool isShockwave = false)
         {
             // 1. Hit marker at the shot's landing point (spatial laser blocks only; shockwave has no target tower).
             if (showHitMarker && !isShockwave) towerManager.ShowHitMarker(hitPoint);
@@ -300,13 +299,13 @@ namespace JndUfo
             // 2. Fog retreats; a beat later the frame-rate reveal comes up.
             //    On shockwave blocks, ShowShockwave displays a centred temporal alternation readout
             //    instead of splitting the screen into left and right halves.
-            if (fpsReveal != null && trial.valid)
+            if (fpsReveal != null && round.valid)
             {
                 float hold = fogRetreatDuration + hitDisplayDuration - fpsRevealDelay;
                 if (isShockwave)
-                    fpsReveal.ShowShockwave(trial, fpsRevealDelay, holdSec: hold);
+                    fpsReveal.ShowShockwave(round, fpsRevealDelay, holdSec: hold);
                 else
-                    fpsReveal.Show(trial, towerManager.TowerBase, towerManager.hitZoneRadius, fpsRevealDelay,
+                    fpsReveal.Show(round, towerManager.TowerBase, towerManager.hitZoneRadius, fpsRevealDelay,
                                    holdSec: hold, track: worldScroll, settleShiftX: framing);
             }
             // The fade drives the boundary tower's beam and glow. A shockwave block has no boundary to show.
@@ -330,7 +329,7 @@ namespace JndUfo
             //    round's log rows are written here — the one deliberate long frame in the sequence.
             //    Words only if there is a GO! to follow; a round that closed the phase gets a bare
             //    veil.
-            bool live = RoundLive;
+            bool live = PhaseOpen;
             if (live) Overlay?.ShowGateSaving();
             else      Overlay?.ShowGateVeil();
             if (ufo != null)
@@ -386,7 +385,7 @@ namespace JndUfo
 
             // Don't hand firing back if the phase closed while this reveal was playing. The UFO
             // still has to come back, or the next phase would open on an empty sky.
-            if (!RoundLive)
+            if (!PhaseOpen)
             {
                 Overlay?.HideGate();
                 RestoreUfo();
@@ -417,7 +416,7 @@ namespace JndUfo
             if (perturbation != null)
             {
                 perturbation.ResetSideTracking();
-                perturbation.BeginTrial();
+                perturbation.BeginRound();
             }
 
             if (ufo != null)
@@ -433,8 +432,8 @@ namespace JndUfo
 
         // Whether the director still has a phase open for firing to come back to. True with no
         // director at all — a hand-played scene has nothing to close it.
-        bool RoundLive =>
-            ExperimentDirector.Instance == null || ExperimentDirector.Instance.RoundActive;
+        bool PhaseOpen =>
+            ExperimentDirector.Instance == null || ExperimentDirector.Instance.PhaseOpen;
 
         // Steady, visible, and back under the pointer's control — the one exit from the reset gate
         // for the UFO, whichever way the sequence ended.
@@ -661,50 +660,50 @@ namespace JndUfo
         {
             if (IsShockwaveBlock && ShockwaveController.Instance != null)
             {
-                TrialVerdict verdict = ShockwaveController.Instance.ClassifyPlayerFire();
+                PressVerdict verdict = ShockwaveController.Instance.ClassifyPlayerFire();
                 ResolveShockwaveShot(hitPoint, verdict);
                 return;
             }
 
             if (roundClock != null) roundClock.NoteShot(closeRound: true);
-            ResolveTrial(hitPoint, TrialOutcome.Shot);
+            ResolveRound(hitPoint, ResponseOutcome.Shot);
         }
 
         /// <summary>
         /// Ends a round that ran out with no shot — its time limit, its crossing cap, or its
         /// shockwave flip cap. Called by <see cref="RoundClock"/> or <see cref="ShockwaveController"/>.
         /// </summary>
-        public void ResolveWithoutShot(TrialOutcome outcome)
+        public void ResolveWithoutShot(ResponseOutcome outcome)
         {
-            AbandonRegate();
+            AbandonRetry();
             Vector3 where = ufo != null ? ufo.transform.position : Vector3.zero;
-            ResolveTrial(where, outcome);
+            ResolveRound(where, outcome);
         }
 
         // Every press of a shockwave round gets its row in the shot log, whatever it did to the round.
-        void ResolveShockwaveShot(Vector3 hitPoint, TrialVerdict verdict)
+        void ResolveShockwaveShot(Vector3 hitPoint, PressVerdict verdict)
         {
             if (scoreManager == null) scoreManager = FindAnyObjectByType<ScoreManager>();
             ExperimentDirector director = ExperimentDirector.Instance;
             Vector3 towerBase = towerManager != null ? towerManager.MainTowerPosition : Vector3.zero;
 
             // 1. Forgiven TOO EARLY press: callout, delay redrawn, round keeps running, QUEST+ not told.
-            if (!verdict.endsRound && !verdict.regate)
+            if (!verdict.endsRound && !verdict.retry)
             {
                 if (roundClock != null) roundClock.NoteShot(closeRound: false);
                 float earlyTotal = scoreManager != null ? scoreManager.TotalScore : 0f;
-                if (uiManager != null) uiManager.DisplayOutcomeCallout(TrialOutcome.Early, earlyTotal);
+                if (uiManager != null) uiManager.DisplayOutcomeCallout(ResponseOutcome.Early, earlyTotal);
                 if (AudioManager.Instance != null) AudioManager.Instance.PlayShotOutcome(false);
                 if (director != null && perturbation != null)
-                    director.RecordShot(hitPoint, towerBase, false, earlyTotal, TrialOutcome.Early,
-                                        perturbation.SnapshotTrial(), roundClock != null ? roundClock.Snapshot(true) : default,
+                    director.RecordShot(hitPoint, towerBase, false, earlyTotal, ResponseOutcome.Early,
+                                        perturbation.SnapshotRound(), roundClock != null ? roundClock.Snapshot(true) : default,
                                         counted: false, roundEnded: false);
                 return;
             }
 
             // 2. TOO LATE press: a counted miss. QUEST+ moves on, and unless that finished it the round goes on through
             //    TRY AGAIN! with QUEST+'s new choice.
-            if (verdict.regate)
+            if (verdict.retry)
             {
                 if (laser != null) laser.SetFiringEnabled(false);
                 if (roundClock != null) roundClock.NoteShot(closeRound: false);
@@ -712,29 +711,29 @@ namespace JndUfo
                 float lateTotal = 0f;
                 if (scoreManager != null)
                 {
-                    scoreManager.ScoreOutcome(TrialOutcome.Late, isHit: false, countInTally: true);
+                    scoreManager.ScoreOutcome(ResponseOutcome.Late, isHit: false, countInTally: true);
                     lateTotal = scoreManager.TotalScore;
                 }
-                PerturbationController.TrialRecord lateTrial = perturbation != null ? perturbation.SnapshotTrial() : default;
+                PerturbationController.RoundRecord lateRound = perturbation != null ? perturbation.SnapshotRound() : default;
                 RoundTiming lateTiming = roundClock != null ? roundClock.Snapshot(true) : default;
 
                 if (perturbation != null) perturbation.ReportResponse(false, verdict.countedByStaircase);
                 bool finished = perturbation != null && !perturbation.PracticeMode &&
                                 perturbation.ActiveStaircase != null && perturbation.ActiveStaircase.IsFinished;
 
-                if (uiManager != null) uiManager.DisplayOutcomeCallout(TrialOutcome.Late, lateTotal);
+                if (uiManager != null) uiManager.DisplayOutcomeCallout(ResponseOutcome.Late, lateTotal);
                 if (AudioManager.Instance != null) AudioManager.Instance.PlayShotOutcome(false);
                 if (director != null)
-                    director.RecordShot(hitPoint, towerBase, false, lateTotal, TrialOutcome.Late, lateTrial, lateTiming,
+                    director.RecordShot(hitPoint, towerBase, false, lateTotal, ResponseOutcome.Late, lateRound, lateTiming,
                                         verdict.countedByStaircase, roundEnded: finished);
                 if (uiManager != null) uiManager.RefreshProgress();
 
-                AbandonRegate();
+                AbandonRetry();
                 if (finished)
                 {
-                    if (ShockwaveController.Instance != null) ShockwaveController.Instance.CancelRegateAndStop();
+                    if (ShockwaveController.Instance != null) ShockwaveController.Instance.StopRound();
                     if (roundClock != null) roundClock.NoteShot(closeRound: true);
-                    PerturbationController.TrialRecord ended = perturbation.EndTrial();
+                    PerturbationController.RoundRecord ended = perturbation.EndRound();
                     if (towerManager != null)
                     {
                         if (_revealCoroutine != null) StopCoroutine(_revealCoroutine);
@@ -744,21 +743,21 @@ namespace JndUfo
                 }
 
                 if (perturbation != null) perturbation.BeginNextAttempt();
-                _regateCoroutine = StartCoroutine(RegateSequence());
+                _retryCoroutine = StartCoroutine(RetrySequence());
                 return;
             }
 
             // 3. Round-ending shockwave shot: Detected, or an unforgiven Early (which ends the round but, the frame rate
             //    not having changed, never reaches QUEST+).
-            AbandonRegate();
+            AbandonRetry();
             if (laser != null) laser.SetFiringEnabled(false);
             if (roundClock != null) roundClock.NoteShot(closeRound: true);
 
-            PerturbationController.TrialRecord trial =
-                perturbation != null ? perturbation.EndTrial() : default;
+            PerturbationController.RoundRecord round =
+                perturbation != null ? perturbation.EndRound() : default;
             RoundTiming timing = roundClock != null ? roundClock.Snapshot(true) : default;
 
-            bool isHit = verdict.outcome == TrialOutcome.Detected;
+            bool isHit = verdict.outcome == ResponseOutcome.Detected;
             float total = 0f;
             if (scoreManager != null)
             {
@@ -772,50 +771,50 @@ namespace JndUfo
 
             if (director != null)
                 director.RecordShot(hitPoint, towerBase, isHit, total, verdict.outcome,
-                                    trial, timing, verdict.countedByStaircase);
+                                    round, timing, verdict.countedByStaircase);
 
             if (uiManager != null) uiManager.RefreshProgress();
 
             if (towerManager != null)
             {
                 if (_revealCoroutine != null) StopCoroutine(_revealCoroutine);
-                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, false, trial, isShockwave: true));
+                _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, false, round, isShockwave: true));
             }
         }
 
-        IEnumerator RegateSequence()
+        IEnumerator RetrySequence()
         {
             yield return new WaitForSecondsRealtime(0.55f);
             if (uiManager != null) uiManager.DismissCallout();
 
-            if (!RoundLive)
+            if (!PhaseOpen)
             {
-                _regateCoroutine = null;
+                _retryCoroutine = null;
                 yield break;
             }
 
             if (Overlay != null)
                 yield return Overlay.RetryBeat(readyBeatDuration);
 
-            if (RoundLive && laser != null)
+            if (PhaseOpen && laser != null)
                 laser.SetFiringEnabled(true);
 
-            _regateCoroutine = null;
+            _retryCoroutine = null;
         }
 
-        void AbandonRegate()
+        void AbandonRetry()
         {
-            if (_regateCoroutine != null)
+            if (_retryCoroutine != null)
             {
-                StopCoroutine(_regateCoroutine);
-                _regateCoroutine = null;
+                StopCoroutine(_retryCoroutine);
+                _retryCoroutine = null;
             }
         }
 
         /// <summary>
         /// Resolves a spatial laser shot or any round that ran out without a shot.
         /// </summary>
-        void ResolveTrial(Vector3 hitPoint, TrialOutcome outcome)
+        void ResolveRound(Vector3 hitPoint, ResponseOutcome outcome)
         {
             if (scoreManager == null) scoreManager = FindAnyObjectByType<ScoreManager>();
 
@@ -823,18 +822,18 @@ namespace JndUfo
             bool shockwaveBlock = IsShockwaveBlock;
             if (laser != null) laser.SetFiringEnabled(false);
 
-            PerturbationController.TrialRecord trial =
-                perturbation != null ? perturbation.EndTrial() : default;
+            PerturbationController.RoundRecord round =
+                perturbation != null ? perturbation.EndRound() : default;
             RoundTiming timing = roundClock != null ? roundClock.Snapshot(playerFired) : default;
 
             if (!shockwaveBlock && towerManager != null && towerManager.FocusBoundaryNear(hitPoint.x))
-                trial = trial.Flipped();
+                round = round.WithSidesSwapped();
 
             // A laser shot before the first crossing answers nothing: the participant has seen one rate. It reads
             // TOO EARLY!, as on shockwave, wherever it landed. No points, no tally pip, and QUEST+ never hears of it; the
             // round still ends, and the next one presents the same difference.
-            bool tooEarly = outcome == TrialOutcome.Shot && trial.crossings == 0;
-            if (tooEarly) outcome = TrialOutcome.Early;
+            bool tooEarly = outcome == ResponseOutcome.Shot && round.crossings == 0;
+            if (tooEarly) outcome = ResponseOutcome.Early;
 
             Vector3 towerBase = towerManager != null ? towerManager.MainTowerPosition : Vector3.zero;
 
@@ -877,7 +876,7 @@ namespace JndUfo
 
             if (ExperimentDirector.Instance != null)
                 ExperimentDirector.Instance.RecordShot(hitPoint, towerBase, isHit, total, outcome,
-                                                       trial, timing, counted);
+                                                       round, timing, counted);
 
             if (uiManager != null) uiManager.RefreshProgress();
 
@@ -885,7 +884,7 @@ namespace JndUfo
             {
                 if (_revealCoroutine != null) StopCoroutine(_revealCoroutine);
                 _revealCoroutine = StartCoroutine(RevealSequence(hitPoint, playerFired && !shockwaveBlock,
-                                                                 trial, isShockwave: shockwaveBlock));
+                                                                 round, isShockwave: shockwaveBlock));
             }
         }
     }

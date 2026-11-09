@@ -65,7 +65,7 @@ namespace JndUfo
 
         /// <summary>A press of the fire button that fired nothing: during the cooldown, the early lockout, or with
         /// firing off. Every press goes in the ShotLog with the state it met (ExperimentDirector.RecordIgnoredPress).</summary>
-        public event Action<TrialOutcome> OnPressIgnored;
+        public event Action<ResponseOutcome> OnPressIgnored;
 
         /// <summary>What made the last press: 1 the mouse, 2 the fire key.</summary>
         public int LastPressDevice { get; private set; }
@@ -161,17 +161,17 @@ namespace JndUfo
 
             if (!_firingEnabled)
             {
-                OnPressIgnored?.Invoke(TrialOutcome.PressNotLive);
+                OnPressIgnored?.Invoke(ResponseOutcome.PressNotLive);
                 return;
             }
             if (Time.unscaledTime - _lastFireTime < _cooldown)
             {
-                OnPressIgnored?.Invoke(TrialOutcome.PressCooldown);
+                OnPressIgnored?.Invoke(ResponseOutcome.PressCooldown);
                 return;
             }
-            if (ShockwaveController.Instance != null && ShockwaveController.Instance.ShouldSwallowFire())
+            if (ShockwaveController.Instance != null && ShockwaveController.Instance.InEarlyLockout)
             {
-                OnPressIgnored?.Invoke(TrialOutcome.PressLockout);
+                OnPressIgnored?.Invoke(ResponseOutcome.PressLockout);
                 return;
             }
 

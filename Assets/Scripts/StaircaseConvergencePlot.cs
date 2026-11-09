@@ -43,7 +43,7 @@ namespace JndUfo
 
         void Update()
         {
-            if (!showPlot || perturbation == null || !perturbation.IsQuestPlusStaircase) return;
+            if (!showPlot || perturbation == null || !perturbation.HasStaircase) return;
 
             int trials = perturbation.StaircaseTrials;
             if (trials == _lastTrialCount) return;

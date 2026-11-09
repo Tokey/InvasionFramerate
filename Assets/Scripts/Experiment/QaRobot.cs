@@ -62,7 +62,7 @@ namespace JndUfo
             bool  tapKey = false, click = false;
             Vector2 delta = Vector2.zero;
 
-            if (!d.SessionActive)
+            if (!d.PhaseOpen)
             {
                 // At a prompt: Space, unhurried.
                 if (now >= _nextKey) { tapKey = true; _nextKey = now + 1.5f; }
@@ -78,7 +78,7 @@ namespace JndUfo
             else
             {
                 PerturbationController pc = d.perturbation;
-                float diff = pc.CurrentTrial.diffMs;
+                float diff = pc.CurrentRound.diffMs;
                 if (_plannedRound < 0)
                 {
                     _plannedRound = 1;
@@ -107,7 +107,7 @@ namespace JndUfo
                     float x = d.ufo.transform.position.x, tower = d.towerManager.TowerBase.x;
                     float target = tower + 9f * Mathf.Sin(now * 1.6f);
                     delta.x = Mathf.Clamp((target - x) * 3f, -60f, 60f);
-                    int crossings = pc.TrialCrossings;
+                    int crossings = pc.RoundCrossings;
                     if (crossings != _seenCrossings)
                     {
                         _seenCrossings = crossings;

@@ -126,7 +126,7 @@ namespace JndUfo
 
         // ── Public state ─────────────────────────────────────────────────────
         /// <summary>True only while a phase is live and responses should count.</summary>
-        public bool   SessionActive { get; private set; }
+        public bool   PhaseOpen     { get; private set; }
         public int    SessionId     { get; private set; }
         public string RunId         { get; private set; }
 
@@ -145,11 +145,8 @@ namespace JndUfo
         /// was played. Both go into every log.</summary>
         public int BlockOrdinal { get; private set; }
 
-        /// <summary>Kept for the gameplay scripts that gate on "are we playing right now".</summary>
-        public bool RoundActive => SessionActive;
-
         /// <summary>How far through the practice rounds the participant is, 0–1, for the HUD's
-        /// progress bar. The main run's progress comes from the staircase — see RoundProgress.</summary>
+        /// progress bar. The main run's progress comes from the staircase — see QuestProgress.</summary>
         public float PracticeProgress
         {
             get
@@ -188,7 +185,7 @@ namespace JndUfo
         // The origin Time.realtimeSinceStartup stamps (crossings, shots) are rebased against so they
         // sit on the frame log's axis. Normally _startRealtime itself — the two clocks share an
         // origin — and BeginPhase checks that each phase.
-        float    _trialClockOrigin;
+        float    _phaseClockOrigin;
         int      _frameIndex;
 
         // Set by RecordShot (from Update) and consumed by LateUpdate, so the frame row that carries
@@ -197,7 +194,7 @@ namespace JndUfo
         float _shotHitXThisFrame;
 
         // Presses so far in the round in progress, for its shot rows, and rounds so far in this block.
-        int _attempt, _nEarly, _nLate, _nLockout, _nCooldown, _nNotLive, _blockRounds;
+        int _shotsThisRound, _nEarly, _nLate, _nLockout, _nCooldown, _nNotLive, _blockRounds;
 
         // Rounds completed so far in this phase.
         int      _roundNumber;
@@ -718,8 +715,8 @@ namespace JndUfo
 
             Debug.Log($"[ExperimentDirector] {MainLabel} (row {Config.blockIndex}, " +
                       $"{Config.Describe()}) complete ({_endReason}) — JND Δ {jnd:0.00} ms (SD {sd:0.00}), " +
-                      $"i.e. {Config.baseFps} vs {thresholdFps:0.0} fps. {_stats.Hits}/{_stats.Trials} hit, " +
-                      $"{_stats.RoundsExpired} ran out, {_stats.AvgCrossingsPerRound:0.0} crossings/round. " +
+                      $"i.e. {Config.baseFps} vs {thresholdFps:0.0} fps. {_stats.Hits}/{_stats.Rounds} hit, " +
+                      $"{_stats.RoundsExpired + _stats.RoundsFlipCapped} ran out, {_stats.AvgCrossingsPerRound:0.0} crossings/round. " +
                       $"Delivered: base {_stats.BaseSideMeasuredFps:0.0} fps (cap {Config.baseFps}), " +
                       $"altered {_stats.AlteredFrameTimeErrPct:+0.0;-0.0}% frame time vs cap, " +
                       $"{_stats.SlowFrames} slow frame(s).");
@@ -794,7 +791,7 @@ namespace JndUfo
             if (perturbation != null)
             {
                 perturbation.ResetSideTracking();
-                perturbation.BeginTrial();
+                perturbation.BeginRound();
             }
             if (overlay != null) yield return overlay.GoBeat(Config.readyBeatSec);
 
@@ -814,7 +811,7 @@ namespace JndUfo
             _startRealtime      = Time.unscaledTime;
             _startRealtimeD     = Time.unscaledTimeAsDouble;
             _trailCount         = 0;       // a velocity never spans two phases
-            _attempt = _nEarly = _nLate = _nLockout = _nCooldown = _nNotLive = _blockRounds = 0;
+            _shotsThisRound = _nEarly = _nLate = _nLockout = _nCooldown = _nNotLive = _blockRounds = 0;
             _roundArmed         = false;
             ResetRoundMotion();
 
@@ -824,13 +821,13 @@ namespace JndUfo
             float skew = rss - _startRealtime;
             if (skew >= 0f && skew < 0.25f)
             {
-                _trialClockOrigin = _startRealtime;
+                _phaseClockOrigin = _startRealtime;
             }
             else
             {
-                _trialClockOrigin = rss;
+                _phaseClockOrigin = rss;
                 Debug.LogWarning($"[ExperimentDirector] realtimeSinceStartup and unscaledTime differ by " +
-                                 $"{skew:0.###}s — round timings (trialStartSec/firedAtSec/lastCrossingAtSec) " +
+                                 $"{skew:0.###}s — round timings (roundStartSec/firedAtSec/lastCrossingAtSec) " +
                                  "are rebased on their own stamp and may sit up to one frame off the " +
                                  "frame log's timeSinceStartSec.");
             }
@@ -838,7 +835,7 @@ namespace JndUfo
             if (_logger != null) _logger.PhaseStartedAt = DateTime.Now;
 
             // Live for logging from here, but firing stays off until the phase's GO! is over (ArmPhase).
-            SessionActive = true;
+            PhaseOpen = true;
             if (laser != null) laser.SetFiringEnabled(false);
 
             RefreshProgressBar();
@@ -865,8 +862,8 @@ namespace JndUfo
             if (laser != null) laser.SetFiringEnabled(false);
             yield return null;
 
-            SessionActive = false;
-            if (perturbation != null) perturbation.CancelTrial();
+            PhaseOpen = false;
+            if (perturbation != null) perturbation.CancelRound();
 
             if (!isPractice) _mainRoundsCompleted = _roundNumber;
 
@@ -946,7 +943,7 @@ namespace JndUfo
 
         void LateUpdate()
         {
-            if (!SessionActive || _logger == null || _stats == null) return;
+            if (!PhaseOpen || _logger == null || _stats == null) return;
 
             var t = new TickSample
             {
@@ -986,9 +983,9 @@ namespace JndUfo
             t.camX = rig != null ? rig.RestX : float.NaN;
 
             // A round arms when firing is handed back after its GO!: where the UFO starts it from, and its
-            // crossings from then on. Preserved across a mid-round shockwave re-gate ("TRY AGAIN!").
-            bool regating = ShockwaveController.Instance != null && ShockwaveController.Instance.Regating;
-            bool armed    = (laser != null && laser.FiringEnabled) || (_roundArmed && regating);
+            // crossings from then on. Preserved across a shockwave round's TRY AGAIN!.
+            bool retrying = ShockwaveController.Instance != null && ShockwaveController.Instance.Retrying;
+            bool armed    = (laser != null && laser.FiringEnabled) || (_roundArmed && retrying);
             if (armed && !_roundArmed)
             {
                 ResetRoundMotion();
@@ -1014,9 +1011,9 @@ namespace JndUfo
                 t.crossed   = perturbation.CrossedThisFrame;
                 if (perturbation.SplitActive)
                 {
-                    t.diffFps     = perturbation.CurrentTrial.diffFps;
-                    t.diffMs      = perturbation.CurrentTrial.diffMs;
-                    t.alteredSide = SideCell(Turned(perturbation.CurrentTrial.alteredSide, turned));
+                    t.diffFps     = perturbation.CurrentRound.diffFps;
+                    t.diffMs      = perturbation.CurrentRound.diffMs;
+                    t.alteredSide = SideCell(Turned(perturbation.CurrentRound.alteredSide, turned));
                 }
             }
             ShockwaveController shockwave = ShockwaveController.Instance;
@@ -1143,18 +1140,18 @@ namespace JndUfo
         /// A press of the fire button that fired nothing: inside the cooldown, the early lockout, or with firing off. Its
         /// row says so (outcome cooldown / lockout / notLive) and carries the state of the game as for any other press.
         /// </summary>
-        void RecordIgnoredPress(TrialOutcome kind)
+        void RecordIgnoredPress(ResponseOutcome kind)
         {
-            if (!SessionActive || _logger == null || _stats == null || perturbation == null) return;
+            if (!PhaseOpen || _logger == null || _stats == null || perturbation == null) return;
 
-            PerturbationController.TrialRecord trial =
-                perturbation.SplitActive ? perturbation.SnapshotTrial() : default;
+            PerturbationController.RoundRecord round =
+                perturbation.SplitActive ? perturbation.SnapshotRound() : default;
             RoundTiming timing = RoundClock.Instance != null ? RoundClock.Instance.Snapshot(false) : default;
             timing.firedAt = Time.realtimeSinceStartup;
             Vector3 ufoPos = ufo != null ? ufo.transform.position : Vector3.zero;
             Vector3 tower  = towerManager != null ? towerManager.MainTowerPosition : Vector3.zero;
             float   total  = scoreManager != null ? scoreManager.TotalScore : 0f;
-            RecordShot(ufoPos, tower, false, total, kind, trial, timing, counted: false, roundEnded: false);
+            RecordShot(ufoPos, tower, false, total, kind, round, timing, counted: false, roundEnded: false);
         }
 
         /// <summary>
@@ -1165,35 +1162,35 @@ namespace JndUfo
         /// <param name="counted">Whether this response reached QUEST+.</param>
         /// <param name="roundEnded">Whether this row closes the round.</param>
         public void RecordShot(Vector3 hitPoint, Vector3 towerBase, bool isHit, float totalScore,
-                                TrialOutcome outcome, in PerturbationController.TrialRecord trial,
+                                ResponseOutcome outcome, in PerturbationController.RoundRecord round,
                                 in RoundTiming timing, bool counted = true, bool roundEnded = true)
         {
-            if (!SessionActive || _logger == null || _stats == null) return;
+            if (!PhaseOpen || _logger == null || _stats == null) return;
 
             bool  playerFired = outcome.IsPlayerShot();
-            bool  ignored     = outcome == TrialOutcome.PressCooldown || outcome == TrialOutcome.PressLockout ||
-                                outcome == TrialOutcome.PressNotLive;
+            bool  ignored     = outcome == ResponseOutcome.PressCooldown || outcome == ResponseOutcome.PressLockout ||
+                                outcome == ResponseOutcome.PressNotLive;
             bool  pressed     = playerFired || ignored;
             bool  isShockwave = Config != null && Config.IsShockwave;
             float now         = (float)(Time.unscaledTimeAsDouble - _startRealtimeD);
             float firedAt     = ToPhaseClock(timing.firedAt);
-            float lastCross   = trial.valid ? ToPhaseClock(trial.lastCrossingRealtime)  : float.NaN;
-            float firstCross  = trial.valid ? ToPhaseClock(trial.firstCrossingRealtime) : float.NaN;
+            float lastCross   = round.valid ? ToPhaseClock(round.lastCrossingRealtime)  : float.NaN;
+            float firstCross  = round.valid ? ToPhaseClock(round.firstCrossingRealtime) : float.NaN;
             float sinceCross  = pressed && !float.IsNaN(firedAt) && !float.IsNaN(lastCross)
                 ? firedAt - lastCross : float.NaN;
 
-            if      (outcome == TrialOutcome.Early)         _nEarly++;
-            else if (outcome == TrialOutcome.Late)          _nLate++;
-            else if (outcome == TrialOutcome.PressLockout)  _nLockout++;
-            else if (outcome == TrialOutcome.PressCooldown) _nCooldown++;
-            else if (outcome == TrialOutcome.PressNotLive)  _nNotLive++;
+            if      (outcome == ResponseOutcome.Early)         _nEarly++;
+            else if (outcome == ResponseOutcome.Late)          _nLate++;
+            else if (outcome == ResponseOutcome.PressLockout)  _nLockout++;
+            else if (outcome == ResponseOutcome.PressCooldown) _nCooldown++;
+            else if (outcome == ResponseOutcome.PressNotLive)  _nNotLive++;
 
             Vector3 ufoPos = ufo != null ? ufo.transform.position : hitPoint;
             QuestPlusStaircase sc = perturbation != null ? perturbation.ActiveStaircase : null;
 
             // Practice never reaches QUEST+, so a practice row has no posterior to report — its staircase
             // columns are left blank rather than repeating the main block's untouched prior.
-            bool practiceRow = trial.practice || _logger.CurrentPhase == "practice";
+            bool practiceRow = round.practice || _logger.CurrentPhase == "practice";
 
             // Where on screen, on the view at rest: in a scroll level the camera follows the ship, so world X
             // alone does not say where on the screen the shot was.
@@ -1219,9 +1216,9 @@ namespace JndUfo
                 _shotHitXThisFrame  = hitPoint.x;
             }
 
-            bool  changed = trial.valid && trial.changeToFps > 0 && trial.changeFromFps > 0;
-            float fromMs  = changed ? 1000f / trial.changeFromFps : float.NaN;
-            float toMs    = changed ? 1000f / trial.changeToFps   : float.NaN;
+            bool  changed = round.valid && round.changeToFps > 0 && round.changeFromFps > 0;
+            float fromMs  = changed ? 1000f / round.changeFromFps : float.NaN;
+            float toMs    = changed ? 1000f / round.changeToFps   : float.NaN;
             int   capFps  = perturbation != null ? perturbation.PacedFps : 0;
             ShockwaveController wave = ShockwaveController.Instance;
 
@@ -1229,21 +1226,21 @@ namespace JndUfo
             {
                 roundNumber       = _roundNumber + 1,
                 timeSinceStartSec = now,
-                baseFps           = trial.valid ? trial.baseFps
+                baseFps           = round.valid ? round.baseFps
                                   : perturbation != null ? perturbation.CurrentBaseFps : 0,
 
-                diffFps            = trial.diffFps,
-                diffMs             = trial.valid ? trial.diffMs : float.NaN,
-                alteredFps         = trial.alteredFps,
+                diffFps            = round.diffFps,
+                diffMs             = round.valid ? round.diffMs : float.NaN,
+                alteredFps         = round.alteredFps,
                 // A shockwave block alternates in time: there is no altered side, and no side of a tower to fire from.
-                alteredSide        = trial.valid && !isShockwave ? SideCell(trial.alteredSide) : "",
-                measuredBaseFps    = trial.MeasuredBaseFps,
-                measuredAlteredFps = trial.MeasuredAlteredFps,
-                baseSideSec        = trial.baseSec,
-                alteredSideSec     = trial.alteredSec,
-                lateFrames         = trial.lateFrames,
+                alteredSide        = round.valid && !isShockwave ? SideCell(round.alteredSide) : "",
+                measuredBaseFps    = round.MeasuredBaseFps,
+                measuredAlteredFps = round.MeasuredAlteredFps,
+                baseSideSec        = round.baseSec,
+                alteredSideSec     = round.alteredSec,
+                lateFrames         = round.lateFrames,
 
-                crossings            = trial.crossings,
+                crossings            = round.crossings,
                 lastCrossingAtSec    = lastCross,
                 sinceLastCrossingSec = sinceCross,
 
@@ -1253,7 +1250,7 @@ namespace JndUfo
                 countedByStaircase = counted && !practiceRow,
                 totalScore         = totalScore,
 
-                trialStartSec    = ToPhaseClock(timing.armedAt),
+                roundStartSec    = ToPhaseClock(timing.armedAt),
                 firedAtSec       = firedAt,
                 roundDurationSec = timing.endedAt - timing.armedAt,
 
@@ -1281,29 +1278,29 @@ namespace JndUfo
                 meanCrossingSpeed  = _roundCrossSpeedN > 0 ? _roundCrossSpeedSum / _roundCrossSpeedN : float.NaN,
                 lastCrossingSpeed  = _roundLastCrossSpeed,
 
-                attemptInRound = _attempt + 1,
+                shotInRound    = _shotsThisRound + 1,
                 roundEnded     = roundEnded,
                 inputDevice    = !pressed || laser == null ? "" : laser.LastPressDevice == 1 ? "mouse" : "key",
                 firingEnabled  = playerFired || (laser != null && laser.FiringEnabled),
                 capFps         = capFps,
                 capFrameMs     = capFps > 0 ? 1000f / capFps : float.NaN,
                 pacedBy        = perturbation != null ? perturbation.PacedBy : PerturbationController.Pace.None,
-                windowOpen     = outcome == TrialOutcome.Detected || (wave != null && wave.WindowOpen),
+                windowOpen     = outcome == ResponseOutcome.Detected || (wave != null && wave.WindowOpen),
 
                 reactionSec           = sinceCross,
-                framesSinceLastChange = pressed && trial.valid && trial.changeFrame >= 0 ? Time.frameCount - trial.changeFrame : -1,
-                changesSinceLastPress = trial.changesSincePress,
-                changeFromFps  = trial.changeFromFps,
-                changeToFps    = trial.changeToFps,
+                framesSinceLastChange = pressed && round.valid && round.changeFrame >= 0 ? Time.frameCount - round.changeFrame : -1,
+                changesSinceLastPress = round.changesSincePress,
+                changeFromFps  = round.changeFromFps,
+                changeToFps    = round.changeToFps,
                 changeFromMs   = fromMs,
                 changeToMs     = toMs,
                 changeDeltaMs  = toMs - fromMs,
                 changeDir      = !changed ? "" : toMs > fromMs ? "slower" : "faster",
-                foreperiodSec  = trial.valid ? trial.foreperiodSec : float.NaN,
+                foreperiodSec  = round.valid ? round.foreperiodSec : float.NaN,
                 windowSec      = isShockwave && Config != null ? Config.swWindowSec : float.NaN,
-                changeTimesSec = trial.valid && perturbation != null ? perturbation.ChangeTimesCell(_trialClockOrigin) : "",
-                changeUfoX     = trial.valid ? trial.changeUfoX : float.NaN,
-                changeUfoY     = trial.valid ? trial.changeUfoY : float.NaN,
+                changeTimesSec = round.valid && perturbation != null ? perturbation.ChangeTimesCell(_phaseClockOrigin) : "",
+                changeUfoX     = round.valid ? round.changeUfoX : float.NaN,
+                changeUfoY     = round.valid ? round.changeUfoY : float.NaN,
 
                 earlyPresses    = _nEarly,
                 latePresses     = _nLate,
@@ -1312,10 +1309,10 @@ namespace JndUfo
                 notLivePresses  = _nNotLive,
 
                 ufoX              = ufoPos.x,
-                baseFrameMs       = trial.valid && trial.baseFps > 0 ? 1000f / trial.baseFps : float.NaN,
-                alteredFrameMs    = trial.valid && trial.alteredFps > 0 ? 1000f / trial.alteredFps : float.NaN,
-                measuredBaseMs    = 1000f / trial.MeasuredBaseFps,
-                measuredAlteredMs = 1000f / trial.MeasuredAlteredFps,
+                baseFrameMs       = round.valid && round.baseFps > 0 ? 1000f / round.baseFps : float.NaN,
+                alteredFrameMs    = round.valid && round.alteredFps > 0 ? 1000f / round.alteredFps : float.NaN,
+                measuredBaseMs    = 1000f / round.MeasuredBaseFps,
+                measuredAlteredMs = 1000f / round.MeasuredAlteredFps,
             };
 
             _stats.AddShot(s);
@@ -1323,17 +1320,17 @@ namespace JndUfo
 
             if (playerFired)
             {
-                _attempt++;
+                _shotsThisRound++;
                 if (perturbation != null) perturbation.NotePress();
             }
             if (ignored) return;
 
-            LogRound(s, trial, sc, isShockwave);
+            LogRound(s, round, sc, isShockwave);
 
             if (roundEnded)
             {
                 _roundNumber++;
-                _attempt = _nEarly = _nLate = _nLockout = _nCooldown = _nNotLive = 0;
+                _shotsThisRound = _nEarly = _nLate = _nLockout = _nCooldown = _nNotLive = 0;
                 _blockRounds++;
             }
 
@@ -1349,35 +1346,35 @@ namespace JndUfo
         }
 
         // One console line per round — enough to follow a pilot session live without opening a log.
-        void LogRound(in ShotSample s, in PerturbationController.TrialRecord trial,
+        void LogRound(in ShotSample s, in PerturbationController.RoundRecord round,
                       QuestPlusStaircase sc, bool isShockwave)
         {
             string what = s.outcome switch
             {
-                TrialOutcome.Shot        => s.isHit ? "HIT" : $"miss by {Mathf.Abs(s.missDistX):0.0}",
-                TrialOutcome.Detected    => "DETECTED",
-                TrialOutcome.Early       => "too early",
-                TrialOutcome.Late        => "too late",
-                TrialOutcome.Timeout     => "chances missed",
-                TrialOutcome.Expired     => "ran out of time",
+                ResponseOutcome.Shot        => s.isHit ? "HIT" : $"miss by {Mathf.Abs(s.missDistX):0.0}",
+                ResponseOutcome.Detected    => "DETECTED",
+                ResponseOutcome.Early       => "too early",
+                ResponseOutcome.Late        => "too late",
+                ResponseOutcome.FlipCap     => "chances missed",
+                ResponseOutcome.Expired     => "ran out of time",
                 _                        => "too many crossings",
             };
-            string staircase = trial.practice
+            string staircase = round.practice
                 ? "practice"
                 : sc != null ? $"T{sc.TrialCount} θ̂ {s.threshDiffMs:0.00} ms SD {s.sd:0.00}" : "";
 
             if (isShockwave)
             {
                 Debug.Log($"[Round] {BlockOrdinal}/{BlockOrder.Length} {_logger.CurrentPhase} #{s.roundNumber}: " +
-                          $"Δ{s.diffMs:0.00} ms — {trial.baseFps} ↔ {trial.alteredFps} fps " +
-                          $"(measured {Fmt(trial.MeasuredBaseFps)} ↔ {Fmt(trial.MeasuredAlteredFps)}) → {what}, " +
+                          $"Δ{s.diffMs:0.00} ms — {round.baseFps} ↔ {round.alteredFps} fps " +
+                          $"(measured {Fmt(round.MeasuredBaseFps)} ↔ {Fmt(round.MeasuredAlteredFps)}) → {what}, " +
                           $"{s.crossings} flip(s), {s.roundDurationSec:0.0}s. {staircase}");
             }
             else
             {
                 Debug.Log($"[Round] {BlockOrdinal}/{BlockOrder.Length} {_logger.CurrentPhase} #{s.roundNumber}: " +
-                          $"Δ{s.diffMs:0.00} ms — L {trial.LeftFps} | R {trial.RightFps} fps " +
-                          $"(measured {Fmt(trial.MeasuredLeftFps)} | {Fmt(trial.MeasuredRightFps)}) → {what}, " +
+                          $"Δ{s.diffMs:0.00} ms — L {round.LeftFps} | R {round.RightFps} fps " +
+                          $"(measured {Fmt(round.MeasuredLeftFps)} | {Fmt(round.MeasuredRightFps)}) → {what}, " +
                           $"{s.crossings} crossing(s), {s.roundDurationSec:0.0}s. {staircase}");
             }
         }
@@ -1390,6 +1387,6 @@ namespace JndUfo
         /// CSV as an empty cell.
         /// </summary>
         float ToPhaseClock(float realtimeInstant) =>
-            float.IsNaN(realtimeInstant) ? float.NaN : realtimeInstant - _trialClockOrigin;
+            float.IsNaN(realtimeInstant) ? float.NaN : realtimeInstant - _phaseClockOrigin;
     }
 }

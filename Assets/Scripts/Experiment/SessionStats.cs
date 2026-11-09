@@ -7,8 +7,8 @@ namespace JndUfo
     /// Accumulates a block's performance, exploration, movement and frame-delivery metrics so the
     /// session log can be written as a single row when the QUEST+ run ends.
     ///
-    /// Fed by <see cref="AddTick"/> (once per rendered frame) and <see cref="AddShot"/> (once per
-    /// round); the read-only properties derive the averages and spreads on demand.
+    /// Fed by <see cref="AddTick"/> (once per rendered frame) and <see cref="AddShot"/> (once per row
+    /// of the shot log); the read-only properties derive the averages and spreads on demand.
     ///
     /// The frame-delivery figures are the ones to check first. The stimulus in this study IS the
     /// frame rate, so a block whose base side measured 340 fps against a 500 fps cap did not present
@@ -17,20 +17,22 @@ namespace JndUfo
     public class SessionStats
     {
         // ── Rounds ───────────────────────────────────────────────────────────
-        /// <summary>Responses logged: shots plus rounds that ran out.</summary>
-        public int   Trials               { get; private set; }
+        /// <summary>Rounds ended, by a response or by running out. A TOO LATE that lets its round go on is a QUEST+ trial
+        /// (staircaseTrials) but ends no round.</summary>
+        public int   Rounds               { get; private set; }
         public int   ShotsFired           { get; private set; }
         public int   Hits                 { get; private set; }
         public int   RoundsExpired        { get; private set; }
         public int   RoundsCrossingCapped { get; private set; }
+        public int   RoundsFlipCapped     { get; private set; }
         public float Score                { get; private set; }
-        public float Accuracy => Trials > 0 ? (float)Hits / Trials : 0f;
+        public float Accuracy => Rounds > 0 ? (float)Hits / Rounds : 0f;
 
-        /// <summary>Shockwave presses and run-outs, and presses that fired nothing, this block.</summary>
+        /// <summary>Shockwave detections and late presses, early presses on either kind of level, and presses that fired
+        /// nothing, this block.</summary>
         public int   Detections { get; private set; }
         public int   EarlyFires { get; private set; }
         public int   LateFires  { get; private set; }
-        public int   Timeouts   { get; private set; }
         public int   LockoutPresses  { get; private set; }
         public int   CooldownPresses { get; private set; }
         public int   NotLivePresses  { get; private set; }
@@ -215,13 +217,12 @@ namespace JndUfo
             switch (s.outcome)
             {
                 // A press that fired nothing changes nothing; it is only counted.
-                case TrialOutcome.PressLockout:  LockoutPresses++;  return;
-                case TrialOutcome.PressCooldown: CooldownPresses++; return;
-                case TrialOutcome.PressNotLive:  NotLivePresses++;  return;
-                case TrialOutcome.Detected: Detections++; break;
-                case TrialOutcome.Early:    EarlyFires++; break;
-                case TrialOutcome.Late:     LateFires++;  break;
-                case TrialOutcome.Timeout:  Timeouts++;   break;
+                case ResponseOutcome.PressLockout:  LockoutPresses++;  return;
+                case ResponseOutcome.PressCooldown: CooldownPresses++; return;
+                case ResponseOutcome.PressNotLive:  NotLivePresses++;  return;
+                case ResponseOutcome.Detected: Detections++; break;
+                case ResponseOutcome.Early:    EarlyFires++; break;
+                case ResponseOutcome.Late:     LateFires++;  break;
             }
 
             if (s.playerFired) ShotsFired++;
@@ -234,16 +235,17 @@ namespace JndUfo
 
             if (s.roundEnded)
             {
-                Trials++;
+                Rounds++;
                 if (s.playerFired && s.crossings == 0) ShotsWithoutCrossing++;
                 if (!float.IsNaN(s.sinceLastCrossingSec)) _sinceCrossing.Add(s.sinceLastCrossingSec);
                 if (!s.countedByStaircase) RoundsNotCounted++;
-                if (s.outcome == TrialOutcome.Expired || s.outcome == TrialOutcome.Timeout) RoundsExpired++;
-                if (s.outcome == TrialOutcome.CrossingCap) RoundsCrossingCapped++;
+                if (s.outcome == ResponseOutcome.Expired) RoundsExpired++;
+                if (s.outcome == ResponseOutcome.CrossingCap) RoundsCrossingCapped++;
+                if (s.outcome == ResponseOutcome.FlipCap) RoundsFlipCapped++;
                 if (!float.IsNaN(s.roundDurationSec)) _roundDurations.Add(s.roundDurationSec);
                 _crossings.Add(Mathf.Max(0, s.crossings));
-                if (!float.IsNaN(s.firstCrossingAtSec) && !float.IsNaN(s.trialStartSec))
-                    _firstCrossing.Add(s.firstCrossingAtSec - s.trialStartSec);
+                if (!float.IsNaN(s.firstCrossingAtSec) && !float.IsNaN(s.roundStartSec))
+                    _firstCrossing.Add(s.firstCrossingAtSec - s.roundStartSec);
             }
 
             if (s.playerFired && !float.IsNaN(s.ufoVelX))

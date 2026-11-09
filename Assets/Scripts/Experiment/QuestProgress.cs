@@ -27,7 +27,7 @@ namespace JndUfo
     /// peak): SD can widen after a surprising response, and a bar that shrinks reads as a
     /// punishment for an answer the participant cannot know was wrong.
     /// </summary>
-    public static class RoundProgress
+    public static class QuestProgress
     {
         /// <param name="sdMs">The current posterior SD of θ — pass PerturbationController's
         /// cached value rather than recomputing it, the marginal is a full pass over the grid.</param>

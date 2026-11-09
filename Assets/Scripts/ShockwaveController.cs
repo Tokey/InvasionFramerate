@@ -4,7 +4,7 @@ namespace JndUfo
 {
     /// <summary>
     /// Runs the shockwave task (<see cref="LevelType.Shockwave"/>): the UFO flies automatically
-    /// while the whole screen's frame rate alternates between the trial's two frame rates
+    /// while the whole screen's frame rate alternates between the round's two frame rates
     /// (<c>baseFps</c> ↔ <c>alteredFps</c>) at random intervals of <c>swFlipDelayMinSec</c> to
     /// <c>swFlipDelayMaxSec</c>.
     ///
@@ -24,7 +24,7 @@ namespace JndUfo
         StudyConfig _config;
         bool        _active;
         bool        _armed;
-        bool        _regating;
+        bool        _retrying;
 
         int   _baseFps    = 60;
         int   _alteredFps = 60;
@@ -36,11 +36,11 @@ namespace JndUfo
         float _waitStartedAt;
 
         int   _flipsThisRound;
-        int   _flipsSinceGun;
+        int   _flipsThisAttempt;
         int   _earliesThisRound;
 
         public bool  Active           => _active;
-        public bool  Regating         => _regating;
+        public bool  Retrying         => _retrying;
         public bool  AlteredPhase     => _alteredPhase;
         public bool  FastPhase        => CurrentFps >= (_alteredPhase ? _baseFps : _alteredFps);
         public bool  WindowOpen       => _active && _windowClosesAt > 0f && Time.realtimeSinceStartup < _windowClosesAt;
@@ -81,31 +81,31 @@ namespace JndUfo
         public void BeginBlock(StudyConfig config)
         {
             _config = config;
-            StopTrial();
+            StopRound();
         }
 
         /// <summary>
-        /// Configures the trial's two alternating frame rates (<paramref name="baseFps"/> and
+        /// Configures the round's two alternating frame rates (<paramref name="baseFps"/> and
         /// <paramref name="alteredFps"/>). The round starts at <paramref name="baseFps"/> and
         /// toggles between the two on each scheduled flip.
         /// </summary>
-        public void BeginTrial(StudyConfig config, int baseFps, int alteredFps)
+        public void BeginRound(StudyConfig config, int baseFps, int alteredFps)
         {
             _config = config;
             if (_config == null || !_config.IsShockwave)
             {
-                StopTrial();
+                StopRound();
                 return;
             }
 
             _active           = true;
             _armed            = false;
-            _regating         = false;
+            _retrying         = false;
             _baseFps          = Mathf.Max(1, baseFps);
             _alteredFps       = Mathf.Max(1, alteredFps);
             _alteredPhase     = false;
             _flipsThisRound   = 0;
-            _flipsSinceGun    = 0;
+            _flipsThisAttempt = 0;
             _earliesThisRound = 0;
             _windowClosesAt   = 0f;
             _earlyLockoutUntil = 0f;
@@ -124,11 +124,11 @@ namespace JndUfo
             _alteredPhase = false;
         }
 
-        public void StopTrial()
+        public void StopRound()
         {
             _active            = false;
             _armed             = false;
-            _regating          = false;
+            _retrying          = false;
             _alteredPhase      = false;
             _windowClosesAt    = 0f;
             _earlyLockoutUntil = 0f;
@@ -149,7 +149,7 @@ namespace JndUfo
             else if (!canFire && _armed)
             {
                 _armed = false;
-                if (!_regating)
+                if (!_retrying)
                 {
                     _windowClosesAt    = 0f;
                     _earlyLockoutUntil = 0f;
@@ -168,9 +168,9 @@ namespace JndUfo
                 int cap = FlipCap;
                 if (cap > 0 && _flipsThisRound >= cap)
                 {
-                    StopTrial();
+                    StopRound();
                     if (GameManager.Instance != null)
-                        GameManager.Instance.ResolveWithoutShot(TrialOutcome.Timeout);
+                        GameManager.Instance.ResolveWithoutShot(ResponseOutcome.FlipCap);
                     return;
                 }
 
@@ -183,7 +183,7 @@ namespace JndUfo
             {
                 _alteredPhase      = !_alteredPhase;
                 _flipsThisRound++;
-                _flipsSinceGun++;
+                _flipsThisAttempt++;
                 if (float.IsNaN(FirstFlipAt)) FirstFlipAt = now;
                 LastFlipAt         = now;
                 LastForeperiodSec  = now - _waitStartedAt;
@@ -196,14 +196,14 @@ namespace JndUfo
 
         void ArmAfterGun()
         {
-            _armed          = true;
-            _flipsSinceGun  = 0;
-            _windowClosesAt = 0f;
+            _armed             = true;
+            _flipsThisAttempt  = 0;
+            _windowClosesAt    = 0f;
             _earlyLockoutUntil = 0f;
 
-            if (_regating)
+            if (_retrying)
             {
-                _regating = false;
+                _retrying = false;
             }
             else
             {
@@ -217,43 +217,37 @@ namespace JndUfo
         }
 
         /// <summary>
-        /// Called by <see cref="LaserFirer"/> before firing. Returns true during the 1 s cooldown
-        /// after a forgiven TOO EARLY press so spam-clicking does not immediately forfeit the round.
+        /// Read by <see cref="LaserFirer"/> before firing. True during the 1 s lockout after a forgiven TOO EARLY press,
+        /// so spam-clicking does not immediately forfeit the round. The press is logged with outcome lockout.
         /// </summary>
-        public bool ShouldSwallowFire()
-        {
-            if (!_active) return false;
-            if (Time.realtimeSinceStartup < _earlyLockoutUntil)
-                return true;
-            return false;
-        }
+        public bool InEarlyLockout => _active && Time.realtimeSinceStartup < _earlyLockoutUntil;
 
         /// <summary>
         /// Classifies a player fire press on a shockwave block:
-        /// - <see cref="TrialOutcome.Detected"/> if pressed inside the <c>swWindowSec</c> window after a flip.
-        /// - <see cref="TrialOutcome.Early"/> if pressed before the first flip since the starting gun
+        /// - <see cref="ResponseOutcome.Detected"/> if pressed inside the <c>swWindowSec</c> window after a flip.
+        /// - <see cref="ResponseOutcome.Early"/> if pressed before the first flip since the starting gun
         ///   (forgiven up to <c>swMaxEarlyPerRound</c> in main rounds and always in practice; redraws the delay).
         ///   Never reaches QUEST+: the frame rate has not changed yet, so the press answers nothing.
-        /// - <see cref="TrialOutcome.Late"/> if pressed after a flip's window closed (counted miss + TRY AGAIN! re-gate).
+        /// - <see cref="ResponseOutcome.Late"/> if pressed after a flip's window closed (counted miss, then TRY AGAIN!).
         /// </summary>
-        public TrialVerdict ClassifyPlayerFire()
+        public PressVerdict ClassifyPlayerFire()
         {
             float now = Time.realtimeSinceStartup;
 
             if (WindowOpen)
             {
                 _windowClosesAt = 0f;
-                StopTrial();
-                return new TrialVerdict
+                StopRound();
+                return new PressVerdict
                 {
-                    outcome            = TrialOutcome.Detected,
+                    outcome            = ResponseOutcome.Detected,
                     endsRound          = true,
                     countedByStaircase = true,
-                    regate             = false,
+                    retry              = false,
                 };
             }
 
-            if (_flipsSinceGun == 0)
+            if (_flipsThisAttempt == 0)
             {
                 _earliesThisRound++;
                 bool practice = perturbation != null && perturbation.PracticeMode;
@@ -269,47 +263,38 @@ namespace JndUfo
                     _nextFlipAt        = now + DrawDelay(dMin, dMax);
                     _earlyLockoutUntil = now + lockout;
 
-                    return new TrialVerdict
+                    return new PressVerdict
                     {
-                        outcome            = TrialOutcome.Early,
+                        outcome            = ResponseOutcome.Early,
                         endsRound          = false,
                         countedByStaircase = false,
-                        regate             = false,
+                        retry              = false,
                     };
                 }
 
-                StopTrial();
-                return new TrialVerdict
+                StopRound();
+                return new PressVerdict
                 {
-                    outcome            = TrialOutcome.Early,
+                    outcome            = ResponseOutcome.Early,
                     endsRound          = true,
                     countedByStaircase = false,
-                    regate             = false,
+                    retry              = false,
                 };
             }
 
-            // Pressed after at least one flip's window already closed: TOO LATE -> counted miss + TRY AGAIN! re-gate.
+            // Pressed after at least one flip's window already closed: TOO LATE -> counted miss, then TRY AGAIN!.
             _windowClosesAt    = 0f;
             _nextFlipAt        = float.PositiveInfinity;
             _earlyLockoutUntil = 0f;
-            _regating          = true;
+            _retrying          = true;
 
-            return new TrialVerdict
+            return new PressVerdict
             {
-                outcome            = TrialOutcome.Late,
+                outcome            = ResponseOutcome.Late,
                 endsRound          = false,
                 countedByStaircase = true,
-                regate             = true,
+                retry              = true,
             };
-        }
-
-        /// <summary>
-        /// Called by <see cref="GameManager"/> when a TOO LATE press ends the round after all: that miss finished the
-        /// QUEST+ staircase.
-        /// </summary>
-        public void CancelRegateAndStop()
-        {
-            StopTrial();
         }
 
         static float DrawDelay(float minSec, float maxSec)

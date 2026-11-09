@@ -31,8 +31,8 @@ namespace JndUfo
     public enum FrameLimiterMode { Precise, Unity }
 
     /// <summary>
-    /// The kind of level a block is played in. The split, the shot, the scoring and QUEST+ are the same in all
-    /// three; what changes is who flies the UFO and whether the world moves.
+    /// The kind of level a block is played in. In the first three the split, the shot, the scoring and QUEST+ are the
+    /// same; what changes is who flies the UFO and whether the world moves. Shockwave makes the response temporal.
     ///
     ///   Manual  the participant flies the UFO with the mouse, the camera holding still (it pans a little between
     ///           rounds). The original level.
@@ -42,6 +42,9 @@ namespace JndUfo
     ///   Auto    the UFO flies itself back and forth across the screen (<see cref="UfoAutopilot"/>), the camera
     ///           holding still as in Manual. The participant only fires: when the UFO is over the place where the
     ///           frame rate changes. The mouse does not move it.
+    ///   Shockwave  the UFO flies itself and there is no tower to find: the whole screen's frame rate flips between the
+    ///           base and the altered rate after a random wait (<see cref="ShockwaveController"/>), and the participant
+    ///           presses inside the response window after a flip.
     /// </summary>
     public enum LevelType { Manual, Scroll, Auto, Shockwave }
 
@@ -76,11 +79,13 @@ namespace JndUfo
     /// Columns, grouped:
     ///
     ///   level      levelType (manual / scroll / auto / shockwave), scrollFollow
-    ///   stimulus   baseFps, direction, maxDiffMs, minDiffMs, diffStepMs, alteredSide, frameLimiter
+    ///   stimulus   baseFrameMs, ftDirection, maxDiffMs, minDiffMs, diffStepMs, alteredSide, frameLimiter
     ///   round      maxCrossingsPerRound, roundTimeoutSec, hitPoints, missPoints
     ///   QUEST+     threshCount, slope/lapse grids, guessRate, maxTrials, minTrials, stopSD
     ///   autopilot  autoSpeed, autoPath, autoSweep, autoTurnSec, autoHeight, autoBobAmp, autoBobHz, autoStart
-    ///              (auto levels only)
+    ///              (auto and shockwave levels)
+    ///   shockwave  swFlipDelayMinSec, swFlipDelayMaxSec, swWindowSec, swMaxEarlyPerRound, maxFlipsPerRound
+    ///   debug      showDebug
     ///
     /// Everything that defines the task itself rather than the study — the hit radius, the fire
     /// cooldown, the reveal timing — is pinned below rather than read from the file, so it stays
@@ -93,9 +98,6 @@ namespace JndUfo
 
         /// <summary>Column order as it appeared in the file, so log headers stay stable.</summary>
         public string[] Columns { get; private set; } = new string[0];
-
-        /// <summary>Study identifier, for console messages only.</summary>
-        public readonly string label = "fps_jnd";
 
         /// <summary>1-based position of this row in ExperimentConfig.csv — the block number.</summary>
         public int blockIndex;
@@ -295,7 +297,7 @@ namespace JndUfo
         public float swWindowSec = 0.9f;
         /// <summary>How many early presses a main round forgives before the next one forfeits the round as a miss.</summary>
         public int swMaxEarlyPerRound = 1;
-        /// <summary>How many unanswered frame-rate flips may pass in a main shockwave round before it ends as Timeout.</summary>
+        /// <summary>How many unanswered frame-rate flips may pass in a main shockwave round before it ends (outcome flipCap).</summary>
         public int maxFlipsPerRound = 5;
 
         // ── HUD / Debug ──────────────────────────────────────────────────────
@@ -333,7 +335,7 @@ namespace JndUfo
         public readonly float readyBeatSec              = 0.5f;
         /// <summary>Practice shockwave cap on unanswered flips per round.</summary>
         public readonly int   practiceMaxFlipsPerRound  = 3;
-        /// <summary>Cooldown after a forgiven TOO EARLY press during which extra clicks are swallowed (seconds).</summary>
+        /// <summary>Lockout after a forgiven TOO EARLY press: further clicks are ignored and logged as lockout (seconds).</summary>
         public readonly float swEarlyLockoutSec         = 1f;
 
         // ── Loading ──────────────────────────────────────────────────────────
@@ -460,9 +462,9 @@ namespace JndUfo
             c.autoStart   = ParseStart(CsvTable.GetString(row, "autoStart", "random"), tag);
 
             // A config copied over from an earlier build: its timing columns would be ignored without a word.
-            if (c.IsShockwave && string.IsNullOrWhiteSpace(CsvTable.GetString(row, "swFlipDelayMinSec", "")))
-                Debug.LogError($"{tag}: shockwave row has no swFlipDelayMinSec, so it waits the default 1 to 3.5 s before " +
-                                "each flip, whatever the file says under older names.");
+            if (c.IsShockwave && !row.ContainsKey("swFlipDelayMinSec"))
+                Debug.LogError($"{tag}: shockwave row has no swFlipDelayMinSec column, so its flips use the default timing " +
+                                "and cap (1 to 3.5 s, 5 flips), whatever the file says under older names.");
             c.swFlipDelayMinSec  = CsvTable.GetFloat(row, "swFlipDelayMinSec", 1f);
             c.swFlipDelayMaxSec  = CsvTable.GetFloat(row, "swFlipDelayMaxSec", 3.5f);
             c.swWindowSec        = CsvTable.GetFloat(row, "swWindowSec",       0.9f);

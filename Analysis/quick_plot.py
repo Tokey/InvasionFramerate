@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import plot_quest
 
 def main():
-    ap = argparse.ArgumentParser(description="Quickly view QUEST+ plots for a single folder without saving.")
+    ap = argparse.ArgumentParser(description="Quickly view QUEST+ plots of the stutter study's logs for a single folder, without saving.")
     ap.add_argument("folder", type=Path, nargs='?', help="Path to the folder containing ShotLog_*.csv files")
     args = ap.parse_args()
 

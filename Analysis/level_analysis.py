@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Figures, tables and a report for a study that mixes LEVEL TYPES: manual (the mouse flies the UFO,
-the camera holds still), scroll (the world scrolls under it) and auto (the UFO flies itself; the
-participant only clicks). A condition here is (levelType, baseFps, direction), so 60 down as a
+the camera holds still), scroll (the world scrolls under it), auto (the UFO flies itself; the
+participant only clicks) and shockwave (it flies itself while the whole screen's frame rate flips, and
+the participant presses after a flip). A condition here is (levelType, baseFps, direction), so 60 down as a
 manual level and 60 down as an auto level are compared, never pooled.
 
     python Analysis/level_analysis.py                                   # Data/Logs -> Analysis/results
@@ -15,7 +16,7 @@ Writes into --out:
     figures/<group>/L##_<name>.png   thresholds, psychophysics, behaviour, auto, frames, quality
     figures/participants/            one staircase page per participant
     tables/blocks.csv                every main block: SessionLog columns + participant, condition, flags
-    tables/shots.csv                 every round (main and practice) with derived columns
+    tables/shots.csv                 every response (main and practice) with derived columns; closesRound marks those that ended a round
     tables/conditions.csv            per condition: n, threshold (Weber %, fps, ms) mean and 95% CI
     tables/level_contrasts.csv       within-participant differences between level types
     report.md                        inventory, data-quality flags, thresholds, contrasts, figure list
@@ -26,8 +27,8 @@ with --legacy-level, and every report says when a level was inferred. Figures th
 those logs lack (the auto level's lead/lag, the UFO's speed at crossings, screen positions in a
 scroll level) use the blocks that have them and say so.
 
-Design: one categorical colour per LEVEL TYPE - manual violet, scroll magenta, auto green -
-validated with the dataviz validator over all pairs (worst CVD dE 17.6, normal vision 28.1; the
+Design: one categorical colour per LEVEL TYPE - manual violet, scroll magenta, auto green, and
+shockwave amber with a diamond, added later - the first three validated with the dataviz validator over all pairs (worst CVD dE 17.6, normal vision 28.1; the
 magenta is under 3:1 against white, so every figure also carries a legend and a marker shape per
 level: circle, square, triangle). Direction is the fill: down filled, up hollow. Base rate is
 always an axis or a facet, never a colour, so nothing here repaints Analysis/jnd_analysis.py's
@@ -66,6 +67,12 @@ LEVELS = ("manual", "scroll", "auto", "shockwave")
 LEVEL_COLOR = {"manual": "#6250d6", "scroll": "#e87ba4", "auto": "#008300", "shockwave": "#c26a00"}
 LEVEL_MARKER = {"manual": "o", "scroll": "s", "auto": "^", "shockwave": "D"}
 LEVEL_LABEL = {"manual": "Manual", "scroll": "Scroll", "auto": "Auto", "shockwave": "Shockwave"}
+
+# Columns renamed since: older logs are read under today's names.
+RENAMED_COLS = {"trialStartSec": "roundStartSec", "attemptInRound": "shotInRound", "trials": "rounds",
+                "swTimeouts": "roundsFlipCapped", "swEarlyFires": "earlyFires", "shockwaveEvent": "shockwaveFlips",
+                "cfg_swSpikeDelayMinSec": "cfg_swFlipDelayMinSec", "cfg_swSpikeDelayMaxSec": "cfg_swFlipDelayMaxSec",
+                "cfg_maxSpikesPerRound": "cfg_maxFlipsPerRound"}
 ARROW = {"down": "↓", "up": "↑"}
 CLOSE_R = 6.0
 VIEW_W_16_9 = 2 * J.CAM_DIST * math.tan(math.radians(J.CAM_FOV_DEG / 2)) * 16 / 9
@@ -174,10 +181,13 @@ class Study:
         sessions = []
         for f in found:
             try:
-                sh = pd.read_csv(f["shot"], keep_default_na=False, na_values=["", "NaN"])
+                sh = pd.read_csv(f["shot"], keep_default_na=False, na_values=["", "NaN"]).rename(columns=RENAMED_COLS)
                 # Every press has a row now; a press that fired nothing is not a response.
-                if "outcome" in sh: sh = sh[~sh["outcome"].isin(["cooldown", "lockout", "notLive"])].copy()
-                ss = pd.read_csv(f["session"], keep_default_na=False, na_values=["", "NaN"]) if f["session"] else None
+                if "outcome" in sh:
+                    sh = sh[~sh["outcome"].isin(["cooldown", "lockout", "notLive"])].copy()
+                    sh["outcome"] = sh["outcome"].replace({"timeout": "flipCap"})
+                ss = (pd.read_csv(f["session"], keep_default_na=False, na_values=["", "NaN"]).rename(columns=RENAMED_COLS)
+                      if f["session"] else None)
             except Exception as exc:  # noqa: BLE001
                 self.notes.append(f"{f['folder'].name}: unreadable ({exc})")
                 continue
@@ -237,6 +247,9 @@ class Study:
         for c in ("isHit", "playerFired", "countedByStaircase"):
             if c in s:
                 s[c] = pd.to_numeric(s[c], errors="coerce").fillna(0).astype(int)
+        # A round can have several rows: this one closed it. Logs from before that have one row per round.
+        s["closesRound"] = (pd.to_numeric(s["roundEnded"], errors="coerce").fillna(1).eq(1)
+                            if "roundEnded" in s else True)
         s["weber"] = s["diffFps"] / s["baseFps"]
         s["cond"] = cond_key(s)
         if "ufoVelX" in s:
@@ -407,7 +420,8 @@ def level_contrasts(st):
     rows = []
     for (base, d), g in b.groupby(["baseFps", "direction"]):
         piv = g.pivot_table(index="pid", columns="levelType", values="weberPct", aggfunc="mean")
-        for a, c in (("manual", "scroll"), ("manual", "auto"), ("scroll", "auto")):
+        for a, c in (("manual", "scroll"), ("manual", "auto"), ("scroll", "auto"),
+                     ("manual", "shockwave"), ("scroll", "shockwave"), ("auto", "shockwave")):
             if a not in piv or c not in piv:
                 continue
             pair = piv[[a, c]].dropna()
@@ -614,15 +628,15 @@ def staircase_page(st, pid):
 
 # The outcomes of these levels, on top of the ones the frame-rate study's figure knows.
 OUTCOME_ORDER = J.OUTCOME_ORDER + [("detected", "Detected"), ("early", "Too early"), ("late", "Too late"),
-                                   ("timeout", "Chances missed")]
-OUTCOME_COLOR = {**J.OUTCOME_COLOR, "detected": "#1baf7a", "early": "#eda100", "late": "#3d3c39", "timeout": "#bdbcb4"}
+                                   ("flipCap", "Flip limit")]
+OUTCOME_COLOR = {**J.OUTCOME_COLOR, "detected": "#1baf7a", "early": "#eda100", "late": "#3d3c39", "flipCap": "#bdbcb4"}
 
 
 @figure("L07_outcomes", "behaviour",
-        "What every main round ended in, per condition: hit, missed shot, timed out, crossing limit (counts in the "
+        "What every main round ended in, per condition: hit, missed shot, detected, too early, too late, timed out, crossing or flip limit (counts in the "
         "bars)")
 def fig_outcomes(st):
-    s = st.shots[st.shots["main"]]
+    s = st.shots[st.shots["main"] & st.shots["closesRound"]]
     if s.empty:
         return None
     s = s.assign(result=np.where(s["outcome"].eq("shot"), np.where(s["isHit"].eq(1), "hit", "miss"), s["outcome"]))
@@ -668,8 +682,8 @@ def _box_strip(ax, groups, colors, markers, labels):
 
 
 @figure("L08_latency", "behaviour",
-        "When the shot came after the last boundary crossing (sinceLastCrossingSec), per level type, hits and misses "
-        "apart: in an auto level this is the reaction time; flying by hand, how long the participant searched after "
+        "When the shot came after the last boundary crossing, or on shockwave the last flip (sinceLastCrossingSec), per level type, hits and misses "
+        "apart: in an auto or shockwave level this is the reaction time; flying by hand, how long the participant searched after "
         "the last crossing")
 def fig_latency(st):
     s = st.shots[st.shots["main"] & st.shots["playerFired"].eq(1)]
@@ -687,20 +701,20 @@ def fig_latency(st):
     fig, ax = plt.subplots(figsize=(J.COL_W, 2.4), layout="constrained")
     _box_strip(ax, groups, colors, markers, labels)
     ax.set_yscale("log")
-    ax.set_ylabel("Shot after last crossing (s)")
+    ax.set_ylabel("Shot after last crossing or flip (s)")
     grid_y(ax)
     return fig
 
 
 @figure("L09_exploration", "behaviour",
-        "Exploration against the difference: boundary crossings per round and the round's duration, in bins of the "
+        "Exploration against the difference: boundary crossings (flips on shockwave) per round and the round's duration, in bins of the "
         "difference (median, IQR), per level type")
 def fig_exploration(st):
-    s = st.shots[st.shots["main"]]
+    s = st.shots[st.shots["main"] & st.shots["closesRound"]]
     if s.empty:
         return None
     fig, axes = plt.subplots(1, 2, figsize=(J.TEXT_W, 2.3), layout="constrained")
-    for ax, col, lab in ((axes[0], "crossings", "Crossings per round"), (axes[1], "roundDurationSec", "Round duration (s)")):
+    for ax, col, lab in ((axes[0], "crossings", "Crossings or flips per round"), (axes[1], "roundDurationSec", "Round duration (s)")):
         for lv in LEVELS:
             g = s[s["levelType"] == lv]
             if g.empty:
@@ -729,7 +743,7 @@ def fig_exploration(st):
 
 
 @figure("L10_miss_distance", "behaviour",
-        "Where shots landed: cumulative share of shots by |shot X - tower X| per level type, the hit radius (5.5) "
+        "Where shots landed: cumulative share of shots by |shot X - tower X| per level type, the hit radius "
         "dashed - the curve's height there is the hit rate")
 def fig_miss_cdf(st):
     s = st.shots[st.shots["main"] & st.shots["playerFired"].eq(1)]
@@ -833,7 +847,7 @@ def fig_auto_latency(st):
 
 
 @figure("L13_crossing_speed", "behaviour",
-        "How fast the boundary was crossed: the UFO's speed at each round's crossings, per level type (the auto "
+        "How fast the boundary was crossed: the UFO's speed at each round's crossings (on shockwave, at its flips), per level type (the auto "
         "level's is its autoSpeed by design); and at the moment of the shot")
 def fig_crossing_speed(st):
     s = st.shots[st.shots["main"]]
@@ -841,10 +855,11 @@ def fig_crossing_speed(st):
         return None
     levels = [lv for lv in LEVELS if lv in set(s.loc[s["meanCrossingSpeed"].notna(), "levelType"])]
     fig, axes = plt.subplots(1, 2, figsize=(J.TEXT_W, 2.3), layout="constrained")
-    _box_strip(axes[0], [s.loc[s["levelType"] == lv, "meanCrossingSpeed"] for lv in levels],
+    closed = s[s["closesRound"]]
+    _box_strip(axes[0], [closed.loc[closed["levelType"] == lv, "meanCrossingSpeed"] for lv in levels],
                [LEVEL_COLOR[lv] for lv in levels], [LEVEL_MARKER[lv] for lv in levels],
                [LEVEL_LABEL[lv] for lv in levels])
-    axes[0].set_ylabel("Speed at crossings (units/s)")
+    axes[0].set_ylabel("Speed at crossings or flips (units/s)")
     grid_y(axes[0])
     f = s[s["playerFired"].eq(1)]
     _box_strip(axes[1], [f.loc[f["levelType"] == lv, "ufoVelX"].abs() for lv in levels],
@@ -906,6 +921,8 @@ def fig_screen_position(st):
         "tower X); the hit window shaded", needs_frames=True)
 def fig_relative(st):
     f = _live_frames(st)
+    if not f.empty:
+        f = f[f["levelType"] != "shockwave"]      # a shockwave block has no boundary to be near
     if f.empty:
         return None
     cr = close_radius(st)
@@ -999,7 +1016,7 @@ def fig_frame_times(st):
         "Was the stimulus delivered? Each round's measured frame rate against its cap, base and altered sides, per "
         "level type; points under the identity line are shortfalls")
 def fig_delivery(st):
-    s = st.shots[st.shots["main"]]
+    s = st.shots[st.shots["main"] & st.shots["closesRound"]]
     if s.empty:
         return None
     fig, ax = plt.subplots(figsize=(J.COL_W, 2.6), layout="constrained")
@@ -1092,7 +1109,7 @@ def fig_inventory(st):
 @figure("L21_practice", "quality",
         "Practice: hit rate on each practice pair, per level type practised (practice never feeds QUEST+)")
 def fig_practice(st):
-    s = st.shots[~st.shots["main"]]
+    s = st.shots[~st.shots["main"] & st.shots["closesRound"]]
     if s.empty:
         return None
     s = s.assign(pair=s["alteredFps"].astype(int).astype(str) + " vs " + s["baseFps"].astype(int).astype(str))
@@ -1139,8 +1156,8 @@ def write_report(st, out, made, skipped, cond_tab, contrasts):
     L = ["# Level-type analysis\n"]
     L.append(f"Participants: {len(st.pids)}; main blocks: {len(st.blocks)} "
              f"({int(st.blocks['usable'].sum()) if len(st.blocks) else 0} usable); rounds: "
-             f"{int(st.shots['main'].sum()) if len(st.shots) else 0} main, "
-             f"{int((~st.shots['main']).sum()) if len(st.shots) else 0} practice.\n")
+             f"{int((st.shots['main'] & st.shots['closesRound']).sum()) if len(st.shots) else 0} main, "
+             f"{int((~st.shots['main'] & st.shots['closesRound']).sum()) if len(st.shots) else 0} practice.\n")
     if st.notes:
         L.append("## Notes\n")
         L += [f"- {n}" for n in st.notes]
@@ -1227,7 +1244,7 @@ def main(argv=None):
     st = Study(args.data, frames=not args.no_frames, legacy=args.legacy_level, only=args.only, exclude=args.exclude)
     if not st.pids:
         sys.exit("No frame-rate sessions found.")
-    log(f"  {len(st.pids)} participant(s), {len(st.blocks)} main block(s), {len(st.shots)} round(s)")
+    log(f"  {len(st.pids)} participant(s), {len(st.blocks)} main block(s), {int(st.shots['closesRound'].sum()) if len(st.shots) else 0} round(s)")
     for n_ in st.notes:
         log(f"  {n_}")
 

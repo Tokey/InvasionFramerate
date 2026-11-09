@@ -15,7 +15,7 @@ Schema
                   part of the key; so is the run, because an abandoned run and the run that
                   replaces it share a sessionId.
     session_log   one row per block - the summary metrics
-    shot          one row per trial
+    shot          one row per press (one per trial in stutter-study logs)
     frame         one row per rendered frame
     stutter       one row per delivered stutter, exploded out of shot.stuttersMs
                   (stutter-study logs only - the frame-rate study has no stutters)
@@ -73,11 +73,14 @@ LOGS = {
 #
 # baseFps / direction / frameLimiter define a frame-rate-study block. The stutter study's
 # unityApplicationFps / testMode / weapon / weaponRun stay listed so its logs still load;
-# a column a file does not carry is simply NULL.
+# only a database holding those logs gets those columns (see STUTTER_ATTRS).
 BLOCK_KEY = ("sessionId", "blockIndex", "phase")
 BLOCK_ATTRS = ("baseFps", "direction", "frameLimiter",
                "unityApplicationFps", "testMode", "closeRadius", "weapon", "phaseStartIso",
                "blockOrdinal", "latinRow", "latinOrder", "weaponRun", "runId", "levelType")
+
+# Added to `block` only when a file carries them, so a database of this study's logs has none of them.
+STUTTER_ATTRS = {"unityApplicationFps", "testMode", "weapon", "weaponRun"}
 
 # Stored in `block` (from the group's first row, for convenience) AND kept on every fact row,
 # because they are not constant within a group: each practice round has its own baseFps (the
@@ -156,7 +159,7 @@ def quote(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-def create_block_table(con, cfg_columns):
+def create_block_table(con, cfg_columns, file_columns):
     cols = ", ".join(f"{quote(c)} TEXT" for c in cfg_columns)
     con.execute(f"""
         CREATE TABLE IF NOT EXISTS block (
@@ -167,15 +170,11 @@ def create_block_table(con, cfg_columns):
             baseFps             TEXT,
             direction           TEXT,
             frameLimiter        TEXT,
-            unityApplicationFps TEXT,
-            testMode            TEXT,
             closeRadius         REAL,
-            weapon              TEXT,
             phaseStartIso       TEXT,
             blockOrdinal        INTEGER,
             latinRow            INTEGER,
             latinOrder          TEXT,
-            weaponRun           INTEGER,
             runId               TEXT,
             levelType           TEXT,
             blockKey            TEXT    NOT NULL UNIQUE,
@@ -185,14 +184,13 @@ def create_block_table(con, cfg_columns):
         )""")
 
     # Widen for anything the CREATE above did not name. Two things drift: a column added
-    # to BLOCK_ATTRS but not to the literal above (which is how `weapon` silently broke
-    # every current-schema session), and cfg_* sets that differ between the file that
-    # created the table and a later one - the old logs in this tree carry cfg_label where
-    # the current ones carry cfg_weapon, and --combined puts both in one database.
+    # to BLOCK_ATTRS but not to the literal above, and cfg_* sets that differ between the file
+    # that created the table and a later one - the stutter study's older logs carry cfg_label
+    # where its later ones carry cfg_weapon, and --combined puts both in one database.
     existing = {r[1] for r in con.execute("PRAGMA table_info(block)")}
     for c in (*BLOCK_ATTRS, *cfg_columns):
-        if c not in existing:
-            con.execute(f"ALTER TABLE block ADD COLUMN {quote(c)} TEXT")
+        if c not in existing and (c not in STUTTER_ATTRS or c in file_columns):
+            con.execute(f"ALTER TABLE block ADD COLUMN {quote(c)} {'INTEGER' if c == 'weaponRun' else 'TEXT'}")
             existing.add(c)
 
 
@@ -278,7 +276,7 @@ def import_table(con, table, path, cache, counts):
         return 0
 
     cfg_columns = [c for c in header if c.startswith("cfg_")]
-    create_block_table(con, cfg_columns)
+    create_block_table(con, cfg_columns, header)
 
     hoisted = (set(BLOCK_KEY) | set(BLOCK_ATTRS) | set(cfg_columns)) - PER_ROW_ATTRS
     fact_columns = [c for c in header if c not in hoisted]
@@ -637,7 +635,7 @@ SCHEMA_HELP = """
 Tables
   block        one row per (sessionId, runId, blockIndex, phase, levelType). Holds everything
                constant across a row group: cfg_* settings, direction, frameLimiter,
-               closeRadius, phaseStartIso, levelType (manual / scroll / auto), runId, and
+               closeRadius, phaseStartIso, levelType (manual / scroll / auto / shockwave), runId, and
                the counterbalancing - blockOrdinal, latinRow, latinOrder. blockIndex is
                WHICH setting (its row in ExperimentConfig.csv); blockOrdinal is WHEN in the
                session it ran. A session has one practice phase (blockIndex 0) per level
@@ -645,7 +643,7 @@ Tables
                own); the views use the row's. (Stutter-study logs fill unityApplicationFps /
                testMode / weapon / weaponRun instead.)
   session_log  one row per block - the summary metrics
-  shot         one row per round
+  shot         one row per press (one per trial in stutter-study logs)
   frame        one row per rendered frame
   session_info one row per SessionInfo key: the build, machine, display, config hashes
                and every Inspector setting of the game's components

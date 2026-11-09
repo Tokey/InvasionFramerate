@@ -1,5 +1,6 @@
 """
-Python port of Assets/Scripts/QuestPlusStaircase.cs.
+Python port of Assets/Scripts/QuestPlusStaircase.cs as the stutter study ran it, for repair_stimulus.py.
+For this study's logs use jnd_analysis.Grid and jnd_analysis.Posterior.
 
 Mirrors the C# exactly - Linspace grids, uniform prior, the Weibull Psi, the
 multiply-and-normalise posterior update, min-expected-entropy stimulus placement, and
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-# Fallbacks match QuestPlusConfig.FromCsv in the C#.
+# Fallbacks as QuestPlusConfig.FromCsv had them in the stutter study's C#.
 DEFAULTS = {
     "stimMinMs": 5.0, "stimMaxMs": 250.0, "stimCount": 40,
     "threshMinMs": 5.0, "threshMaxMs": 250.0, "threshCount": 60,

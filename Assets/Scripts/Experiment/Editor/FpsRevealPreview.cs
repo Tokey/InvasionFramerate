@@ -168,7 +168,7 @@ namespace JndUfo
                         float[] times = c.name == Cases[0].name ? Times : new[] { Times[Times.Length - 1] };
                         foreach (float t in times)
                         {
-                            overlay.Show(MakeTrial(c), tower, HitRadius, 0f, HoldSec);
+                            overlay.Show(MakeRound(c), tower, HitRadius, 0f, HoldSec);
                             overlay.PreviewPose(t);
                             string file = string.Format(CultureInfo.InvariantCulture,
                                 "{0}x{1}_s{2:0.00}_{3}_t{4:0.00}.png", res.x, res.y, s, c.name, t);
@@ -184,11 +184,11 @@ namespace JndUfo
             return written;
         }
 
-        static PerturbationController.TrialRecord MakeTrial(Case c)
+        static PerturbationController.RoundRecord MakeRound(Case c)
         {
-            // Measured rates go in as frames over seconds, the way the trial accumulates them.
+            // Measured rates go in as frames over seconds, the way a round accumulates them.
             float baseSec = 2f, altSec = 2f;
-            return new PerturbationController.TrialRecord
+            return new PerturbationController.RoundRecord
             {
                 valid         = true,
                 diffFps       = c.baseFps - c.alteredFps,

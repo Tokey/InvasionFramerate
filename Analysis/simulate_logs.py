@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-Synthetic session logs in the game's CURRENT format, for testing the analysis tools before (or
+Synthetic session logs for the frame-rate design, for testing the analysis tools before (or
 without) real sessions: the three level types (manual / scroll / auto), both directions,
 practice per level type, QUEST+ picking every difference, and per-frame pacing.
 
+It does not simulate this study: no shockwave rows, no frame-time config, and none of the columns
+added since (a row per press, the frame-time and change columns). A config it cannot run is refused.
+For logs of this study, play a session with `Invasion.exe -jndRobot`.
+
     python Analysis/simulate_logs.py --out <folder>                # 4 participants
     python Analysis/simulate_logs.py --out <folder> --participants 8 --seed 3 --max-trials 30
-    python Analysis/simulate_logs.py --out <folder> --config Data/ExperimentConfig.csv
+    python Analysis/simulate_logs.py --out <folder> --config <an older frame-rate config>
 
 Each participant gets a folder <sessionId>_SIMn holding SessionLog_, ShotLog_, PlayerLog_ and
-SessionInfo_ files laid out exactly as ExperimentLogger.cs writes them (README "Log files"),
+SessionInfo_ files, the columns they share laid out as ExperimentLogger.cs writes them (README "Log files"),
 plus ExperimentConfig_used.csv. Nothing here is real data: the folder names end in SIM and
 SessionInfo says simulated=true.
 
@@ -85,7 +89,7 @@ SESSION_COLS = IDENTITY + [
     "jndDiffFps", "jndAlteredFps", "jndFrameTimeDiffMs", "sd", "priorSd", "jndMedianDiffFps", "jndModeDiffFps",
     "jndCI95LoDiffFps", "jndCI95HiDiffFps", "jndMedianDiffMs", "jndModeDiffMs", "jndCI95LoDiffMs", "jndCI95HiDiffMs",
     "jndRangeEdge", "slopeEstimate", "lapseEstimate", "staircaseTrials",
-    "lastDiffFps", "lastDiffMs", "trials", "shotsFired", "hits", "accuracy", "score", "roundsExpired", "roundsCrossingCapped",
+    "lastDiffFps", "lastDiffMs", "rounds", "shotsFired", "hits", "accuracy", "score", "roundsExpired", "roundsCrossingCapped",
     "avgRoundDurationSec", "avgCrossingsPerRound", "shotsWithoutCrossing", "avgSinceLastCrossingSec",
     "avgMissDistX", "avgMissDistXMissesOnly", "medianMissDistX", "sdMissDistX", "maxMissDistX",
     "totalMousePathPx", "avgMouseSpeedPxPerSec", "peakMouseSpeedPxPerSec", "totalUfoPathWorld", "frameCount",
@@ -97,7 +101,7 @@ SHOT_COLS = IDENTITY + [
     "closeRadius", "phase", "phaseStartIso", "roundNumber", "timeSinceStartSec", "diffFps", "diffMs", "alteredFps",
     "alteredSide", "measuredBaseFps", "measuredAlteredFps", "baseSideSec", "alteredSideSec", "lateFrames",
     "crossings", "lastCrossingAtSec", "sinceLastCrossingSec", "outcome", "playerFired", "isHit",
-    "countedByStaircase", "totalScore", "trialStartSec", "firedAtSec", "roundDurationSec", "hitX", "missDistX",
+    "countedByStaircase", "totalScore", "roundStartSec", "firedAtSec", "roundDurationSec", "hitX", "missDistX",
     "towerX", "ufoY", "side", "threshDiffFps", "threshDiffMs", "sd", "slopeEstimate", "lapseEstimate", "camX", "ufoViewportX",
     "towerViewportX", "ufoVelX", "ufoXAtStart", "firstCrossingAtSec", "meanCrossingSpeed", "lastCrossingSpeed"]
 PLAYER_COLS = IDENTITY + [
@@ -334,7 +338,7 @@ class Session:
 
     # ---- frames
     def emit(self, base, cap, pace, diff, alt_side, side, crossed, tower_x, dmouse, live, fired=None, click=False,
-             sw_fast=False, sw_win=False, sw_evt=0):
+             sw_fast=False, sw_win=False, sw_flips=0):
         """One frame row. `cap`/`pace` are what this frame's end chooses for the NEXT frame; the row itself
         carries the previous choice (targetFps, pacedBy), the one this frame's duration measures."""
         rng = self.rng
@@ -352,7 +356,7 @@ class Session:
                    timeSinceStartSec=F(self.t, 5), unscaledDeltaMs=F(dt * 1000, 4), targetFps=str(target),
                    pacedBy=self.prev_pace, diffFps=str(diff) if alt_side else "", alteredSide=alt_side, side=side,
                    crossed=B(crossed), shockwaveFastPhase=B(sw_fast), shockwaveWindow=B(sw_win),
-                   shockwaveFlips=str(sw_evt), mouseX=F(self.mouse[0], 2), mouseY=F(self.mouse[1], 2),
+                   shockwaveFlips=str(sw_flips), mouseX=F(self.mouse[0], 2), mouseY=F(self.mouse[1], 2),
                    mouseDeltaX=F(dmouse[0], 3), mouseDeltaY=F(dmouse[1], 3), ufoX=F(self.ufo_x, 4),
                    ufoY=F(self.ufo_y, 4), towerX=F(tower_x, 4), leftButtonDown=B(click),
                    leftButtonPressed=B(click), fireKeyDown="0", shotFired=B(fired is not None),
@@ -428,7 +432,7 @@ class Session:
 
         sw_alt_phase = False
         sw_win_closes = 0.0
-        sw_evt = 0
+        sw_flips = 0
         sw_next_flip = math.inf
 
         def cap_now():
@@ -553,7 +557,7 @@ class Session:
             if lv == "shockwave":
                 if sw_win_closes > 0 and self.t < sw_win_closes:
                     outcome = "detected"
-                elif sw_evt == 0:
+                elif sw_flips == 0:
                     outcome = "early"
                 else:
                     outcome = "late"
@@ -581,7 +585,7 @@ class Session:
             baseSideSec=meas["base"][1], alteredSideSec=meas["altered"][1], lateFrames=0, crossings=crossings,
             lastCrossingAtSec=last_cross, sinceLastCrossingSec=(fire_t - last_cross) if played else math.nan,
             outcome=outcome, playerFired=played, isHit=is_hit, countedByStaircase=not self.practice,
-            trialStartSec=arm_t, firedAtSec=fire_t if played else math.nan,
+            roundStartSec=arm_t, firedAtSec=fire_t if played else math.nan,
             roundDurationSec=(fire_t if played else self.t) - arm_t, hitX=fired_x if played else math.nan,
             missDistX=miss, towerX=tower_x, ufoY=self.ufo_y,
             side=("Right" if (ref_x - tower_x) >= 0 else "Left"),
@@ -635,7 +639,7 @@ class Session:
         along = [s["missDistX"] * math.copysign(1, s["ufoVelX"]) for s in fired
                  if math.isfinite(s["missDistX"]) and math.isfinite(s["ufoVelX"]) and abs(s["ufoVelX"]) > 0.5]
         since = [s["sinceLastCrossingSec"] for s in fired if math.isfinite(s["sinceLastCrossingSec"])]
-        firsts = [s["firstCrossingAtSec"] - s["trialStartSec"] for s in shots if math.isfinite(s["firstCrossingAtSec"])]
+        firsts = [s["firstCrossingAtSec"] - s["roundStartSec"] for s in shots if math.isfinite(s["firstCrossingAtSec"])]
         lv = row["levelType"] or "manual"
         g_screen = (shockwave_gamma(row) if lv == "shockwave" else
                     auto_gamma(num(row, "autoSweep", 0.9), row.get("autoPath") or "linear", num(row, "autoSpeed", 8),
@@ -657,10 +661,10 @@ class Session:
             jndModeDiffMs=F(sm["mode"], 4), jndCI95LoDiffMs=F(sm["ci_lo_cs"], 4), jndCI95HiDiffMs=F(sm["ci_hi_cs"], 4),
             jndRangeEdge=sm["range_edge"],
             slopeEstimate=F(sm["beta"], 3), lapseEstimate=F(sm["lam"], 4), staircaseTrials=str(len(shots)),
-            lastDiffFps=F(shots[-1]["diffFps"], 0), lastDiffMs=F(shots[-1]["diffMs"], 3), trials=str(len(shots)),
+            lastDiffFps=F(shots[-1]["diffFps"], 0), lastDiffMs=F(shots[-1]["diffMs"], 3), rounds=str(len(shots)),
             shotsFired=str(len(fired)),
             hits=str(sum(s["isHit"] for s in shots)), accuracy=F(sum(s["isHit"] for s in shots) / len(shots), 4),
-            score=F(self.score, 2), roundsExpired=str(sum(s["outcome"] in ("expired", "timeout") for s in shots)),
+            score=F(self.score, 2), roundsExpired=str(sum(s["outcome"] == "expired" for s in shots)),
             roundsCrossingCapped=str(sum(s["outcome"] == "crossingCap" for s in shots)),
             avgRoundDurationSec=F(float(np.mean([s["roundDurationSec"] for s in shots])), 3),
             avgCrossingsPerRound=F(float(np.mean([s["crossings"] for s in shots])), 3),
@@ -714,7 +718,7 @@ class Session:
 
         decimals = dict(timeSinceStartSec=4, measuredBaseFps=2, measuredAlteredFps=2, baseSideSec=3,
                         alteredSideSec=3, lastCrossingAtSec=4, sinceLastCrossingSec=4, totalScore=2,
-                        trialStartSec=4, firedAtSec=4, roundDurationSec=4, hitX=4, missDistX=4, towerX=4, ufoY=4,
+                        roundStartSec=4, firedAtSec=4, roundDurationSec=4, hitX=4, missDistX=4, towerX=4, ufoY=4,
                         threshDiffFps=3, threshDiffMs=4, diffMs=3, sd=3, slopeEstimate=3, lapseEstimate=4, camX=4, ufoViewportX=4,
                         towerViewportX=4, ufoVelX=3, ufoXAtStart=4, firstCrossingAtSec=4, meanCrossingSpeed=3,
                         lastCrossingSpeed=3, closeRadius=3)
@@ -760,6 +764,10 @@ def main(argv=None):
                     help="Cap on main rounds per block, for speed (0 = the config's maxTrials). Default 24.")
     args = ap.parse_args(argv)
     header, rows = load_rows(args.config)
+    if "baseFrameMs" in header or any(r.get("levelType") == "shockwave" for r in rows):
+        sys.exit(f"{args.config}: this simulator covers the frame-rate design (baseFps, direction; manual, scroll, auto). "
+                 "It cannot run a frame-time config or a shockwave row. For logs of this study, play a session with "
+                 "Invasion.exe -jndRobot.")
     if args.max_trials:
         for r in rows:
             mt = int(num(r, "maxTrials", 50))

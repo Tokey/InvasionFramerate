@@ -2,19 +2,20 @@ using UnityEngine;
 
 namespace JndUfo
 {
-    /// <summary>How a round ended or how a response was classified.</summary>
-    public enum TrialOutcome
+    /// <summary>What one row of the shot log records: how a press was classified, or how a round ran out.</summary>
+    public enum ResponseOutcome
     {
-        /// <summary>The participant fired. Hit or miss is decided by aim.</summary>
+        /// <summary>A laser shot after at least one crossing. Hit or miss is decided by aim.</summary>
         Shot,
         /// <summary>Shockwave: fired inside the detection window after a frame-rate flip (hit).</summary>
         Detected,
-        /// <summary>Shockwave: fired before the first frame-rate flip since the starting gun.</summary>
+        /// <summary>Fired before the frame rate had changed: on shockwave before the first flip since GO! or TRY AGAIN!,
+        /// on a laser level before the first crossing. Never reaches QUEST+.</summary>
         Early,
-        /// <summary>Shockwave: fired after a flip's detection window had already closed (miss + re-gate).</summary>
+        /// <summary>Shockwave: fired after a flip's detection window had already closed (miss, then TRY AGAIN!).</summary>
         Late,
         /// <summary>Shockwave: all allowed flips (maxFlipsPerRound) passed unanswered.</summary>
-        Timeout,
+        FlipCap,
         /// <summary>The round's wall clock ran out with no shot.</summary>
         Expired,
         /// <summary>The UFO crossed the tower more times than the round allows, with no shot.</summary>
@@ -27,26 +28,26 @@ namespace JndUfo
         PressNotLive,
     }
 
-    public static class TrialOutcomeExtensions
+    public static class ResponseOutcomeExtensions
     {
         /// <summary>True when the participant pulled the trigger (as opposed to a round running out).</summary>
-        public static bool IsPlayerShot(this TrialOutcome outcome) =>
-            outcome == TrialOutcome.Shot ||
-            outcome == TrialOutcome.Detected ||
-            outcome == TrialOutcome.Early ||
-            outcome == TrialOutcome.Late;
+        public static bool IsPlayerShot(this ResponseOutcome outcome) =>
+            outcome == ResponseOutcome.Shot ||
+            outcome == ResponseOutcome.Detected ||
+            outcome == ResponseOutcome.Early ||
+            outcome == ResponseOutcome.Late;
     }
 
     /// <summary>
-    /// Full verdict for a trial event (used by shockwave to distinguish forgiven early presses and
-    /// re-gated late presses from round-ending responses).
+    /// The verdict on one shockwave press: it separates a forgiven early press, and a TOO LATE that goes on through
+    /// TRY AGAIN!, from a response that ends the round.
     /// </summary>
-    public struct TrialVerdict
+    public struct PressVerdict
     {
-        public TrialOutcome outcome;
-        public bool         endsRound;
-        public bool         countedByStaircase;
-        public bool         regate;
+        public ResponseOutcome outcome;
+        public bool            endsRound;
+        public bool            countedByStaircase;
+        public bool            retry;
     }
 
     /// <summary>When a round armed and when it was answered, for the shot log.</summary>
@@ -64,7 +65,8 @@ namespace JndUfo
     /// The round's watchdog. The participant decides when to cross the tower and when to shoot, so
     /// the only clock a round needs is a backstop: a round that runs past <c>roundTimeoutSec</c>, or
     /// whose UFO crosses the tower more than <c>maxCrossingsPerRound</c> times, closes as a miss with
-    /// no shot. Both come from the block's CSV row; 0 turns either off.
+    /// no shot. Both come from the block's CSV row; 0 turns either off. A shockwave row turns both off: its
+    /// flip cap (<see cref="ShockwaveController"/>) bounds the round instead.
     ///
     /// A round is bounded exactly by the firing-enabled window. <see cref="LaserFirer.FiringEnabled"/>
     /// is already the project's single "the participant may act now" signal — off during the reveal,
@@ -91,7 +93,7 @@ namespace JndUfo
         int         _shownSecond = -1;   // debug HUD throttle: refresh once per whole second
 
         /// <summary>True while a round is armed and waiting for its response.</summary>
-        public bool TrialRunning => _running;
+        public bool RoundRunning => _running;
 
         /// <summary>Seconds since the round's starting gun; 0 when no round is running. For the debug
         /// HUD only — the participant is never shown a round clock, which would be a second stimulus
@@ -123,8 +125,8 @@ namespace JndUfo
 
         void Update()
         {
-            bool regating = ShockwaveController.Instance != null && ShockwaveController.Instance.Regating;
-            bool live = ((laser != null && laser.FiringEnabled) || (_running && regating)) && perturbation != null;
+            bool retrying = ShockwaveController.Instance != null && ShockwaveController.Instance.Retrying;
+            bool live = ((laser != null && laser.FiringEnabled) || (_running && retrying)) && perturbation != null;
 
             if (live && !_running)      Arm();
             else if (!live && _running) Stop();
@@ -134,13 +136,13 @@ namespace JndUfo
             RefreshDebugClock(elapsed);
 
             float timeout = RoundTimeout;
-            if (timeout > 0f && elapsed >= timeout) { ResolveWithoutShot(TrialOutcome.Expired); return; }
+            if (timeout > 0f && elapsed >= timeout) { ResolveWithoutShot(ResponseOutcome.Expired); return; }
 
             // "The cap is how many crossings the round may contain": the first one past it closes it.
             // Shockwave blocks have no spatial tower boundary, so crossings do not apply.
             int cap = MaxCrossings;
-            if (_config != null && !_config.IsShockwave && cap > 0 && perturbation.TrialCrossings > cap)
-                ResolveWithoutShot(TrialOutcome.CrossingCap);
+            if (_config != null && !_config.IsShockwave && cap > 0 && perturbation.RoundCrossings > cap)
+                ResolveWithoutShot(ResponseOutcome.CrossingCap);
         }
 
         void Arm()
@@ -159,7 +161,7 @@ namespace JndUfo
             if (perturbation != null) perturbation.RefreshDebugText();
         }
 
-        void ResolveWithoutShot(TrialOutcome outcome)
+        void ResolveWithoutShot(ResponseOutcome outcome)
         {
             Stop();
             if (GameManager.Instance != null) GameManager.Instance.ResolveWithoutShot(outcome);

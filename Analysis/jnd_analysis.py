@@ -181,7 +181,7 @@ def scroll_span(aspect):
 RELIABLE_SD_FACTOR = 2.0
 
 # Colour carries the base frame rate everywhere, so 60 fps is the same blue in every figure.
-# 60 and 500 keep the frame-time study's pair; 144 is a raspberry chosen to pass the dataviz
+# 60 and 500 keep the stutter study's pair; 144 is a raspberry chosen to pass the dataviz
 # validator on white against both (all pairs: worst protan/deutan dE 14.7, normal-vision dE
 # 21.6, each >= 3:1 contrast). It shares the blue's luminance, so in greyscale 60 and 144
 # part by marker and dash instead: every base rate also has its own marker shape and line
@@ -1493,7 +1493,7 @@ def prepare_blocks(df):
 
 
 def prepare_shots(df):
-    df = df.copy()
+    df = df.rename(columns={"trialStartSec": "roundStartSec"})   # its name in older logs; rename copies
     for c in df.columns:
         if c not in TEXT_SHOT_COLS:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -1519,7 +1519,7 @@ def prepare_shots(df):
     sgn = np.where(df["alteredSide"].str.lower().eq("right"), 1.0, -1.0)
     df["towardAlteredX"] = df["missDistX"].where(df["shot"]) * sgn
     # Time in the round from the starting gun to the shot (or to the end of the round).
-    df["liveSec"] = df["firedAtSec"].where(df["shot"]).fillna(df["timeSinceStartSec"]) - df["trialStartSec"]
+    df["liveSec"] = df["firedAtSec"].where(df["shot"]).fillna(df["timeSinceStartSec"]) - df["roundStartSec"]
     df["exposures"] = df["crossings"]
     # Per-round points from the running score. A session can hold one practice phase per level
     # (all blockIndex 0), each with its own score.
@@ -5002,7 +5002,7 @@ def participant_figures():
     ]
 
 
-# The paper's own numbering (paper/main): the set chosen for the frame-time paper, carried over
+# The paper's own numbering (paper/main): the set chosen for the stutter study's paper, carried over
 # minus the shockwave and response-time figures and renumbered without gaps. Every other
 # figure goes to paper/misc as FigS01, FigS02, ... in drawing order.
 MAIN_MAPPING = {

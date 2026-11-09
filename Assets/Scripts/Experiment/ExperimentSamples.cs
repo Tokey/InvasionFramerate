@@ -47,7 +47,7 @@ namespace JndUfo
         public int   lateFrames;
 
         // ── How the participant explored it ──────────────────────────────────
-        /// <summary>Times the UFO crossed the tower — the frame-rate boundary — this round.</summary>
+        /// <summary>Times the UFO crossed the tower — the frame-rate boundary — this round. On shockwave, the flips.</summary>
         public int   crossings;
         /// <summary>Phase clock of the last crossing this round; NaN if there was none.</summary>
         public float lastCrossingAtSec;
@@ -56,11 +56,11 @@ namespace JndUfo
         public float sinceLastCrossingSec;
 
         // ── Outcome ──────────────────────────────────────────────────────────
-        public TrialOutcome outcome;
-        /// <summary>False only for a round that ran out with no shot. hitX and missDistX are blank
-        /// then rather than filled with the UFO's resting position.</summary>
+        public ResponseOutcome outcome;
+        /// <summary>False for a round that ran out with no shot, and for a press that fired nothing. hitX and missDistX
+        /// are blank then rather than filled with the UFO's resting position.</summary>
         public bool  playerFired;
-        /// <summary>Landed within closeRadius of the tower base — the detection response.</summary>
+        /// <summary>A laser shot landed within closeRadius of the tower base; on shockwave, a press inside the response window.</summary>
         public bool  isHit;
         /// <summary>Whether this response reached the QUEST+ posterior. False for practice rounds;
         /// any analysis that reconstructs the staircase must keep only phase=main and this = 1.</summary>
@@ -69,7 +69,7 @@ namespace JndUfo
 
         // ── Timing (phase clock) ─────────────────────────────────────────────
         /// <summary>When the round armed — firing handed back at its GO!.</summary>
-        public float trialStartSec;
+        public float roundStartSec;
         /// <summary>When the participant fired. NaN for a round that ran out.</summary>
         public float firedAtSec;
         /// <summary>From the round arming to its end, shot or not (s).</summary>
@@ -116,7 +116,7 @@ namespace JndUfo
         // ── The press, and the state it met ──────────────────────────────────
         /// <summary>Which press of the round this is, counting shots fired: 1, 2, ... A press that fired nothing carries
         /// the number the next shot will have.</summary>
-        public int   attemptInRound;
+        public int   shotInRound;
         /// <summary>This row closed the round (the next row is a new round).</summary>
         public bool  roundEnded;
         /// <summary>What made the press: "mouse", "key", or blank when a round ran out.</summary>
@@ -180,16 +180,16 @@ namespace JndUfo
 
         public int   targetFps;            // the cap that paced this frame
         public PerturbationController.Pace pacedBy;
-        public bool   shockwaveFastPhase;
+        public bool   shockwaveFastPhase;  // the cap now set, which paces the NEXT frame, is the faster of the two
         public bool   shockwaveWindow;
-        public int    shockwaveFlips;
+        public int    shockwaveFlips;      // flips so far this round
 
         public int    diffFps;             // the round's Δ; written blank between rounds
         public float  diffMs;              // the same in frame time (ms); NaN between rounds
         public bool   armed;               // firing was enabled on this frame
         public string alteredSide;         // the round's altered side; empty between rounds
-        public string side;                // side of the tower the UFO is on
-        public bool   crossed;             // the UFO crossed the tower on this frame, mid-round
+        public string side;                // side of the tower the UFO is on; meaningless on shockwave
+        public bool   crossed;             // the UFO crossed the tower on this frame, mid-round; on shockwave, a flip
 
         public Vector2 mousePos;           // pointer position, screen px
         public Vector2 mouseDelta;         // raw hardware delta this frame

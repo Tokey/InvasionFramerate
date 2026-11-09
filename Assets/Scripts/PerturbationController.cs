@@ -7,7 +7,7 @@ namespace JndUfo
     /// Core JND logic: splits the screen's frame rate at the hidden tower (or alternates it in time
     /// on shockwave blocks).
     ///
-    /// While a trial is live on a laser block, the side of the tower the UFO is on decides the
+    /// While a round is live on a laser block, the side of the tower the UFO is on decides the
     /// frame-rate cap: one side runs at the block's base frame rate, the other at the rate Δ ms of
     /// frame time away (slower or faster by the block's <c>direction</c>), and which side gets it is
     /// drawn per round (or pinned by the block's <c>alteredSide</c>). On a shockwave block,
@@ -15,15 +15,15 @@ namespace JndUfo
     /// <c>alteredFps</c> at random times. QUEST+ picks Δ for every main round; practice walks a fixed
     /// ladder.
     ///
-    /// The split is only in force between <see cref="BeginTrial"/> (the round's starting gun) and
-    /// <see cref="EndTrial"/> (its response). Everything else — the reveal, the reset under the
+    /// The split is only in force between <see cref="BeginRound"/> (the round's starting gun) and
+    /// <see cref="EndRound"/> (its response). Everything else — the reveal, the reset under the
     /// veil, the prompts — runs at the base frame rate, so the participant never meets the altered
     /// rate outside a round and the reveal's animation runs smoothly whatever Δ was.
     ///
     /// Timing contract. The cap chosen in frame N's LateUpdate governs the wait at the start of
     /// frame N+1 (see <see cref="FrameLimiter"/>), so frame N+1's unscaledDeltaTime is the frame that
     /// cap produced. Update attributes each frame's delta to the side whose cap governed it, which
-    /// is how a trial's measured per-side frame rate is built; it runs at execution order −200 so a
+    /// is how a round's measured per-side frame rate is built; it runs at execution order −200 so a
     /// shot fired this frame already sees this frame's delta.
     /// </summary>
     [DefaultExecutionOrder(-200)]
@@ -33,10 +33,10 @@ namespace JndUfo
 
         /// <summary>
         /// One round's stimulus and how it was actually delivered. Filled in from the round's
-        /// starting gun to its response, then latched into <see cref="LastTrial"/> for the shot log
+        /// starting gun to its response, then latched into <see cref="LastRound"/> for the shot log
         /// and the reveal.
         /// </summary>
-        public struct TrialRecord
+        public struct RoundRecord
         {
             public bool  valid;
             public bool  practice;
@@ -65,7 +65,6 @@ namespace JndUfo
             public float changeUfoX, changeUfoY, foreperiodSec;
 
             // Time.realtimeSinceStartup; NaN = never happened.
-            public float startedRealtime;
             public float firstCrossingRealtime;
             public float lastCrossingRealtime;
 
@@ -82,9 +81,9 @@ namespace JndUfo
             /// <summary>The same round seen from a copy of its boundary that the world scroll repeats with the
             /// frame rates the other way round (see TowerManager.BoundaryPeriod): its altered side swapped,
             /// everything else as it was.</summary>
-            public TrialRecord Flipped()
+            public RoundRecord WithSidesSwapped()
             {
-                TrialRecord r = this;
+                RoundRecord r = this;
                 r.alteredSide = Opposite(alteredSide);
                 return r;
             }
@@ -132,38 +131,31 @@ namespace JndUfo
         /// gun to its response.</summary>
         public bool SplitActive { get; private set; }
 
-        /// <summary>Set on the frame the UFO crosses the tower while the split is in force.</summary>
+        /// <summary>Set on the frame the UFO crosses the tower while the split is in force, and on shockwave on a flip.</summary>
         public bool CrossedThisFrame { get; private set; }
 
-        /// <summary>Crossings while the split was in force, this block.</summary>
-        public int  CrossingCount { get; private set; }
-
         /// <summary>The round in progress. Meaningful only while <see cref="SplitActive"/>.</summary>
-        public TrialRecord CurrentTrial => _trial;
+        public RoundRecord CurrentRound => _round;
 
         /// <summary>Crossings so far in the round in progress; 0 between rounds.</summary>
-        public int  TrialCrossings => SplitActive ? _trial.crossings : 0;
+        public int  RoundCrossings => SplitActive ? _round.crossings : 0;
 
-        /// <summary>The last round that ended, latched by <see cref="EndTrial"/>. This is what the
+        /// <summary>The last round that ended, latched by <see cref="EndRound"/>. This is what the
         /// shot log and the reveal describe.</summary>
-        public TrialRecord LastTrial { get; private set; }
+        public RoundRecord LastRound { get; private set; }
 
         /// <summary>True while warm-up rounds are being played: Δ comes from the practice ladder and
         /// responses never reach QUEST+.</summary>
         public bool PracticeMode => _practiceMode;
 
-        public int  BaseFps => _config != null ? _config.baseFps : 0;
-
         /// <summary>The base frame rate in force right now: the round's while a split is open,
         /// otherwise the rate the game idles at between rounds — the practice pair's higher rate
         /// during practice, the block's base otherwise.</summary>
-        public int  CurrentBaseFps => SplitActive ? _trial.baseFps : NeutralFps;
+        public int  CurrentBaseFps => SplitActive ? _round.baseFps : NeutralFps;
 
         /// <summary>Shown at the top of the debug readout — "PRACTICE" or "MAIN 2/3". Set by the
         /// director.</summary>
         public string DebugLabel { get; set; } = "";
-        public FrameLimiterMode LimiterMode =>
-            _config != null ? _config.frameLimiter : FrameLimiterMode.Precise;
 
         /// <summary>The study config currently applied, or null before the first BeginBlock.</summary>
         public StudyConfig CurrentConfig => _config;
@@ -205,7 +197,7 @@ namespace JndUfo
         public float LapseEstimateValue { get; private set; } = float.NaN;
 
         // Kept for StaircaseConvergencePlot.
-        public bool  IsQuestPlusStaircase => _staircase != null;
+        public bool  HasStaircase         => _staircase != null;
         public float JndEstimate          => _staircase?.JndEstimate() ?? 0f;
         public float StaircaseThresholdSD => _staircase?.PosteriorThresholdSD() ?? 0f;
         public QuestPlusConfig QuestPlusConfigRef => _staircase?.Config;
@@ -225,7 +217,7 @@ namespace JndUfo
         bool               _practiceMode;
         PracticePair       _practicePair;
         int                _lastSideSign;
-        TrialRecord        _trial;
+        RoundRecord        _round;
         Pace               _appliedPace;
         float              _prevDiff = float.NaN;
         readonly StringBuilder _debug = new StringBuilder(512);
@@ -260,7 +252,7 @@ namespace JndUfo
                     Debug.Log("[PerturbationController] No ExperimentDirector in the scene — " +
                               "free play on block 1 of ExperimentConfig.csv.");
                     BeginBlock(blocks[0]);
-                    BeginTrial();
+                    BeginRound();
                 }
             }
         }
@@ -274,22 +266,22 @@ namespace JndUfo
             CrossedThisFrame = false;
 
             // This frame's delta is the period the previous frame's cap produced. Credit it to the
-            // side that cap belonged to — before any shot this frame latches the trial.
+            // side that cap belonged to — before any shot this frame latches the round.
             PacedFps = CurrentTargetFps;
             PacedBy  = _appliedPace;
 
             if (!SplitActive) return;
             float dt = Time.unscaledDeltaTime;
-            if (_appliedPace == Pace.Base)         { _trial.baseFrames++;    _trial.baseSec    += dt; }
-            else if (_appliedPace == Pace.Altered) { _trial.alteredFrames++; _trial.alteredSec += dt; }
+            if (_appliedPace == Pace.Base)         { _round.baseFrames++;    _round.baseSec    += dt; }
+            else if (_appliedPace == Pace.Altered) { _round.alteredFrames++; _round.alteredSec += dt; }
 
             if (_config != null && _config.IsShockwave && shockwave != null && shockwave.FlippedThisFrame)
             {
                 CrossedThisFrame             = true;
-                _trial.crossings             = shockwave.FlipCount;
-                _trial.firstCrossingRealtime = shockwave.FirstFlipAt;
-                _trial.lastCrossingRealtime  = shockwave.LastFlipAt;
-                _trial.foreperiodSec         = shockwave.LastForeperiodSec;
+                _round.crossings             = shockwave.FlipCount;
+                _round.firstCrossingRealtime = shockwave.FirstFlipAt;
+                _round.lastCrossingRealtime  = shockwave.LastFlipAt;
+                _round.foreperiodSec         = shockwave.LastForeperiodSec;
                 NoteChange(shockwave.AlteredPhase ? shockwave.BaseFps : shockwave.AlteredFps, shockwave.CurrentFps);
             }
         }
@@ -332,17 +324,16 @@ namespace JndUfo
             CurrentSide   = sideSign >= 0 ? Side.Right : Side.Left;
 
             // A crossing manufactured by the camera moving under the UFO is not one the participant
-            // made, and one outside a trial crosses no frame-rate boundary.
+            // made, and one outside a round crosses no frame-rate boundary.
             if (!crossed || SuppressCrossings || !SplitActive) return;
 
-            CrossingCount++;
             CrossedThisFrame            = true;
-            _trial.crossings++;
-            _trial.lastCrossingRealtime = Time.realtimeSinceStartup;
-            if (_trial.crossings == 1) _trial.firstCrossingRealtime = _trial.lastCrossingRealtime;
+            _round.crossings++;
+            _round.lastCrossingRealtime = Time.realtimeSinceStartup;
+            if (_round.crossings == 1) _round.firstCrossingRealtime = _round.lastCrossingRealtime;
 
-            bool toAltered = CurrentSide == _trial.alteredSide;
-            NoteChange(toAltered ? _trial.baseFps : _trial.alteredFps, toAltered ? _trial.alteredFps : _trial.baseFps);
+            bool toAltered = CurrentSide == _round.alteredSide;
+            NoteChange(toAltered ? _round.baseFps : _round.alteredFps, toAltered ? _round.alteredFps : _round.baseFps);
         }
 
         // Every change of frame rate the participant meets, for the shot log.
@@ -351,15 +342,15 @@ namespace JndUfo
 
         void NoteChange(int fromFps, int toFps)
         {
-            _trial.changeFromFps = fromFps;
-            _trial.changeToFps   = toFps;
-            _trial.changeFrame   = Time.frameCount;
-            _trial.changesSincePress++;
+            _round.changeFromFps = fromFps;
+            _round.changeToFps   = toFps;
+            _round.changeFrame   = Time.frameCount;
+            _round.changesSincePress++;
             if (ufoController != null)
             {
                 Vector3 p = ufoController.transform.position;
-                _trial.changeUfoX = p.x;
-                _trial.changeUfoY = p.y;
+                _round.changeUfoX = p.x;
+                _round.changeUfoY = p.y;
             }
             if (_changeCount < _changeTimes.Length) _changeTimes[_changeCount++] = Time.realtimeSinceStartup;
         }
@@ -379,15 +370,15 @@ namespace JndUfo
         }
 
         /// <summary>The round in progress as it stands, for the log row of a press that does not end it.</summary>
-        public TrialRecord SnapshotTrial()
+        public RoundRecord SnapshotRound()
         {
-            TrialRecord t = _trial;
+            RoundRecord t = _round;
             t.lateFrames = _config != null && _config.frameLimiter == FrameLimiterMode.Precise ? FrameLimiter.Overruns : 0;
             return t;
         }
 
         /// <summary>A press has been logged: the count of changes since the last press starts over.</summary>
-        public void NotePress() => _trial.changesSincePress = 0;
+        public void NotePress() => _round.changesSincePress = 0;
 
         /// <summary>
         /// After a counted TOO LATE, on a shockwave block: QUEST+ has moved on, so the rest of the round presents its new
@@ -398,11 +389,11 @@ namespace JndUfo
         {
             if (!SplitActive || _config == null) return;
             int altered = PendingAlteredFps;
-            _trial.alteredFps    = altered;
-            _trial.diffFps       = Mathf.Abs(altered - _trial.baseFps);
-            _trial.diffMs        = StudyConfig.FrameTimeDiffMs(_trial.baseFps, altered);
-            _trial.baseFrames    = _trial.alteredFrames = 0;
-            _trial.baseSec       = _trial.alteredSec    = 0f;
+            _round.alteredFps    = altered;
+            _round.diffFps       = Mathf.Abs(altered - _round.baseFps);
+            _round.diffMs        = StudyConfig.FrameTimeDiffMs(_round.baseFps, altered);
+            _round.baseFrames    = _round.alteredFrames = 0;
+            _round.baseSec       = _round.alteredSec    = 0f;
             _appliedPace         = Pace.None;
             if (shockwave != null) shockwave.BeginAttempt(altered);
             FrameLimiter.ResetOverruns();
@@ -425,8 +416,8 @@ namespace JndUfo
                 }
                 else
                 {
-                    bool onAltered = CurrentSide == _trial.alteredSide;
-                    cap  = onAltered ? _trial.alteredFps : _trial.baseFps;
+                    bool onAltered = CurrentSide == _round.alteredSide;
+                    cap  = onAltered ? _round.alteredFps : _round.baseFps;
                     pace = onAltered ? Pace.Altered      : Pace.Base;
                 }
             }
@@ -453,10 +444,9 @@ namespace JndUfo
             showHitZone      = config.showHitZone;
             crossingDeadZone = config.crossingDeadZone;
 
-            CancelTrial();
+            CancelRound();
             if (shockwave != null) shockwave.BeginBlock(config);
-            LastTrial      = default;
-            CrossingCount  = 0;
+            LastRound      = default;
             _lastSideSign  = 0;
             _prevDiff      = float.NaN;
             _blockActive   = true;
@@ -490,7 +480,7 @@ namespace JndUfo
         public void EndBlock()
         {
             _blockActive = false;
-            CancelTrial();
+            CancelRound();
         }
 
         /// <summary>
@@ -532,7 +522,7 @@ namespace JndUfo
             }
         }
 
-        // ── Trials ───────────────────────────────────────────────────────────
+        // ── Rounds ───────────────────────────────────────────────────────────
 
         /// <summary>The base and altered caps the next round will present: the practice pair's during
         /// practice, otherwise the block's base and the cap of QUEST+'s current choice.</summary>
@@ -555,7 +545,7 @@ namespace JndUfo
         /// GameManager's GO! between rounds, ExperimentDirector's at a phase's first round — so the
         /// frame rates are already in force as the veil lifts.
         /// </summary>
-        public void BeginTrial()
+        public void BeginRound()
         {
             if (_config == null) return;
 
@@ -568,7 +558,7 @@ namespace JndUfo
                 _                     => Random.value < 0.5f ? Side.Left : Side.Right,
             };
 
-            _trial = new TrialRecord
+            _round = new RoundRecord
             {
                 valid                = true,
                 practice             = _practiceMode,
@@ -577,7 +567,6 @@ namespace JndUfo
                 baseFps              = baseFps,
                 alteredFps           = alteredFps,
                 alteredSide          = altered,
-                startedRealtime      = Time.realtimeSinceStartup,
                 firstCrossingRealtime = float.NaN,
                 lastCrossingRealtime  = float.NaN,
                 changeFrame           = -1,
@@ -592,47 +581,47 @@ namespace JndUfo
             _appliedPace = Pace.None;
             SplitActive  = true;
             _practiceRoundEnded = false;
-            if (_practiceMode) _practiceIdleFps = _trial.baseFps;
-            if (_config.IsShockwave && shockwave != null) shockwave.BeginTrial(_config, baseFps, alteredFps);
+            if (_practiceMode) _practiceIdleFps = _round.baseFps;
+            if (_config.IsShockwave && shockwave != null) shockwave.BeginRound(_config, baseFps, alteredFps);
             FrameLimiter.ResetOverruns();
             ApplyCap();
             RefreshDebugText();
         }
 
         /// <summary>
-        /// Closes the round's split and latches it into <see cref="LastTrial"/>. Called the moment the
+        /// Closes the round's split and latches it into <see cref="LastRound"/>. Called the moment the
         /// response is resolved, before anything is scored or logged. Safe to call twice: a second
         /// call with no round open just returns the latched one.
         /// </summary>
-        public TrialRecord EndTrial()
+        public RoundRecord EndRound()
         {
-            if (!SplitActive) return LastTrial;
+            if (!SplitActive) return LastRound;
 
-            _trial.lateFrames = _config != null && _config.frameLimiter == FrameLimiterMode.Precise
+            _round.lateFrames = _config != null && _config.frameLimiter == FrameLimiterMode.Precise
                 ? FrameLimiter.Overruns : 0;
-            LastTrial   = _trial;
+            LastRound   = _round;
             SplitActive = false;
-            if (_config != null && _config.IsShockwave && shockwave != null) shockwave.StopTrial();
-            _practiceRoundEnded = _trial.practice;
+            if (_config != null && _config.IsShockwave && shockwave != null) shockwave.StopRound();
+            _practiceRoundEnded = _round.practice;
             ApplyCap();
             RefreshDebugText();
-            return LastTrial;
+            return LastRound;
         }
 
         /// <summary>Drops a round's split without recording it — the phase or block ended under it.</summary>
-        public void CancelTrial()
+        public void CancelRound()
         {
             _practiceRoundEnded = false;
             if (!SplitActive) return;
             SplitActive = false;
-            if (_config != null && _config.IsShockwave && shockwave != null) shockwave.StopTrial();
+            if (_config != null && _config.IsShockwave && shockwave != null) shockwave.StopRound();
             ApplyCap();
         }
 
         /// <summary>
         /// Folds a response into QUEST+. Correct = the shot landed on the hidden tower (or fired inside
-        /// the shockwave window). Call after <see cref="EndTrial"/>; the round's Δ is fixed in the
-        /// latched trial, so the staircase moving on to the next Δ here cannot change what gets logged
+        /// the shockwave window). Call after <see cref="EndRound"/>; the round's Δ is fixed in the
+        /// latched round, so the staircase moving on to the next Δ here cannot change what gets logged
         /// against this response.
         /// </summary>
         public void ReportResponse(bool isHit, bool counted = true)
@@ -667,7 +656,7 @@ namespace JndUfo
             var sb = _debug;
             sb.Length = 0;
 
-            TrialRecord t = SplitActive ? _trial : LastTrial;
+            RoundRecord t = SplitActive ? _round : LastRound;
 
             sb.Append("FPS JND | ").Append(string.IsNullOrEmpty(DebugLabel) ? "block " + _config.blockIndex : DebugLabel)
               .Append(" | ").Append(_config.LevelCell)
@@ -743,13 +732,13 @@ namespace JndUfo
             }
 
             RoundClock clock = RoundClock.Instance;
-            if (clock != null && clock.TrialRunning)
+            if (clock != null && clock.RoundRunning)
             {
                 sb.Append("\nround ").Append(clock.RoundElapsedSec.ToString("0"));
                 if (_config.roundTimeoutSec > 0f) sb.Append('/').Append(_config.roundTimeoutSec.ToString("0"));
                 sb.Append(" s");
                 if (!_config.IsShockwave && _config.maxCrossingsPerRound > 0)
-                    sb.Append("   crossings ").Append(TrialCrossings).Append('/').Append(_config.maxCrossingsPerRound);
+                    sb.Append("   crossings ").Append(RoundCrossings).Append('/').Append(_config.maxCrossingsPerRound);
             }
 
             uiManager.SetDebugText(sb.ToString());

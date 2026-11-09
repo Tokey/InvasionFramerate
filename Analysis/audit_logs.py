@@ -16,7 +16,7 @@ Options
     --all             every session under --data, one summary line each (add --verbose for
                       the messages)
     --verbose         print every message (default: the first 6 of each check)
-    --level-type L    manual | scroll | auto: the level to assume for logs written before
+    --level-type L    manual | scroll | auto | shockwave: the level to assume for logs written before
                       levelType existed, instead of inferring it (see LEVEL INFERENCE)
 
 STANDARD LIBRARY ONLY: it has to run on a lab PC with a bare Python 3.6+.
@@ -58,7 +58,7 @@ CHECKS
 
 Structural (every file): each row has the header's column count; booleans are 0/1; numeric
 columns parse; NaN/Infinity never written as text (NaN = an empty cell); enumerations hold
-({practice,main}, {shot,expired,crossingCap}, {Left,Right}, {base,altered,''}, ...); UTF-8
+({practice,main}, the outcomes in ENUMS below, {Left,Right}, {base,altered,''}, ...); UTF-8
 without BOM and \\n line ends; identity columns (sessionId, runId) match the file name.
 
 ShotLog, per row
@@ -66,14 +66,14 @@ ShotLog, per row
   missDistX == hitX - towerX                                     2e-4 (three 4-dp values)
   alteredFps == baseFps -/+ diffFps by direction (main; v1/v2 practice too)
   practice v3+: baseFps is the pair's higher rate: alteredFps < baseFps, diffFps = difference
-  outcome vs playerFired: shot <=> 1; expired/crossingCap => 0, isHit 0, and blank hitX,
+  outcome vs playerFired: shot/detected/early/late => 1; expired/crossingCap/flipCap => 0, isHit 0, and blank hitX,
       missDistX, firedAtSec, sinceLastCrossingSec
   expired => roundDurationSec >= roundTimeoutSec; crossingCap => crossings = cap + 1; a shot
       never has more crossings than the cap
-  countedByStaircase only on main rows (and on every main row)
+  countedByStaircase only on main rows, and on every main row but an early press, which never reaches QUEST+
   crossings == 0 <=> lastCrossingAtSec blank
   sinceLastCrossingSec == firedAtSec - lastCrossingAtSec          2e-4
-  roundDurationSec == firedAtSec - trialStartSec (shots)          5e-4 (float32 realtime)
+  roundDurationSec == firedAtSec - roundStartSec (shots)          5e-4 (float32 realtime)
   0 <= firedAtSec - timeSinceStartSec < 0.1 s (the click lands inside the frame it is logged on)
   timeSinceStartSec never runs backwards in a phase; a round arms after the previous response
   roundNumber: +1 per row; practice restarts at 1 per practice phase; main continues across
@@ -83,7 +83,9 @@ ShotLog, per row
       alteredFps is a cap of the ms grid [minDiffMs, maxDiffMs] step diffStepMs and
       diffMs == |1000/alteredFps - 1000/baseFps|
   side == Right iff hitX >= towerX (shots, |missDistX| > 1e-3)
-  identity: baseFps/direction/frameLimiter == cfg_*; latinOrder[blockOrdinal] == blockIndex;
+  shockwave rows: windowSec == cfg_swWindowSec; foreperiodSec inside the flip-delay range; flips never
+      past cfg_maxFlipsPerRound, and flipCap exactly at it
+  identity: baseFps/direction/frameLimiter == cfg_* (a frame-time config: cfg_baseFrameMs, and cfg_ftDirection reversed); latinOrder[blockOrdinal] == blockIndex;
       v3+ practice: blockIndex 0, blockOrdinal 0, blank cfg_*
   QUEST+ columns: practice rows blank (v4) or unchanged through the practice phase (v1-v3,
       which repeat the prior)
@@ -136,7 +138,7 @@ SessionLog vs ShotLog / PlayerLog, per main block (matched on blockOrdinal)
   baseFrameTimeSdMs, alteredFrameTimeErrPct, alteredFrameTimeSdMs, slowFrames,
   maxLiveFrameTimeMs, playDurationSec, totalMousePathPx, avgMouseSpeedPxPerSec,
   peakMouseSpeedPxPerSec, totalUfoPathWorld recomputed from the PlayerLog;
-  endReason in {converged, maxTrials, abandoned} and consistent with staircaseTrials / sd;
+  endReason in {converged, maxTrials, abandoned, roundCap} and consistent with staircaseTrials / sd;
   sessionDurationSec == endIso - startIso; startIso == the main phase's phaseStartIso.
   Tolerances: each value's own rounding plus the rounding of its inputs (see TOL below).
 
@@ -160,7 +162,7 @@ DEFAULT_DATA = REPO / "Data"
 # ------------------------------------------------------------------------- constants
 
 DEAD_ZONE = 0.25            # StudyConfig.crossingDeadZone
-CLOSE_RADIUS = 5.5          # StudyConfig.closeRadius (the logged closeRadius is used when present)
+CLOSE_RADIUS = 5.5          # logs from before the closeRadius column; the logged value is used when present (the game's is 6.0)
 READY_BEAT_SEC = 0.5        # StudyConfig.readyBeatSec - the GO! beat
 PAN_RANGE = 6.0             # GameManager.cameraPanRange
 VIEW_W_PER_ASPECT = 2.0 * 100.0 * math.tan(math.radians(7.5))   # 26.33: W = this * aspect
@@ -170,7 +172,7 @@ TOL = {
     "edge": 1e-3,          # isHit at |missDistX| == closeRadius
     "x4": 2e-4,            # a difference of 4-dp values (each off by <= 5e-5)
     "time4": 2e-4,         # sinceLastCrossingSec vs firedAtSec - lastCrossingAtSec
-    "dur": 5e-4,           # roundDurationSec vs firedAtSec - trialStartSec: float32 realtime
+    "dur": 5e-4,           # roundDurationSec vs firedAtSec - roundStartSec: float32 realtime
     "frameTime": 1.5e-4,   # a ShotLog time (4 dp) vs its PlayerLog frame (5 dp)
     "fpsAbs": 0.05,        # measured fps vs frames (ShotLog has 2 dp)
     "fpsRel": 5e-4,
@@ -183,8 +185,15 @@ TOL = {
 NAN_TOKENS = {"nan", "NaN", "NAN", "-nan", "+nan", "Infinity", "-Infinity", "+Infinity",
               "inf", "-inf", "+inf", "Inf", "-Inf", "\u221e", "-\u221e"}
 
+# Columns renamed since: older logs are read under today's names, so every check below needs only those.
+RENAMED_COLS = {"trialStartSec": "roundStartSec", "attemptInRound": "shotInRound", "trials": "rounds",
+                "swTimeouts": "roundsFlipCapped", "swEarlyFires": "earlyFires", "shockwaveEvent": "shockwaveFlips",
+                "cfg_swSpikeDelayMinSec": "cfg_swFlipDelayMinSec", "cfg_swSpikeDelayMaxSec": "cfg_swFlipDelayMaxSec",
+                "cfg_maxSpikesPerRound": "cfg_maxFlipsPerRound"}
+
 BOOL_COLS = {"isHit", "playerFired", "countedByStaircase", "crossed", "leftButtonDown",
-             "leftButtonPressed", "fireKeyDown", "shotFired", "shockwaveFastPhase", "shockwaveWindow"}
+             "leftButtonPressed", "fireKeyDown", "shotFired", "shockwaveFastPhase", "shockwaveWindow",
+             "windowOpen", "roundEnded", "firingEnabled", "armed"}
 
 # Presses that fired nothing: logged with their state, but no response and no part of a round's checks.
 IGNORED_PRESSES = {"cooldown", "lockout", "notLive"}
@@ -195,19 +204,24 @@ TEXT_COLS = {"inputDevice", "changeDir", "ftDirection", "changeTimesSec",
 
 INT_COLS = {"sessionId", "blockIndex", "blockOrdinal", "latinRow", "baseFps", "roundNumber",
             "diffFps", "alteredFps", "lateFrames", "crossings", "frameIndex", "targetFps",
-            "staircaseTrials", "trials", "shotsFired", "hits", "roundsExpired",
+            "staircaseTrials", "rounds", "shotsFired", "hits", "roundsExpired", "roundsFlipCapped",
             "roundsCrossingCapped", "shotsWithoutCrossing", "frameCount", "liveFrames",
             "baseSideFrames", "alteredSideFrames", "slowFrames", "shockwaveFlips",
-            "shockwaveEvent"}   # shockwaveFlips in logs written before the rename
+            "earlyFires", "swDetections", "swLateFires", "lockoutPresses", "cooldownPresses",
+            "notLivePresses", "roundsNotCounted"}
 
 ENUMS = {
     "phase": {"practice", "main"},
-    "outcome": {"shot", "expired", "crossingCap", "detected", "early", "late", "timeout",
-                "cooldown", "lockout", "notLive"},
+    "outcome": {"shot", "expired", "crossingCap", "detected", "early", "late", "flipCap",
+                "cooldown", "lockout", "notLive",
+                "timeout"},   # flipCap in logs written before the rename
     "side": {"Left", "Right", ""},
     "alteredSide": {"Left", "Right", ""},
     "pacedBy": {"", "base", "altered"},
     "direction": {"down", "up"},
+    "ftDirection": {"", "down", "up"},
+    "changeDir": {"", "slower", "faster"},
+    "inputDevice": {"", "mouse", "key"},
     "frameLimiter": {"precise", "unity"},
     "levelType": {"manual", "scroll", "auto", "shockwave"},
     "endReason": {"converged", "maxTrials", "abandoned", "roundCap"},
@@ -389,6 +403,7 @@ def read_csv_checked(path, findings, keep=True, sink=None):
         except StopIteration:
             findings.fail("struct.empty", name, [], "file is empty: no header row")
             return None, []
+        header = [RENAMED_COLS.get(c, c) for c in header]
         n = len(header)
         dup = sorted({c for c in header if header.count(c) > 1})
         if dup:
@@ -504,7 +519,7 @@ class Frames:
 
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
             first = fh.readline()
-        header = next(csv.reader([first])) if first else []
+        header = [RENAMED_COLS.get(c, c) for c in next(csv.reader([first]))] if first else []
         idx = {c: i for i, c in enumerate(header)}
         spec = []
         for name in self.WANT_F:
@@ -873,6 +888,19 @@ def check_shot_rows(S):
         hitp, missp = practice_points(S, p) if practice else (None, None)
         prev = None
         first_quest = None
+        # Shockwave timing, on every press of a main phase: what the row reports against the block's config.
+        for r in (() if practice else p.presses):
+            if r.get("levelType") != "shockwave":
+                continue
+            cw, w = fnum(cfg_val(r, "swWindowSec")), fnum(r.get("windowSec"))
+            if cw is not None and w is not None and abs(cw - w) > 1.5e-3:
+                F.fail("shot.swTiming", name, [r["_line"]], "windowSec=%s but cfg_swWindowSec=%s" % (fmt(w), fmt(cw)))
+            lo, hi, fp = fnum(cfg_val(r, "swFlipDelayMinSec")), fnum(cfg_val(r, "swFlipDelayMaxSec")), fnum(r.get("foreperiodSec"))
+            if fp is not None and lo is not None and fp < lo - 2e-3:
+                F.fail("shot.swTiming", name, [r["_line"]], "foreperiodSec=%s, under the shortest wait %s" % (fmt(fp), fmt(lo)))
+            if fp is not None and hi is not None and fp > hi + 0.25:
+                F.warn("shot.swTiming", name, [r["_line"]], "foreperiodSec=%s, past the longest wait %s by more than a "
+                       "long frame explains" % (fmt(fp), fmt(hi)))
         for k, r in enumerate(rows):
             L = r["_line"]
             g = lambda c: fnum(r.get(c, ""))
@@ -888,7 +916,7 @@ def check_shot_rows(S):
             is_sw = r.get("levelType") == "shockwave"
             if outcome in ("shot", "detected", "early", "late") and not fired:
                 F.fail("shot.outcome", name, [L], "outcome=%s but playerFired=0" % outcome)
-            if outcome in ("expired", "crossingCap", "timeout"):
+            if outcome in ("expired", "crossingCap", "flipCap", "timeout"):
                 if fired:
                     F.fail("shot.outcome", name, [L], "outcome=%s but playerFired=1" % outcome)
                 filled = [c for c in ("hitX", "missDistX", "firedAtSec", "sinceLastCrossingSec")
@@ -943,9 +971,12 @@ def check_shot_rows(S):
             counted = r.get("countedByStaircase")
             if practice and counted == "1":
                 F.fail("shot.counted", name, [L], "practice row with countedByStaircase=1")
-            if not practice and counted == "0":
+            if not practice and counted == "0" and outcome != "early":
                 F.warn("shot.counted", name, [L], "main row with countedByStaircase=0: its response did "
                        "not reach QUEST+")
+            if outcome == "early" and counted == "1":
+                F.fail("shot.counted", name, [L], "an early press with countedByStaircase=1: the frame rate had not "
+                       "changed, so it must never reach QUEST+")
             qv = tuple(r.get(c, "") for c in QUEST_COLS if c in cols)
             if practice:
                 if gen == "v4":
@@ -967,7 +998,7 @@ def check_shot_rows(S):
             # crossings and their timing
             cr = inum(r.get("crossings"))
             last, since = g("lastCrossingAtSec"), g("sinceLastCrossingSec")
-            fired_at, start = g("firedAtSec"), g("trialStartSec")
+            fired_at, start = g("firedAtSec"), g("roundStartSec")
             if cr is not None and "lastCrossingAtSec" in cols:
                 if (cr == 0) != (last is None):
                     F.fail("shot.crossBlank", name, [L], "crossings=%d but lastCrossingAtSec=%s"
@@ -1013,16 +1044,22 @@ def check_shot_rows(S):
             if outcome == "crossingCap" and (cap is None or cap <= 0) and gen != "v3" and not practice:
                 F.fail("shot.cap", name, [L], "outcome=crossingCap but cfg_maxCrossingsPerRound=%s"
                        % cfg_val(r, "maxCrossingsPerRound"))
+            flip_cap = inum(cfg_val(r, "maxFlipsPerRound"))
+            if is_sw and flip_cap and cr is not None and not practice:
+                if cr > flip_cap:
+                    F.fail("shot.cap", name, [L], "%d flips in a round, past cfg_maxFlipsPerRound=%d" % (cr, flip_cap))
+                if outcome in ("flipCap", "timeout") and cr != flip_cap:
+                    F.fail("shot.cap", name, [L], "outcome=%s after %d flips (cap %d)" % (outcome, cr, flip_cap))
 
             # round timing
             dur = g("roundDurationSec")
             now = g("timeSinceStartSec")
             if fired and fired_at is not None and start is not None and dur is not None:
                 if abs(dur - (fired_at - start)) > TOL["dur"]:
-                    F.fail("shot.duration", name, [L], "roundDurationSec=%s but firedAtSec - trialStartSec = "
+                    F.fail("shot.duration", name, [L], "roundDurationSec=%s but firedAtSec - roundStartSec = "
                            "%s - %s = %s" % (fmt(dur), fmt(fired_at), fmt(start), fmt(fired_at - start)))
             if start is not None and fired_at is not None and fired_at < start - TOL["time4"]:
-                F.fail("shot.duration", name, [L], "firedAtSec %s before trialStartSec %s" % (fmt(fired_at), fmt(start)))
+                F.fail("shot.duration", name, [L], "firedAtSec %s before roundStartSec %s" % (fmt(fired_at), fmt(start)))
             timeout = fnum(cfg_val(r, "roundTimeoutSec"))
             if outcome == "expired" and dur is not None and timeout:
                 if dur < timeout - 1e-3:
@@ -1042,7 +1079,7 @@ def check_shot_rows(S):
                     F.fail("shot.time", name, [prev["_line"], L], "timeSinceStartSec runs backwards: %s -> %s"
                            % (fmt(t0), fmt(now)))
                 if t0 is not None and start is not None and start < t0 - TOL["time4"]:
-                    F.fail("shot.time", name, [prev["_line"], L], "round armed at trialStartSec %s, before the "
+                    F.fail("shot.time", name, [prev["_line"], L], "round armed at roundStartSec %s, before the "
                            "previous response at %s" % (fmt(start), fmt(t0)))
 
             # numbering
@@ -1081,6 +1118,19 @@ def check_shot_rows(S):
                     cv = cfg_val(r, c)
                     if cv != "" and r.get(c, "") != "" and cv != r.get(c):
                         F.fail("id.cfg", name, [L], "%s=%s but cfg_%s=%s" % (c, r.get(c), c, cv))
+            if not practice:
+                # A frame-time config states the base as a frame time, and the direction of the frame TIME.
+                cfg_ms, cfg_ft = fnum(cfg_val(r, "baseFrameMs")), cfg_val(r, "ftDirection")
+                if cfg_ms and base and int(round(1000.0 / cfg_ms)) != base:
+                    F.fail("id.cfg", name, [L], "baseFps=%d but cfg_baseFrameMs=%s" % (base, fmt(cfg_ms)))
+                if cfg_ft and r.get("direction") and r.get("direction") != {"up": "down", "down": "up"}.get(cfg_ft):
+                    F.fail("id.cfg", name, [L], "direction=%s but cfg_ftDirection=%s (frame time up = frame rate down)"
+                           % (r.get("direction"), cfg_ft))
+                if cfg_ft and r.get("ftDirection") and r.get("ftDirection") != cfg_ft:
+                    F.fail("id.cfg", name, [L], "ftDirection=%s but cfg_ftDirection=%s" % (r.get("ftDirection"), cfg_ft))
+                logged_ms = fnum(r.get("baseFrameMs"))
+                if logged_ms is not None and base and abs(logged_ms - 1000.0 / base) > 1.5e-3:
+                    F.fail("id.cfg", name, [L], "baseFrameMs=%s but baseFps=%d" % (fmt(logged_ms), base))
             ms = fnum(r.get("diffMs"))
             if ms is not None and base and alt:
                 want_ms = abs(1000.0 / alt - 1000.0 / base)
@@ -1599,11 +1649,14 @@ def check_session_log(S):
             fired = [s for s in p.presses if s.get("playerFired") == "1"]
             hits = [s for s in shots if s.get("isHit") == "1"]
             n = len(shots)
-            cmp("trials", n, 0)
+            # The block's last response can be a TOO LATE that left its round open: the session row's score, last
+            # difference and posterior are as of it, not of the last round to close.
+            last = [s for s in p.presses if s.get("outcome") not in IGNORED_PRESSES][-1]
+            cmp("rounds", n, 0)
             cmp("shotsFired", len(fired), 0)
             cmp("hits", len(hits), 0)
             cmp("accuracy", len(hits) / n, 6e-5)
-            cmp("score", fnum(shots[-1].get("totalScore")), 6e-3)
+            cmp("score", fnum(last.get("totalScore")), 6e-3)
             cmp("roundsExpired", sum(1 for s in shots if s.get("outcome") in ("expired", "timeout")), 0)
             cmp("roundsCrossingCapped", sum(1 for s in shots if s.get("outcome") == "crossingCap"), 0)
             durs = [fnum(s.get("roundDurationSec")) for s in shots if fnum(s.get("roundDurationSec")) is not None]
@@ -1623,22 +1676,29 @@ def check_session_log(S):
             cmp("sdMissDistX", sample_sd(miss), 3e-4)
             cmp("maxMissDistX", max(miss) if miss else None, 1.5e-4)
             cmp("staircaseTrials", sum(1 for s in p.presses if s.get("countedByStaircase") == "1"), 0)
-            cmp("lastDiffFps", fnum(shots[-1].get("diffFps")), 0)
+            for col, kinds in (("earlyFires", ("early",)), ("swLateFires", ("late",)), ("swDetections", ("detected",)),
+                               ("roundsFlipCapped", ("flipCap", "timeout")), ("lockoutPresses", ("lockout",)),
+                               ("cooldownPresses", ("cooldown",)), ("notLivePresses", ("notLive",))):
+                cmp(col, sum(1 for s in p.presses if s.get("outcome") in kinds), 0)
+            cmp("roundsNotCounted", sum(1 for s in shots if s.get("countedByStaircase") == "0"), 0)
+            cmp("lastDiffFps", fnum(last.get("diffFps")), 0)
             if "diffMs" in S.shot.cols:
-                cmp("lastDiffMs", fnum(shots[-1].get("diffMs")), 1.5e-3)
+                cmp("lastDiffMs", fnum(last.get("diffMs")), 1.5e-3)
             for col, scol, tol in (("jndDiffFps", "threshDiffFps", 1.5e-3), ("jndFrameTimeDiffMs", "threshDiffMs", 1.5e-3),
                                    ("sd", "sd", 1.5e-3),
                                    ("slopeEstimate", "slopeEstimate", 1.5e-3), ("lapseEstimate", "lapseEstimate", 1.5e-4)):
                 if scol in S.shot.cols:
-                    cmp(col, fnum(shots[-1].get(scol)), tol, " (the last round's posterior)")
+                    cmp(col, fnum(last.get(scol)), tol, " (the last response's posterior)")
             if S.gen == "v4":
-                firsts = [fnum(s.get("firstCrossingAtSec")) - fnum(s.get("trialStartSec")) for s in shots
-                          if fnum(s.get("firstCrossingAtSec")) is not None and fnum(s.get("trialStartSec")) is not None]
+                firsts = [fnum(s.get("firstCrossingAtSec")) - fnum(s.get("roundStartSec")) for s in shots
+                          if fnum(s.get("firstCrossingAtSec")) is not None and fnum(s.get("roundStartSec")) is not None]
                 cmp("avgFirstCrossingSec", mean(firsts), 3e-4)
                 w = [(fnum(s.get("meanCrossingSpeed")), inum(s.get("crossings")) or 0) for s in shots
                      if fnum(s.get("meanCrossingSpeed")) is not None]
-                cmp("avgCrossingSpeed", sum(a * b for a, b in w) / sum(b for a, b in w) if w and sum(b for a, b in w) else None,
-                    2e-3, " (crossing-weighted mean of meanCrossingSpeed)")
+                # An abandoned block's average also holds its unfinished round's crossings, which no closing row reports.
+                if r.get("endReason") != "abandoned":
+                    cmp("avgCrossingSpeed", sum(a * b for a, b in w) / sum(b for a, b in w) if w and sum(b for a, b in w) else None,
+                        2e-3, " (crossing-weighted mean of meanCrossingSpeed)")
                 vel = [abs(fnum(s.get("ufoVelX"))) for s in fired if fnum(s.get("ufoVelX")) is not None]
                 cmp("avgShotUfoSpeed", mean(vel), 2e-3)
                 cmp("medianSinceLastCrossingSec", statistics.median(since) if since else None, 1.5e-4)
