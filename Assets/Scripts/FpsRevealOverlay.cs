@@ -8,11 +8,15 @@ namespace JndUfo
     /// The round's answer, shown after every response:
     /// - On spatial laser blocks (<see cref="Show"/>): the two frame rates split left and right at
     ///   the hidden tower's beam, each in its side's colour — cool for the faster side, warm for
-    ///   the slower — with the rate actually delivered underneath, while each side of the screen
-    ///   slowly takes on its colour.
+    ///   the slower — while each side of the screen slowly takes on its colour.
     /// - On temporal shockwave blocks (<see cref="ShowShockwave"/>): <b>no left/right split</b>.
     ///   Instead, one full-sky wash in the faster or slower colour and a readout in the upper sky of the
-    ///   round's last change: the rate it WAS and the rate it is NOW, each with its frame time.
+    ///   round's last change: the rate it WAS and the rate it is NOW.
+    ///
+    /// Under every rate, two small lines: the rate actually delivered ("measured 487" — frames over
+    /// frame time as the round counted them; "not visited" for a side the UFO never entered), and
+    /// under that the cap's frame time ("2.00 ms"), the unit the study steps in, in a paler tint so
+    /// the two read apart.
     /// </summary>
     public class FpsRevealOverlay : MonoBehaviour
     {
@@ -30,11 +34,21 @@ namespace JndUfo
         [Range(0f, 1f)] public float washInsideZone = 0.3f;
         [Tooltip("Opacity of the soft shadow behind each number, for contrast over a bright sky.")]
         [Range(0f, 1f)] public float shadowAlpha = 0.3f;
+        [Tooltip("How far the 'measured N' line — the frame rate actually delivered — is mixed from its side's " +
+                 "colour toward white. Less than the frame-time line under it, so the two small lines read apart.")]
+        [Range(0f, 1f)] public float measuredWhiteMix = 0.3f;
+        [Tooltip("How far the frame-time line (the cap's frame time, e.g. '2.00 ms') under the measured rate is " +
+                 "mixed from its side's colour toward white: paler than the measured line above it.")]
+        [Range(0f, 1f)] public float frameTimeWhiteMix = 0.55f;
+        [Tooltip("Opacity of the frame-time line once it has faded in.")]
+        [Range(0f, 1f)] public float frameTimeAlpha = 0.9f;
 
         [Header("Type  (1920×1080 reference units)")]
         [Min(20f)] public float numberSize   = 128f;
         [Min(8f)]  public float unitSize     = 30f;
         [Min(8f)]  public float measuredSize = 30f;
+        [Tooltip("The frame-time line under the measured rate.")]
+        [Min(8f)]  public float frameTimeSize = 30f;
         [Tooltip("Height of the numerals' centre as a fraction of the screen, from the bottom: high in " +
                  "the sky, clear of the city, the centre callout and the practice hint.")]
         [Range(0.5f, 0.9f)] public float numberHeight = 0.78f;
@@ -69,6 +83,7 @@ namespace JndUfo
         const int   WashTexH        = 128;
         const float SlideIn         = 28f;
         const float MeasuredFadeSec = 0.25f;
+        const float FrameTimeLagSec = 0.06f;   // the frame-time line lands just after the measured one
         const float InsideMinScale  = 0.75f;
 
         // ── Construction ─────────────────────────────────────────────────────
@@ -83,7 +98,7 @@ namespace JndUfo
             public RectTransform   block;    // the numbers' anchor point: beside the beam, high up
             public RectTransform   shadowRect;
             public RawImage        shadow;
-            public TextMeshProUGUI number, unit, measured;
+            public TextMeshProUGUI number, unit, measured, frameTime;
 
             public int   targetFps, startFps;
             public bool  rolls;              // the altered side rolls away from the base
@@ -116,6 +131,7 @@ namespace JndUfo
         TextMeshProUGUI _swWasNumber;
         TextMeshProUGUI _swWasUnit;
         TextMeshProUGUI _swWasMeasured;
+        TextMeshProUGUI _swWasFrameTime;
         TextMeshProUGUI _swArrow;
         RectTransform   _swNowBlock;
         RectTransform   _swNowShadowRect;
@@ -124,6 +140,7 @@ namespace JndUfo
         TextMeshProUGUI _swNowNumber;
         TextMeshProUGUI _swNowUnit;
         TextMeshProUGUI _swNowMeasured;
+        TextMeshProUGUI _swNowFrameTime;
         int             _swWasFps;
         int             _swNowFps;
         Color           _swWasColor;
@@ -132,7 +149,7 @@ namespace JndUfo
         bool            _swRolls;
 
         // Vertical rhythm inside a block, from the type sizes (see Build).
-        float _unitY, _measuredY, _blockMidY;
+        float _unitY, _measuredY, _frameTimeY, _blockMidY;
 
         enum State { Hidden, Showing, Hiding }
         State _state = State.Hidden;
@@ -239,14 +256,16 @@ namespace JndUfo
             _swWasSub.SetText("WAS");
             _swWasNumber.SetText("{0}", wasFps);
             _swWasUnit.SetText("FPS");
-            _swWasMeasured.SetText(FrameTimeLine(wasFps));
+            _swWasMeasured.SetText(MeasuredLine(MeasuredPhaseFps(round, wasFps), "not measured"));
+            _swWasFrameTime.SetText(FrameTimeLine(wasFps));
 
             _swArrow.SetText("→");
 
             _swNowSub.SetText("NOW");
             _swNowNumber.SetText("{0}", _swRolls ? wasFps : nowFps);
             _swNowUnit.SetText("FPS");
-            _swNowMeasured.SetText(FrameTimeLine(nowFps));
+            _swNowMeasured.SetText(MeasuredLine(MeasuredPhaseFps(round, nowFps), "not measured"));
+            _swNowFrameTime.SetText(FrameTimeLine(nowFps));
 
             Pace(holdSec);
 
@@ -419,12 +438,18 @@ namespace JndUfo
             _swNowUnit.color      = WithAlpha(nowCol, 0.85f * fade);
             _swNowShadow.color    = new Color(0f, 0f, 0f, shadowAlpha * fade);
 
-            // Measured lines fade in as numbers settle
+            // Measured rates, then frame times, fade in as the numbers settle
             float m = EaseOutCubic(Mathf.Clamp01((t - _measuredAt) / MeasuredFadeSec));
-            _swWasMeasured.color = WithAlpha(Color.Lerp(_swWasColor, Color.white, 0.55f), 0.9f * m);
-            _swNowMeasured.color = WithAlpha(Color.Lerp(_swNowColor, Color.white, 0.55f), 0.9f * m);
+            _swWasMeasured.color = WithAlpha(Color.Lerp(_swWasColor, Color.white, measuredWhiteMix), 0.95f * m);
+            _swNowMeasured.color = WithAlpha(Color.Lerp(_swNowColor, Color.white, measuredWhiteMix), 0.95f * m);
             _swWasMeasured.rectTransform.anchoredPosition = new Vector2(0f, _measuredY - 8f * (1f - m));
             _swNowMeasured.rectTransform.anchoredPosition = new Vector2(0f, _measuredY - 8f * (1f - m));
+
+            float f = EaseOutCubic(Mathf.Clamp01((t - _measuredAt - FrameTimeLagSec) / MeasuredFadeSec));
+            _swWasFrameTime.color = WithAlpha(Color.Lerp(_swWasColor, Color.white, frameTimeWhiteMix), frameTimeAlpha * f);
+            _swNowFrameTime.color = WithAlpha(Color.Lerp(_swNowColor, Color.white, frameTimeWhiteMix), frameTimeAlpha * f);
+            _swWasFrameTime.rectTransform.anchoredPosition = new Vector2(0f, _frameTimeY - 8f * (1f - f));
+            _swNowFrameTime.rectTransform.anchoredPosition = new Vector2(0f, _frameTimeY - 8f * (1f - f));
         }
 
         void DriftShockwave(float h)
@@ -467,9 +492,14 @@ namespace JndUfo
             s.unit.color   = WithAlpha(c, 0.85f * fade);
             s.shadow.color = new Color(0f, 0f, 0f, shadowAlpha * fade);
 
+            // Measured: quieter than the number, and only once the numbers have landed; the frame time just after.
             float m = EaseOutCubic(Mathf.Clamp01((t - _measuredAt) / MeasuredFadeSec));
-            s.measured.color = WithAlpha(Color.Lerp(s.color, Color.white, 0.55f), 0.9f * m);
+            s.measured.color = WithAlpha(Color.Lerp(s.color, Color.white, measuredWhiteMix), 0.95f * m);
             s.measured.rectTransform.anchoredPosition = new Vector2(0f, _measuredY - 8f * (1f - m));
+
+            float f = EaseOutCubic(Mathf.Clamp01((t - _measuredAt - FrameTimeLagSec) / MeasuredFadeSec));
+            s.frameTime.color = WithAlpha(Color.Lerp(s.color, Color.white, frameTimeWhiteMix), frameTimeAlpha * f);
+            s.frameTime.rectTransform.anchoredPosition = new Vector2(0f, _frameTimeY - 8f * (1f - f));
         }
 
         void Drift(Half s, float h)
@@ -481,9 +511,29 @@ namespace JndUfo
 
         // ── Layout ───────────────────────────────────────────────────────────
 
-        // The line under a frame rate: the same thing as a frame time, the unit the study steps in.
+        // The first small line under a frame rate: the rate actually delivered, frames over frame time as the round
+        // counted them. `none` when nothing was counted (a side the UFO never entered).
+        static string MeasuredLine(float measured, string none) =>
+            float.IsNaN(measured) || float.IsInfinity(measured) || measured <= 0f
+                ? none
+                : "measured " + Mathf.RoundToInt(measured).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        // The second: the cap's frame time, the unit the study steps in.
         static string FrameTimeLine(int fps) =>
             (1000f / Mathf.Max(1, fps)).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " ms";
+
+        // What a shockwave phase really ran at. The whole screen runs one cap at a time, so a phase's delivered rate is
+        // the round's tally for that cap: base or altered. A rate from an earlier attempt of the round (before a TOO LATE
+        // re-gate started the tally afresh) has no tally left: NaN.
+        static float MeasuredPhaseFps(PerturbationController.RoundRecord round, int fps)
+        {
+            if (fps == round.baseFps)    return round.MeasuredBaseFps;
+            if (fps == round.alteredFps) return round.MeasuredAlteredFps;
+            return float.NaN;
+        }
+
+        // The soft shadow's height: tall enough for the number and every line under it.
+        float ShadowHeight => 1.9f * numberSize + (_measuredY - _frameTimeY);
 
         void Configure(Half s, int fps, float measured, bool isAltered, int baseFps, Color color)
         {
@@ -493,16 +543,19 @@ namespace JndUfo
             s.color     = color;
             s.shownFps  = int.MinValue;
 
-            string m = FrameTimeLine(fps);
+            string m  = MeasuredLine(measured, "not visited");
+            string ft = FrameTimeLine(fps);
             s.unit.SetText("FPS");
             s.measured.SetText(m);
+            s.frameTime.SetText(ft);
 
             float numW  = NumberWidth(s.number, DigitCount(Mathf.Max(s.startFps, s.targetFps)));
             float unitW = s.unit.GetPreferredValues("FPS").x;
             float measW = s.measured.GetPreferredValues(m).x;
-            s.naturalWidth = Mathf.Max(numW, Mathf.Max(unitW, measW));
+            float ftW   = s.frameTime.GetPreferredValues(ft).x;
+            s.naturalWidth = Mathf.Max(Mathf.Max(numW, unitW), Mathf.Max(measW, ftW));
 
-            s.shadowRect.sizeDelta        = new Vector2(s.naturalWidth + 0.9f * numberSize, 1.9f * numberSize);
+            s.shadowRect.sizeDelta        = new Vector2(s.naturalWidth + 0.9f * numberSize, ShadowHeight);
             s.shadowRect.anchoredPosition = new Vector2(s.side * s.naturalWidth * 0.5f, _blockMidY);
         }
 
@@ -632,9 +685,12 @@ namespace JndUfo
             float numHalf  = 0.35f * numberSize;
             float unitHalf = 0.35f * unitSize;
             float measHalf = 0.35f * measuredSize;
-            _unitY     = -(numHalf + 0.13f * numberSize + unitHalf);
-            _measuredY = _unitY - (unitHalf + 0.4f * unitSize + measHalf);
-            _blockMidY = (numHalf + _measuredY - measHalf) * 0.5f;
+            float ftHalf   = 0.35f * frameTimeSize;
+            _unitY      = -(numHalf + 0.13f * numberSize + unitHalf);
+            _measuredY  = _unitY - (unitHalf + 0.4f * unitSize + measHalf);
+            // The two small lines sit a little closer to each other than to the unit: one pair of details.
+            _frameTimeY = _measuredY - (measHalf + 0.3f * measuredSize + ftHalf);
+            _blockMidY  = (numHalf + _frameTimeY - ftHalf) * 0.5f;
 
             _shadowTex    = BuildShadowTexture(128);
             _swSkyWashTex = BuildShockwaveSkyWashTexture(256, 128);
@@ -676,7 +732,7 @@ namespace JndUfo
             _swWasShadowRect = NewRect("Shadow", _swWasBlock);
             _swWasShadowRect.anchorMin = _swWasShadowRect.anchorMax = new Vector2(0.5f, 0.5f);
             _swWasShadowRect.pivot     = new Vector2(0.5f, 0.5f);
-            _swWasShadowRect.sizeDelta = new Vector2(400f, 260f);
+            _swWasShadowRect.sizeDelta = new Vector2(400f, 260f + (_measuredY - _frameTimeY));
             _swWasShadowRect.anchoredPosition = new Vector2(0f, _blockMidY);
             _swWasShadow = _swWasShadowRect.gameObject.AddComponent<RawImage>();
             _swWasShadow.texture       = _shadowTex;
@@ -686,6 +742,7 @@ namespace JndUfo
             _swWasNumber = MakeSubText("Number", _swWasBlock, 0f, 0f, numberSize, FontStyles.Bold, 0f);
             _swWasUnit = MakeSubText("Unit", _swWasBlock, 0f, _unitY, unitSize, FontStyles.Bold, 14f);
             _swWasMeasured = MakeSubText("Measured", _swWasBlock, 0f, _measuredY, measuredSize, FontStyles.Normal, 2f);
+            _swWasFrameTime = MakeSubText("FrameTime", _swWasBlock, 0f, _frameTimeY, frameTimeSize, FontStyles.Normal, 2f);
 
             _swWasNumber.outlineWidth = 0.12f;
             _swWasNumber.outlineColor = new Color32(0, 0, 0, 160);
@@ -702,7 +759,7 @@ namespace JndUfo
             _swNowShadowRect = NewRect("Shadow", _swNowBlock);
             _swNowShadowRect.anchorMin = _swNowShadowRect.anchorMax = new Vector2(0.5f, 0.5f);
             _swNowShadowRect.pivot     = new Vector2(0.5f, 0.5f);
-            _swNowShadowRect.sizeDelta = new Vector2(400f, 260f);
+            _swNowShadowRect.sizeDelta = new Vector2(400f, 260f + (_measuredY - _frameTimeY));
             _swNowShadowRect.anchoredPosition = new Vector2(0f, _blockMidY);
             _swNowShadow = _swNowShadowRect.gameObject.AddComponent<RawImage>();
             _swNowShadow.texture       = _shadowTex;
@@ -712,6 +769,7 @@ namespace JndUfo
             _swNowNumber = MakeSubText("Number", _swNowBlock, 0f, 0f, numberSize, FontStyles.Bold, 0f);
             _swNowUnit = MakeSubText("Unit", _swNowBlock, 0f, _unitY, unitSize, FontStyles.Bold, 14f);
             _swNowMeasured = MakeSubText("Measured", _swNowBlock, 0f, _measuredY, measuredSize, FontStyles.Normal, 2f);
+            _swNowFrameTime = MakeSubText("FrameTime", _swNowBlock, 0f, _frameTimeY, frameTimeSize, FontStyles.Normal, 2f);
 
             _swNowNumber.outlineWidth = 0.12f;
             _swNowNumber.outlineColor = new Color32(0, 0, 0, 160);
@@ -789,7 +847,8 @@ namespace JndUfo
 
             s.number   = MakeText("Number",   s.block, side, numberSize,   FontStyles.Bold,   0f,         0f);
             s.unit     = MakeText("Unit",     s.block, side, unitSize,     FontStyles.Bold,   _unitY,     14f);
-            s.measured = MakeText("Measured", s.block, side, measuredSize, FontStyles.Normal, _measuredY, 2f);
+            s.measured  = MakeText("Measured",  s.block, side, measuredSize,  FontStyles.Normal, _measuredY,  2f);
+            s.frameTime = MakeText("FrameTime", s.block, side, frameTimeSize, FontStyles.Normal, _frameTimeY, 2f);
 
             s.number.outlineWidth = 0.12f;
             s.number.outlineColor = new Color32(0, 0, 0, 160);
