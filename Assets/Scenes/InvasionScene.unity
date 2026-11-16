@@ -166,6 +166,7 @@ MonoBehaviour:
   towerManager: {fileID: 1121148176}
   scoreManager: {fileID: 263729323}
   uiManager: {fileID: 596289077}
+  shockwave: {fileID: 0}
 --- !u!114 &263729323
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -201,6 +202,7 @@ MonoBehaviour:
   perturbation: {fileID: 263729322}
   roundClock: {fileID: 0}
   fpsReveal: {fileID: 0}
+  weaponIndicator: {fileID: 0}
   fogRetreatDuration: 0.2
   hitDisplayDuration: 1
   fogRestoreDuration: 0.45
@@ -295,7 +297,41 @@ MonoBehaviour:
   showPracticeHints: 1
   standingHintText: FIND WHERE THE FRAME RATE CHANGES
   crossingHintText: "FRAME RATE CHANGED \u2014 FIRE HERE"
+  shockwaveStandingHintText: WAIT FOR THE FRAME RATE TO CHANGE
+  shockwaveFlipHintText: "FRAME RATE CHANGED \u2014 FIRE NOW!"
   practiceHintSec: 1.1
+  practiceEachLevelType: 1
+  manualInstruction: 'The hidden tower splits the city in two.
+
+    One side has
+    a different frame rate than the other.
+
+    Fly back and forth, find where the
+    framerate changes, and shoot the hidden tower.'
+  scrollInstruction: 'The hidden tower splits the city in two.
+
+    One side has
+    a different frame rate than the other.
+
+    Fly back and forth as the city scrolls
+    by, find where the framerate changes, and shoot the hidden tower.'
+  autoInstruction: 'The hidden tower splits the city in two.
+
+    One side has a
+    different frame rate than the other.
+
+    The UFO flies back and forth by itself.
+    Watch it, and click to shoot
+
+    when it is right over the spot where the framerate
+    changes.'
+  shockwaveInstruction: 'The UFO flies back and forth by itself.
+
+    The whole screen''s
+    frame rate will change at random times.
+
+    Watch the UFO, and click to fire
+    the shockwave as soon as you notice the frame rate change.'
   gameManager: {fileID: 263729325}
   laser: {fileID: 875238946}
   towerManager: {fileID: 1121148176}
@@ -473,6 +509,9 @@ MonoBehaviour:
   parallaxPitch: 0.22
   parallaxResponse: 4
   parallaxTarget: {fileID: 0}
+  shockwaveShakeIntensity: 1.7
+  shockwaveShakeLength: 1.15
+  shockwaveShakeSettle: 0.3
 --- !u!1 &355956065
 GameObject:
   m_ObjectHideFlags: 0
@@ -697,6 +736,8 @@ MonoBehaviour:
   hitAlpha: 0.2
   missRedColor: {r: 1, g: 0.08, b: 0.08, a: 0.18431373}
   missRedAlpha: 0.1
+  shockwaveFlashColor: {r: 0.2, g: 0.02, b: 0.95, a: 1}
+  shockwaveAlpha: 0.28
   vignetteInnerRadius: 0.45
   vignetteResolution: 256
   scoreBeatPeak: 1.45
@@ -706,7 +747,6 @@ MonoBehaviour:
   progressHeight: 28
   progressBottomMargin: 48
   progressLabelText: PROGRESS
-  progressLabelDuringPracticeOnly: 1
   progressLabelSize: 32
   progressLabelGap: 8
   progressFillColor: {r: 0.55, g: 0.95, b: 1, a: 0.97}
@@ -725,6 +765,10 @@ MonoBehaviour:
   tallyPopSec: 0.34
   calloutOutOfTimeText: OUT OF TIME!
   calloutCrossingCapText: TOO MANY PASSES!
+  calloutShockwaveHitText: DESTROYED!
+  calloutEarlyText: TOO EARLY!
+  calloutLateText: TOO LATE!
+  calloutFlipCapText: CHANCES MISSED!
   calloutHitText: Hit!
   calloutMissText: Miss!
   calloutDuration: 0.3
