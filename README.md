@@ -129,7 +129,7 @@ Data/
 ```
 
 - In the Editor it's next to `Assets`. In a build it's next to the .exe. You can edit these files between participants without rebuilding.
-- If `ExperimentConfig.csv` is missing, the game writes the [default config](#the-current-config-4-blocks). If `LatinSquare.csv` is missing, it writes a balanced square for however many settings the config has.
+- If `ExperimentConfig.csv` is missing, the game writes the [default config](#experimentconfigcsv) (the older 4-block design: `DefaultCsv()` in `StudyConfig.cs`). If `LatinSquare.csv` is missing, it writes a balanced square for however many settings the config has.
 - Empty lines and lines starting with `#` are ignored. Use a dot for decimals. Lists inside one cell use `;`, because `,` separates the columns.
 - Excel works, but make sure it saves with commas and dot decimals. A plain text editor is safer.
 
@@ -143,28 +143,30 @@ The row number is the setting's ID. The first row under the header is setting **
 
 **The row order is not the play order.** The play order comes from `LatinSquare.csv`.
 
-### The current config: 4 blocks
+### The current config: 6 blocks
 
 | Row | Level | Base FT | FT direction | Δ range, ms (step) | threshCount | γ | stopSD, ms |
 |---|---|---|---|---|---|---|---|
-| 1 | shockwave | 2 | up | 0.5 to 48 (0.5) | 96 | 0.36 | 1 |
-| 2 | shockwave | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.36 | 1 |
-| 3 | manual laser | 2 | up | 0.5 to 48 (0.5) | 96 | 0.256 | 1 |
-| 4 | manual laser | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.256 | 1 |
+| 1 | shockwave | 2 | up | 0.5 to 48 (0.5) | 96 | 0.4 | 2 |
+| 2 | shockwave | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.4 | 2 |
+| 3 | manual laser | 2 | up | 0.5 to 48 (0.5) | 96 | 0.256 | 2 |
+| 4 | manual laser | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.256 | 2 |
+| 5 | scroll laser (`scrollFollow` locked) | 2 | up | 0.5 to 48 (0.5) | 96 | 0.256 | 2 |
+| 6 | scroll laser (`scrollFollow` locked) | 16.667 | down | 0.5 to 14.667 (0.5) | 30 | 0.256 | 2 |
 
 The other settings every row shares: `slope` 1 to 7 (10 values), `lapse` 0 to 0.06 (4 values), `maxTrials` 50, `minTrials` 8, `alteredSide` random, `frameLimiter` unity, `hitPoints` 100, `missPoints` -10.
 
-| Setting | Laser rows | Shockwave rows |
+| Setting | Laser rows (manual and scroll) | Shockwave rows |
 |---|---|---|
-| Round limits | `maxCrossingsPerRound` 15, `roundTimeoutSec` 20 | none; `maxFlipsPerRound` 5 |
-| Timing | | `swFlipDelayMinSec` 1, `swFlipDelayMaxSec` 3.5, `swWindowSec` 0.9, `swMaxEarlyPerRound` 1 |
-| Flight | the mouse | `autoSpeed` 20, `autoPath` linear (the infinity sign), `autoSweep` 0.92, `autoTurnSec` 1, `autoHeight` 0.38, `autoBobAmp` 0.25, `autoBobHz` 1.1, `autoStart` random |
+| Round limits | `maxCrossingsPerRound` 20, `roundTimeoutSec` 20 | `roundTimeoutSec` 20; `maxFlipsPerRound` 10 |
+| Timing | | `swFlipDelayMinSec` 1, `swFlipDelayMaxSec` 4, `swWindowSec` 1.2, `swMaxEarlyPerRound` 1 |
+| Flight | the mouse | `autoSpeed` 25, `autoPath` linear (the infinity sign), `autoSweep` 0.92, `autoTurnSec` 1, `autoHeight` 0.38, `autoBobAmp` 0.25, `autoBobHz` 1.1, `autoStart` random |
 
-**About stopSD 1.** Simulated from the pilot, it saves about 9 of 33 minutes over running all 50 trials, with only a little more error in the threshold, and the same value and step suit both base frame times: see [the assessment](https://claude.ai/artifact/Q3XkNFLr6HtzycUfza9oja) (`Analysis/sd_from_pilot.py` reproduces it). It rests on one pilot participant, and the pilot has no shockwave block, so check it against the first real sessions.
+**About stopSD.** It is now 2 ms on every row, looser than the 1 ms assessed below, so blocks stop sooner at the cost of a less precise threshold. The 1 ms value, simulated from the pilot, it saves about 9 of 33 minutes over running all 50 trials, with only a little more error in the threshold, and the same value and step suit both base frame times: see [the assessment](https://claude.ai/artifact/Q3XkNFLr6HtzycUfza9oja) (`Analysis/sd_from_pilot.py` reproduces it). It rests on one pilot participant, and the pilot has no shockwave block, so check it against the first real sessions.
 
-**guessRate for shockwave** is simply the window over the spread of the wait: 0.9 / (3.5 - 1) = **0.36**. Early presses are deliberately left out of it.
+**guessRate for shockwave** is simply the window over the spread of the wait: 1.2 / (4 - 1) = **0.4**. Early presses are deliberately left out of it.
 
-> **Note:** if the file goes missing, the game writes these same four rows (`DefaultCsv()` in `StudyConfig.cs`). A config from before this one, with `baseFps` and `direction` (of the frame rate), still loads. Shockwave timing under older column names is not read: the Console reports an error, and that row uses the defaults (1 to 3.5 s, 5 flips).
+> **Note:** if the file goes missing, the game writes the older 4-block design (`DefaultCsv()` in `StudyConfig.cs`), not these six rows. A config from before this one, with `baseFps` and `direction` (of the frame rate), still loads. Shockwave timing under older column names is not read: the Console reports an error, and that row uses the defaults (1 to 3.5 s, 5 flips).
 
 ### Columns
 
@@ -400,14 +402,16 @@ Everything below is built at runtime by the scripts, so the scene file itself is
 This file decides **which order** each participant plays the settings in.
 
 ```
-row,pos1,pos2,pos3,pos4
-1,1,2,4,3
-2,2,3,1,4
-3,3,4,2,1
-4,4,1,3,2
+row,pos1,pos2,pos3,pos4,pos5,pos6
+1,1,2,6,3,5,4
+2,2,3,1,4,6,5
+3,3,4,2,5,1,6
+4,4,5,3,6,2,1
+5,5,6,4,1,3,2
+6,6,1,5,2,4,3
 ```
 
-The numbers are row numbers of ExperimentConfig.csv: 1 = shockwave 2 ms up, 2 = shockwave 16.67 ms down, 3 = laser 2 ms up, 4 = laser 16.67 ms down. Participant `N` uses square row `((N - 1) mod 4) + 1`, so run participants in groups of 4.
+The numbers are row numbers of ExperimentConfig.csv: 1 = shockwave 2 ms up, 2 = shockwave 16.67 ms down, 3 = manual laser 2 ms up, 4 = manual laser 16.67 ms down, 5 = scroll laser 2 ms up, 6 = scroll laser 16.67 ms down. Participant `N` uses square row `((N - 1) mod 6) + 1`, so run participants in groups of 6.
 
 It is a **Williams design**: every setting takes every position once, and every setting comes right after every other setting once.
 

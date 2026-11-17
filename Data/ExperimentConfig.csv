@@ -1,5 +1,7 @@
 levelType,baseFrameMs,ftDirection,maxDiffMs,minDiffMs,diffStepMs,alteredSide,frameLimiter,maxCrossingsPerRound,roundTimeoutSec,hitPoints,missPoints,threshCount,slopeMin,slopeMax,slopeCount,lapseMin,lapseMax,lapseCount,guessRate,maxTrials,minTrials,stopSD,scrollFollow,autoSpeed,autoPath,autoSweep,autoTurnSec,autoHeight,autoBobAmp,autoBobHz,autoStart,swFlipDelayMinSec,swFlipDelayMaxSec,swWindowSec,swMaxEarlyPerRound,maxFlipsPerRound,showDebug
-shockwave,2,up,48,0.5,0.5,random,unity,0,20,100,-10,96,1,7,10,0,0.06,4,0.4,50,8,1.5,,25,linear,0.92,1,0.38,0.25,1.1,random,1,4,1.2,1,10,0
-shockwave,16.667,down,14.667,0.5,0.5,random,unity,0,20,100,-10,30,1,7,10,0,0.06,4,0.4,50,8,1.5,,25,linear,0.92,1,0.38,0.25,1.1,random,1,4,1.2,1,10,0
-manual,2,up,48,0.5,0.5,random,unity,20,20,100,-10,96,1,7,10,0,0.06,4,0.256,50,8,1.5,,,,,,,,,,,,,,,0
-manual,16.667,down,14.667,0.5,0.5,random,unity,20,20,100,-10,30,1,7,10,0,0.06,4,0.256,50,8,1.5,,,,,,,,,,,,,,,0
+shockwave,2,up,48,0.5,0.5,random,unity,0,20,100,-10,96,1,7,10,0,0.06,4,0.4,50,8,2,,25,linear,0.92,1,0.38,0.25,1.1,random,1,4,1.2,1,10,0
+shockwave,16.667,down,14.667,0.5,0.5,random,unity,0,20,100,-10,30,1,7,10,0,0.06,4,0.4,50,8,2,,25,linear,0.92,1,0.38,0.25,1.1,random,1,4,1.2,1,10,0
+manual,2,up,48,0.5,0.5,random,unity,20,20,100,-10,96,1,7,10,0,0.06,4,0.256,50,8,2,,,,,,,,,,,,,,,0
+manual,16.667,down,14.667,0.5,0.5,random,unity,20,20,100,-10,30,1,7,10,0,0.06,4,0.256,50,8,2,,,,,,,,,,,,,,,0
+scroll,2,up,48,0.5,0.5,random,unity,20,20,100,-10,96,1,7,10,0,0.06,4,0.256,50,8,2,locked,,,,,,,,,,,,,,0
+scroll,16.667,down,14.667,0.5,0.5,random,unity,20,20,100,-10,30,1,7,10,0,0.06,4,0.256,50,8,2,locked,,,,,,,,,,,,,,0

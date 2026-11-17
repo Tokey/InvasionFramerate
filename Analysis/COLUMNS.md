@@ -44,9 +44,9 @@ is altered is random. A round's reveal plays at its own base.
 `row, pos1 … posN`. Each cell is a 1-based row number in `ExperimentConfig.csv`; the row a
 session uses is `((sessionId − 1) mod rowCount) + 1`. Comment lines (`#`) are ignored.
 
-With 4 settings the shipped design is a **Williams** design of 4 rows (pos1 to pos4):
+With 6 settings the shipped design is a **Williams** design of 6 rows (pos1 to pos6):
 every setting takes every position equally often *and* every ordered pair of settings
-occurs exactly once. Run participants in groups of 4 for full balance. Validated at load.
+occurs exactly once. Run participants in groups of 6 for full balance. Validated at load.
 
 ---
 
